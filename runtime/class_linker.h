@@ -598,6 +598,11 @@ class ClassLinker {
   // Is the given entry point the JNI dlsym lookup critical stub?
   bool IsJniDlsymLookupCriticalStub(const void* entry_point) const;
 
+  // Is the given entry point the nterp trampoline?
+  bool IsNterpTrampoline(const void* entry_point) const {
+    return nterp_trampoline_ == entry_point;
+  }
+
   const void* GetQuickToInterpreterBridgeTrampoline() const {
     return quick_to_interpreter_bridge_trampoline_;
   }
@@ -856,6 +861,7 @@ class ClassLinker {
   virtual bool IsUpdatableBootClassPathDescriptor(const char* descriptor);
 
  private:
+  class LinkFieldsHelper;
   class LinkInterfaceMethodsHelper;
   class MethodTranslation;
   class VisiblyInitializedCallback;
@@ -1212,8 +1218,6 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_);
   bool LinkInstanceFields(Thread* self, Handle<mirror::Class> klass)
       REQUIRES_SHARED(Locks::mutator_lock_);
-  bool LinkFields(Thread* self, Handle<mirror::Class> klass, bool is_static, size_t* class_size)
-      REQUIRES_SHARED(Locks::mutator_lock_);
   void CreateReferenceInstanceOffsets(Handle<mirror::Class> klass)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -1384,6 +1388,7 @@ class ClassLinker {
   const void* quick_imt_conflict_trampoline_;
   const void* quick_generic_jni_trampoline_;
   const void* quick_to_interpreter_bridge_trampoline_;
+  const void* nterp_trampoline_;
 
   // Image pointer size.
   PointerSize image_pointer_size_;
