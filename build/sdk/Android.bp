@@ -86,6 +86,13 @@ art_module_sdk {
             boot_images: [
                 "art-boot-image",
             ],
+            bootclasspath_fragments: [
+                "art-bootclasspath-fragment",
+            ],
+
+            compat_configs: [
+                "libcore-platform-compat-config",
+            ],
 
             // Create placeholder java_import prebuilts for the java boot libraries so that Soong
             // can retrieve their dex implementation jars from the associated prebuilt_apex. All
@@ -207,6 +214,12 @@ art_module_exports {
                 "hiddenapi",
                 "dex2oat",
                 "dex2oatd",
+                "profman",
+            ],
+            native_libs: [
+                "libdexfile", // libdexfile_external dependency
+                "libartpalette", // libdexfile dependency
+                "libartbase", // libdexfile dependency
             ],
         },
 
