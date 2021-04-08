@@ -1,6 +1,6 @@
 {
   "name": "com.android.art",
-  "version": 310500400,
+  "version": 310610000,
   "requireNativeLibs": [
     "libicu.so",
     "libicuuc.so",

@@ -24,6 +24,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <log/log.h>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -1341,6 +1342,7 @@ class Dex2Oat final {
           } else {
             if (input_vdex_file_->HasDexSection()) {
               LOG(ERROR) << "The dex metadata is not allowed to contain dex files";
+              android_errorWriteLog(0x534e4554, "178055795");  // Report to SafetyNet.
               return false;
             }
             VLOG(verifier) << "Doing fast verification with vdex from DexMetadata archive";
@@ -1463,6 +1465,10 @@ class Dex2Oat final {
 
     compiler_options_->dex_files_for_oat_file_ = MakeNonOwningPointerVector(opened_dex_files_);
     const std::vector<const DexFile*>& dex_files = compiler_options_->dex_files_for_oat_file_;
+
+    if (!ValidateInputVdexChecksums()) {
+       return dex2oat::ReturnCode::kOther;
+    }
 
     // Check if we need to downgrade the compiler-filter for size reasons.
     // Note: This does not affect the compiler filter already stored in the key-value
@@ -1715,6 +1721,40 @@ class Dex2Oat final {
     }
 
     return dex2oat::ReturnCode::kNoFailure;
+  }
+
+  // Validates that the input vdex checksums match the source dex checksums.
+  // Note that this is only effective and relevant if the input_vdex_file does not
+  // contain a dex section (e.g. when they come from .dm files).
+  // If the input vdex does contain dex files, the dex files will be opened from there
+  // and so this check is redundant.
+  bool ValidateInputVdexChecksums() {
+    if (input_vdex_file_ == nullptr) {
+      // Nothing to validate
+      return true;
+    }
+    if (input_vdex_file_->GetNumberOfDexFiles()
+          != compiler_options_->dex_files_for_oat_file_.size()) {
+      LOG(ERROR) << "Vdex file contains a different number of dex files than the source. "
+          << " vdex_num=" << input_vdex_file_->GetNumberOfDexFiles()
+          << " dex_source_num=" << compiler_options_->dex_files_for_oat_file_.size();
+      return false;
+    }
+
+    for (size_t i = 0; i < compiler_options_->dex_files_for_oat_file_.size(); i++) {
+      uint32_t dex_source_checksum =
+          compiler_options_->dex_files_for_oat_file_[i]->GetLocationChecksum();
+      uint32_t vdex_checksum = input_vdex_file_->GetLocationChecksum(i);
+      if (dex_source_checksum != vdex_checksum) {
+        LOG(ERROR) << "Vdex file checksum different than source dex checksum for position " << i
+          << std::hex
+          << " vdex_checksum=0x" << vdex_checksum
+          << " dex_source_checksum=0x" << dex_source_checksum
+          << std::dec;
+        return false;
+      }
+    }
+    return true;
   }
 
   // If we need to keep the oat file open for the image writer.

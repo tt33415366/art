@@ -5862,6 +5862,10 @@ bool ClassLinker::EnsureInitialized(Thread* self,
   if (!success) {
     if (can_init_fields && can_init_parents) {
       CHECK(self->IsExceptionPending()) << c->PrettyClass();
+    } else {
+      // There may or may not be an exception pending. If there is, clear it.
+      // We propagate the exception only if we can initialize fields and parents.
+      self->ClearException();
     }
   } else {
     self->AssertNoPendingException();
@@ -9024,11 +9028,8 @@ ArtMethod* ClassLinker::FindResolvedMethod(ObjPtr<mirror::Class> klass,
     // The resolved method that we have found cannot be accessed due to
     // hiddenapi (typically it is declared up the hierarchy and is not an SDK
     // method). Try to find an interface method from the implemented interfaces which is
-    // accessible.
-    ArtMethod* itf_method = klass->FindAccessibleInterfaceMethod(
-        resolved,
-        hiddenapi::AccessContext(class_loader, dex_cache),
-        image_pointer_size_);
+    // part of the SDK.
+    ArtMethod* itf_method = klass->FindAccessibleInterfaceMethod(resolved, image_pointer_size_);
     if (itf_method == nullptr) {
       // No interface method. Call ShouldDenyAccessToMember again but this time
       // with AccessMethod::kLinking to ensure that an appropriate warning is
