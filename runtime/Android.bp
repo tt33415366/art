@@ -462,6 +462,13 @@ libart_static_cc_defaults {
         "libunwindstack",
         "libz",
     ],
+    target: {
+        bionic: {
+            whole_static_libs: [
+                "libasync_safe", // libunwindstack dependency on Bionic.
+            ],
+        },
+    },
 }
 
 cc_defaults {
@@ -587,6 +594,10 @@ art_cc_library {
     ],
     apex_available: [
         "com.android.art.debug",
+        // TODO(b/183882457): This lib doesn't go into com.android.art, but
+        // apex_available lists need to be the same for internal libs to avoid
+        // stubs, and this depends on libsigchain.
+        "com.android.art",
     ],
 }
 
