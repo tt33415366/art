@@ -1269,6 +1269,14 @@ bool HInliner::TryDevirtualize(HInvoke* invoke_instruction,
                                      /* for_interface_call= */ false,
                                      codegen_);
   DCHECK_NE(dispatch_info.code_ptr_location, CodePtrLocation::kCallCriticalNative);
+  if (dispatch_info.method_load_kind == MethodLoadKind::kRuntimeCall) {
+    // If sharpening returns that we need to load the method at runtime, keep
+    // the virtual/interface call which will be faster.
+    // Also, the entrypoints for runtime calls do not handle devirtualized
+    // calls.
+    return false;
+  }
+
   HInvokeStaticOrDirect* new_invoke = new (graph_->GetAllocator()) HInvokeStaticOrDirect(
       graph_->GetAllocator(),
       invoke_instruction->GetNumberOfArguments(),
