@@ -14,46 +14,35 @@
  * limitations under the License.
  */
 
+#include "dexoptanalyzer.h"
+
 #include <iostream>
 #include <string>
 #include <string_view>
 
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
+#include "base/compiler_filter.h"
 #include "base/file_utils.h"
 #include "base/logging.h"  // For InitLogging.
 #include "base/mutex.h"
 #include "base/os.h"
 #include "base/string_view_cpp20.h"
 #include "base/utils.h"
-#include "compiler_filter.h"
+#include "class_linker.h"
 #include "class_loader_context.h"
 #include "dex/dex_file.h"
+#include "gc/heap.h"
+#include "gc/space/image_space.h"
 #include "noop_compiler_callbacks.h"
+#include "oat.h"
 #include "oat_file_assistant.h"
 #include "runtime.h"
 #include "thread-inl.h"
+#include "vdex_file.h"
 
 namespace art {
-
-// See OatFileAssistant docs for the meaning of the valid return codes.
-enum ReturnCodes {
-  kNoDexOptNeeded = 0,
-  kDex2OatFromScratch = 1,
-  kDex2OatForBootImageOat = 2,
-  kDex2OatForFilterOat = 3,
-  kDex2OatForBootImageOdex = 4,
-  kDex2OatForFilterOdex = 5,
-
-  // Success return code when executed with --flatten-class-loader-context.
-  // Success is typically signalled with a zero but we use a non-colliding
-  // code to communicate that the flattening code path was taken.
-  kFlattenClassLoaderContextSuccess = 50,
-
-  kErrorInvalidArguments = 101,
-  kErrorCannotCreateRuntime = 102,
-  kErrorUnknownDexOptNeeded = 103
-};
+namespace dexoptanalyzer {
 
 static int original_argc;
 static char** original_argv;
@@ -133,6 +122,9 @@ NO_RETURN static void Usage(const char *fmt, ...) {
   UsageError("      print a colon-separated list of its dex files to standard output. Dexopt");
   UsageError("      needed analysis is not performed when this option is set.");
   UsageError("");
+  UsageError("  --validate-bcp: validates the boot class path files (.art, .oat, .vdex).");
+  UsageError("      Requires --isa and --image options to locate artifacts.");
+  UsageError("");
   UsageError("Return code:");
   UsageError("  To make it easier to integrate with the internal tools this command will make");
   UsageError("    available its result (dexoptNeeded) as the exit/return code. i.e. it will not");
@@ -150,13 +142,14 @@ NO_RETURN static void Usage(const char *fmt, ...) {
   UsageError("        kErrorUnknownDexOptNeeded = 103");
   UsageError("");
 
-  exit(kErrorInvalidArguments);
+  exit(static_cast<int>(ReturnCode::kErrorInvalidArguments));
 }
 
 class DexoptAnalyzer final {
  public:
   DexoptAnalyzer() :
       only_flatten_context_(false),
+      only_validate_bcp_(false),
       assume_profile_changed_(false),
       downgrade_(false) {}
 
@@ -236,6 +229,8 @@ class DexoptAnalyzer final {
         }
       } else if (option == "--flatten-class-loader-context") {
         only_flatten_context_ = true;
+      } else if (option == "--validate-bcp") {
+        only_validate_bcp_ = true;
       } else {
         Usage("Unknown argument '%s'", raw_option);
       }
@@ -287,9 +282,9 @@ class DexoptAnalyzer final {
     return true;
   }
 
-  int GetDexOptNeeded() const {
+  ReturnCode GetDexOptNeeded() const {
     if (!CreateRuntime()) {
-      return kErrorCannotCreateRuntime;
+      return ReturnCode::kErrorCannotCreateRuntime;
     }
     std::unique_ptr<Runtime> runtime(Runtime::Current());
 
@@ -303,46 +298,130 @@ class DexoptAnalyzer final {
         Usage("Invalid --class-loader-context '%s'", context_str_.c_str());
       }
     }
+    if (class_loader_context != nullptr) {
+      size_t dir_index = dex_file_.rfind('/');
+      std::string classpath_dir = (dir_index != std::string::npos)
+          ? dex_file_.substr(0, dir_index)
+          : "";
+
+      if (!class_loader_context->OpenDexFiles(classpath_dir,
+                                              context_fds_,
+                                              /*only_read_checksums=*/ true)) {
+        return ReturnCode::kDex2OatFromScratch;
+      }
+    }
 
     std::unique_ptr<OatFileAssistant> oat_file_assistant;
     oat_file_assistant = std::make_unique<OatFileAssistant>(dex_file_.c_str(),
                                                             isa_,
+                                                            class_loader_context.get(),
                                                             /*load_executable=*/ false,
-                                                            /*only_load_system_executable=*/ false,
+                                                            /*only_load_trusted_executable=*/ false,
                                                             vdex_fd_,
                                                             oat_fd_,
                                                             zip_fd_);
     // Always treat elements of the bootclasspath as up-to-date.
     // TODO(calin): this check should be in OatFileAssistant.
     if (oat_file_assistant->IsInBootClassPath()) {
-      return kNoDexOptNeeded;
+      return ReturnCode::kNoDexOptNeeded;
     }
 
     int dexoptNeeded = oat_file_assistant->GetDexOptNeeded(compiler_filter_,
-                                                           class_loader_context.get(),
-                                                           context_fds_,
                                                            assume_profile_changed_,
                                                            downgrade_);
 
-    // Convert OatFileAssitant codes to dexoptanalyzer codes.
+    // Convert OatFileAssistant codes to dexoptanalyzer codes.
     switch (dexoptNeeded) {
-      case OatFileAssistant::kNoDexOptNeeded: return kNoDexOptNeeded;
-      case OatFileAssistant::kDex2OatFromScratch: return kDex2OatFromScratch;
-      case OatFileAssistant::kDex2OatForBootImage: return kDex2OatForBootImageOat;
-      case OatFileAssistant::kDex2OatForFilter: return kDex2OatForFilterOat;
+      case OatFileAssistant::kNoDexOptNeeded: return ReturnCode::kNoDexOptNeeded;
+      case OatFileAssistant::kDex2OatFromScratch: return ReturnCode::kDex2OatFromScratch;
+      case OatFileAssistant::kDex2OatForBootImage: return ReturnCode::kDex2OatForBootImageOat;
+      case OatFileAssistant::kDex2OatForFilter: return ReturnCode::kDex2OatForFilterOat;
 
-      case -OatFileAssistant::kDex2OatForBootImage: return kDex2OatForBootImageOdex;
-      case -OatFileAssistant::kDex2OatForFilter: return kDex2OatForFilterOdex;
+      case -OatFileAssistant::kDex2OatForBootImage: return ReturnCode::kDex2OatForBootImageOdex;
+      case -OatFileAssistant::kDex2OatForFilter: return ReturnCode::kDex2OatForFilterOdex;
       default:
         LOG(ERROR) << "Unknown dexoptNeeded " << dexoptNeeded;
-        return kErrorUnknownDexOptNeeded;
+        return ReturnCode::kErrorUnknownDexOptNeeded;
     }
   }
 
-  int FlattenClassLoaderContext() const {
+  // Validates the boot classpath and boot classpath extensions by checking the image checksums,
+  // the oat files and the vdex files.
+  //
+  // Returns `ReturnCode::kNoDexOptNeeded` when all the files are up-to-date,
+  // `ReturnCode::kDex2OatFromScratch` if any of the files are missing or out-of-date, and
+  // `ReturnCode::kErrorCannotCreateRuntime` if the files could not be tested due to problem
+  // creating a runtime.
+  ReturnCode ValidateBcp() const {
+    using ImageSpace = gc::space::ImageSpace;
+
+    if (!CreateRuntime()) {
+      return ReturnCode::kErrorCannotCreateRuntime;
+    }
+    std::unique_ptr<Runtime> runtime(Runtime::Current());
+
+    auto dex_files = ArrayRef<const DexFile* const>(runtime->GetClassLinker()->GetBootClassPath());
+    auto boot_image_spaces = ArrayRef<ImageSpace* const>(runtime->GetHeap()->GetBootImageSpaces());
+    const std::string checksums = ImageSpace::GetBootClassPathChecksums(boot_image_spaces,
+                                                                        dex_files);
+
+    std::string error_msg;
+    const std::vector<std::string>& bcp = runtime->GetBootClassPath();
+    const std::vector<std::string>& bcp_locations = runtime->GetBootClassPathLocations();
+    const std::string bcp_locations_path = android::base::Join(bcp_locations, ':');
+    if (!ImageSpace::VerifyBootClassPathChecksums(checksums,
+                                                  bcp_locations_path,
+                                                  runtime->GetImageLocation(),
+                                                  ArrayRef<const std::string>(bcp_locations),
+                                                  ArrayRef<const std::string>(bcp),
+                                                  runtime->GetInstructionSet(),
+                                                  &error_msg)) {
+      LOG(INFO) << "Failed to verify boot class path checksums: " << error_msg;
+      return ReturnCode::kDex2OatFromScratch;
+    }
+
+    const auto& image_spaces = runtime->GetHeap()->GetBootImageSpaces();
+    size_t bcp_component_count = 0;
+    for (const auto& image_space : image_spaces) {
+      if (!image_space->GetImageHeader().IsValid()) {
+        LOG(INFO) << "Image header is not valid: " << image_space->GetImageFilename();
+        return ReturnCode::kDex2OatFromScratch;
+      }
+      const OatFile* oat_file = image_space->GetOatFile();
+      if (oat_file == nullptr) {
+        const std::string oat_path = ReplaceFileExtension(image_space->GetImageFilename(), "oat");
+        LOG(INFO) << "Oat file missing: " << oat_path;
+        return ReturnCode::kDex2OatFromScratch;
+      }
+      if (!oat_file->GetOatHeader().IsValid() ||
+          !ImageSpace::ValidateOatFile(*oat_file, &error_msg)) {
+        LOG(INFO) << "Oat file is not valid: " << oat_file->GetLocation() << " " << error_msg;
+        return ReturnCode::kDex2OatFromScratch;
+      }
+      const VdexFile* vdex_file = oat_file->GetVdexFile();
+      if (vdex_file == nullptr || !vdex_file->IsValid()) {
+        LOG(INFO) << "Vdex file is not valid : " << oat_file->GetLocation();
+        return ReturnCode::kDex2OatFromScratch;
+      }
+      bcp_component_count += image_space->GetComponentCount();
+    }
+
+    // If the number of components encountered in the image spaces does not match the number
+    // of components expected from the boot classpath locations then something is missing.
+    if (bcp_component_count != bcp_locations.size()) {
+      for (size_t i = bcp_component_count; i < bcp_locations.size(); ++i) {
+        LOG(INFO) << "Missing image file for " << bcp_locations[i];
+      }
+      return ReturnCode::kDex2OatFromScratch;
+    }
+
+    return ReturnCode::kNoDexOptNeeded;
+  }
+
+  ReturnCode FlattenClassLoaderContext() const {
     DCHECK(only_flatten_context_);
     if (context_str_.empty()) {
-      return kErrorInvalidArguments;
+      return ReturnCode::kErrorInvalidArguments;
     }
 
     std::unique_ptr<ClassLoaderContext> context = ClassLoaderContext::Create(context_str_);
@@ -351,12 +430,14 @@ class DexoptAnalyzer final {
     }
 
     std::cout << context->FlattenDexPaths() << std::flush;
-    return kFlattenClassLoaderContextSuccess;
+    return ReturnCode::kFlattenClassLoaderContextSuccess;
   }
 
-  int Run() const {
+  ReturnCode Run() const {
     if (only_flatten_context_) {
       return FlattenClassLoaderContext();
+    } else if (only_validate_bcp_) {
+      return ValidateBcp();
     } else {
       return GetDexOptNeeded();
     }
@@ -368,6 +449,7 @@ class DexoptAnalyzer final {
   CompilerFilter::Filter compiler_filter_;
   std::string context_str_;
   bool only_flatten_context_;
+  bool only_validate_bcp_;
   bool assume_profile_changed_;
   bool downgrade_;
   std::string image_;
@@ -379,7 +461,7 @@ class DexoptAnalyzer final {
   std::vector<int> context_fds_;
 };
 
-static int dexoptAnalyze(int argc, char** argv) {
+static ReturnCode dexoptAnalyze(int argc, char** argv) {
   DexoptAnalyzer analyzer;
 
   // Parse arguments. Argument mistakes will lead to exit(kErrorInvalidArguments) in UsageError.
@@ -387,8 +469,10 @@ static int dexoptAnalyze(int argc, char** argv) {
   return analyzer.Run();
 }
 
+}  // namespace dexoptanalyzer
 }  // namespace art
 
 int main(int argc, char **argv) {
-  return art::dexoptAnalyze(argc, argv);
+  art::dexoptanalyzer::ReturnCode return_code = art::dexoptanalyzer::dexoptAnalyze(argc, argv);
+  return static_cast<int>(return_code);
 }
