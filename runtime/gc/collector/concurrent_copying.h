@@ -152,6 +152,11 @@ class ConcurrentCopying : public GarbageCollector {
   }
   void RevokeThreadLocalMarkStack(Thread* thread) REQUIRES(!mark_stack_lock_);
 
+  // Blindly return the forwarding pointer from the lockword, or null if there is none.
+  static mirror::Object* GetFwdPtrUnchecked(mirror::Object* from_ref)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
+  // If marked, return the to-space object, otherwise null.
   mirror::Object* IsMarked(mirror::Object* from_ref) override
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -161,6 +166,9 @@ class ConcurrentCopying : public GarbageCollector {
   void PushOntoMarkStack(Thread* const self, mirror::Object* obj)
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!mark_stack_lock_);
+  // Returns a to-space copy of the from-space object from_ref, and atomically installs a
+  // forwarding pointer. Ensures that the forwarding reference is visible to other threads before
+  // the returned to-space pointer becomes visible to them.
   mirror::Object* Copy(Thread* const self,
                        mirror::Object* from_ref,
                        mirror::Object* holder,
@@ -257,7 +265,7 @@ class ConcurrentCopying : public GarbageCollector {
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(Locks::heap_bitmap_lock_);
   void MarkZygoteLargeObjects()
       REQUIRES_SHARED(Locks::mutator_lock_);
-  void FillWithDummyObject(Thread* const self, mirror::Object* dummy_obj, size_t byte_size)
+  void FillWithFakeObject(Thread* const self, mirror::Object* fake_obj, size_t byte_size)
       REQUIRES(!mark_stack_lock_, !skipped_blocks_lock_, !immune_gray_stack_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
   mirror::Object* AllocateInSkippedBlock(Thread* const self, size_t alloc_size)
@@ -266,8 +274,8 @@ class ConcurrentCopying : public GarbageCollector {
   void CheckEmptyMarkStack() REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!mark_stack_lock_);
   void IssueEmptyCheckpoint() REQUIRES_SHARED(Locks::mutator_lock_);
   bool IsOnAllocStack(mirror::Object* ref) REQUIRES_SHARED(Locks::mutator_lock_);
-  mirror::Object* GetFwdPtr(mirror::Object* from_ref)
-      REQUIRES_SHARED(Locks::mutator_lock_);
+  // Return the forwarding pointer from the lockword. The argument must be in from space.
+  mirror::Object* GetFwdPtr(mirror::Object* from_ref) REQUIRES_SHARED(Locks::mutator_lock_);
   void FlipThreadRoots() REQUIRES(!Locks::mutator_lock_);
   void SwapStacks() REQUIRES_SHARED(Locks::mutator_lock_);
   void RecordLiveStackFreezeSize(Thread* self);
@@ -371,9 +379,6 @@ class ConcurrentCopying : public GarbageCollector {
   static constexpr size_t kMarkStackPoolSize = 256;
   std::vector<accounting::ObjectStack*> pooled_mark_stacks_
       GUARDED_BY(mark_stack_lock_);
-  // TODO(lokeshgidra b/140119552): remove this after bug fix.
-  std::unordered_map<Thread*, accounting::ObjectStack*> thread_mark_stack_map_
-      GUARDED_BY(mark_stack_lock_);
   Thread* thread_running_gc_;
   bool is_marking_;                       // True while marking is ongoing.
   // True while we might dispatch on the read barrier entrypoints.
@@ -465,7 +470,7 @@ class ConcurrentCopying : public GarbageCollector {
   std::vector<mirror::Object*> immune_gray_stack_ GUARDED_BY(immune_gray_stack_lock_);
 
   // Class of java.lang.Object. Filled in from WellKnownClasses in FlipCallback. Must
-  // be filled in before flipping thread roots so that FillDummyObject can run. Not
+  // be filled in before flipping thread roots so that FillWithFakeObject can run. Not
   // ObjPtr since the GC may transition to suspended and runnable between phases.
   mirror::Class* java_lang_Object_;
 
