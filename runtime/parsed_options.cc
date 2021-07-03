@@ -412,27 +412,10 @@ std::unique_ptr<RuntimeParser> ParsedOptions::MakeParser(bool ignore_unrecognize
           .IntoKey(M::CorePlatformApiPolicy)
       .Define("-Xuse-stderr-logger")
           .IntoKey(M::UseStderrLogger)
-      .Define("-Xwrite-metrics-to-log")
-          .WithHelp("Enables writing ART metrics to logcat")
-          .IntoKey(M::WriteMetricsToLog)
-      .Define("-Xwrite-metrics-to-statsd=_")
-          .WithType<bool>()
-          .WithValueMap({{"false", false}, {"true", true}})
-          .WithHelp("Enables writing ART metrics to statsd")
-          .IntoKey(M::WriteMetricsToStatsd)
-      .Define("-Xwrite-metrics-to-file=_")
-          .WithHelp("Enables writing ART metrics to the given file")
-          .WithType<std::string>()
-          .IntoKey(M::WriteMetricsToFile)
-      .Define("-Xdisable-final-metrics-report")
-          .WithHelp("Disables reporting metrics when ART shuts down")
-          .IntoKey(M::DisableFinalMetricsReport)
-      .Define("-Xmetrics-reporting-period=_")
-          .WithHelp("The time in seconds between metrics reports")
-          .WithType<unsigned int>()
-          .IntoKey(M::MetricsReportingPeriod)
       .Define("-Xonly-use-system-oat-files")
           .IntoKey(M::OnlyUseTrustedOatFiles)
+      .Define("-Xdeny-art-apex-data-files")
+          .IntoKey(M::DenyArtApexDataFiles)
       .Define("-Xverifier-logging-threshold=_")
           .WithType<unsigned int>()
           .IntoKey(M::VerifierLoggingThreshold)
@@ -738,7 +721,9 @@ bool ParsedOptions::DoParse(const RuntimeOptions& options,
   }
 
   if (!args.Exists(M::CompilerCallbacksPtr) && !args.Exists(M::Image)) {
-    std::string image = GetDefaultBootImageLocation(GetAndroidRoot());
+    const bool deny_art_apex_data_files = args.Exists(M::DenyArtApexDataFiles);
+    std::string image =
+        GetDefaultBootImageLocation(GetAndroidRoot(), deny_art_apex_data_files);
     args.Set(M::Image, image);
   }
 
