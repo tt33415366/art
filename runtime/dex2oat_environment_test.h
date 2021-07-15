@@ -70,16 +70,18 @@ class Dex2oatEnvironmentTest : public CommonRuntimeTest {
 
     // Verify the environment is as we expect
     std::vector<uint32_t> checksums;
+    std::vector<std::string> dex_locations;
     std::string error_msg;
     ASSERT_TRUE(OS::FileExists(GetSystemImageFile().c_str()))
       << "Expected pre-compiled boot image to be at: " << GetSystemImageFile();
     ASSERT_TRUE(OS::FileExists(GetDexSrc1().c_str()))
       << "Expected dex file to be at: " << GetDexSrc1();
-    ASSERT_TRUE(OS::FileExists(GetStrippedDexSrc1().c_str()))
-      << "Expected stripped dex file to be at: " << GetStrippedDexSrc1();
+    ASSERT_TRUE(OS::FileExists(GetResourceOnlySrc1().c_str()))
+      << "Expected stripped dex file to be at: " << GetResourceOnlySrc1();
     ASSERT_FALSE(
-        dex_file_loader.GetMultiDexChecksums(GetStrippedDexSrc1().c_str(), &checksums, &error_msg))
-      << "Expected stripped dex file to be stripped: " << GetStrippedDexSrc1();
+        dex_file_loader.GetMultiDexChecksums(
+            GetResourceOnlySrc1().c_str(), &checksums, &dex_locations, &error_msg))
+      << "Expected stripped dex file to be stripped: " << GetResourceOnlySrc1();
     ASSERT_TRUE(OS::FileExists(GetDexSrc2().c_str()))
       << "Expected dex file to be at: " << GetDexSrc2();
 
@@ -145,7 +147,7 @@ class Dex2oatEnvironmentTest : public CommonRuntimeTest {
 
   // Returns the path to a dex file equivalent to GetDexSrc1, but with the dex
   // file stripped.
-  std::string GetStrippedDexSrc1() const {
+  std::string GetResourceOnlySrc1() const {
     return GetTestDexFileName("MainStripped");
   }
 
