@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Copyright (C) 2020 The Android Open Source Project
+<!-- Copyright (C) 2021 The Android Open Source Project
 
      Licensed under the Apache License, Version 2.0 (the "License");
      you may not use this file except in compliance with the License.
@@ -13,21 +13,25 @@
      See the License for the specific language governing permissions and
      limitations under the License.
 -->
-<!-- Note: This test config for {MODULE} is generated from a template. -->
-<configuration description="Test module config for {MODULE}">
-    <option name="test-suite-tag" value="art-target-run-test" />
-    <option name="config-descriptor:metadata" key="mainline-param" value="com.google.android.art.apex" />
-
-    <target_preparer class="com.android.tradefed.targetprep.PushFilePreparer">
+<configuration description="Runs art_standalone_compiler_tests.">
+    <target_preparer class="com.android.compatibility.common.tradefed.targetprep.FilePusher">
         <option name="cleanup" value="true" />
-        <!-- TODO: Use option `push-file` instead of deprecated option
-             `push`. -->
-        <option name="push" value="{MODULE}.jar->/data/local/tmp/{MODULE}/{MODULE}.jar" />
+        <option name="push" value="art_standalone_compiler_tests->/data/local/tmp/nativetest/art_standalone_compiler_tests" />
+        <option name="append-bitness" value="true" />
     </target_preparer>
 
-    <test class="com.android.tradefed.testtype.ArtRunTest">
-        <option name="run-test-name" value="{MODULE}" />
-        <option name="classpath" value="/data/local/tmp/{MODULE}/{MODULE}.jar" />
+    <target_preparer class="com.android.compatibility.common.tradefed.targetprep.FilePusher">
+        <option name="cleanup" value="true" />
+        <option name="push" value="art-gtest-jars-ExceptionHandle.jar->/data/local/tmp/nativetest/art-gtest-jars-ExceptionHandle.jar" />
+        <option name="push" value="art-gtest-jars-Interfaces.jar->/data/local/tmp/nativetest/art-gtest-jars-Interfaces.jar" />
+        <option name="push" value="art-gtest-jars-MyClassNatives.jar->/data/local/tmp/nativetest/art-gtest-jars-MyClassNatives.jar" />
+    </target_preparer>
+
+    <test class="com.android.tradefed.testtype.GTest" >
+        <option name="native-test-device-path" value="/data/local/tmp/nativetest" />
+        <option name="module-name" value="art_standalone_compiler_tests" />
+        <option name="ld-library-path-32" value="/apex/com.android.art/lib" />
+        <option name="ld-library-path-64" value="/apex/com.android.art/lib64" />
     </test>
 
     <!-- When this test is run in a Mainline context (e.g. with `mts-tradefed`), only enable it if
