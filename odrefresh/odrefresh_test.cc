@@ -20,6 +20,10 @@
 #include <memory>
 #include <string_view>
 
+#ifdef __ANDROID__
+#include <android/api-level.h>
+#endif
+
 #include "android-base/properties.h"
 #include "android-base/scopeguard.h"
 #include "android-base/strings.h"
@@ -172,6 +176,14 @@ TEST_F(OdRefreshTest, OdrefreshArtifactDirectory) {
 }
 
 TEST_F(OdRefreshTest, CompileSetsCompilerFilter) {
+#ifdef __ANDROID__
+  // This test depends on a system property introduced in S. Since the whole odrefresh program is
+  // for S and later, we don't need to run the test on older platforms.
+  if (android_get_device_api_level() < __ANDROID_API_S__) {
+    return;
+  }
+#endif
+
   {
     // Defaults to "speed".
     EXPECT_CALL(

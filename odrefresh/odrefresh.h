@@ -176,6 +176,8 @@ class OnDeviceRefresh final {
 
   const time_t start_time_;
 
+  time_t max_child_process_seconds_;
+
   std::unique_ptr<ExecUtils> exec_utils_;
 
   DISALLOW_COPY_AND_ASSIGN(OnDeviceRefresh);

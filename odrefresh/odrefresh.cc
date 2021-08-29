@@ -94,6 +94,9 @@ constexpr time_t kMaximumExecutionSeconds = 300;
 // Maximum execution time for any child process spawned.
 constexpr time_t kMaxChildProcessSeconds = 90;
 
+// Extra execution time for any child process spawned in a VM.
+constexpr time_t kExtraChildProcessSecondsInVm = 30;
+
 void EraseFiles(const std::vector<std::unique_ptr<File>>& files) {
   for (auto& file : files) {
     file->Erase(/*unlink=*/true);
@@ -478,6 +481,14 @@ OnDeviceRefresh::OnDeviceRefresh(const OdrConfig& config,
 
   systemserver_compilable_jars_ = android::base::Split(config_.GetSystemServerClasspath(), ":");
   boot_classpath_jars_ = android::base::Split(config_.GetBootClasspath(), ":");
+
+  max_child_process_seconds_ = kMaxChildProcessSeconds;
+  if (config_.UseCompilationOs()) {
+    // Give extra time to all of the Comp OS cases for simplicity. But really, this is only needed
+    // on cuttlefish, where we run Comp OS in a slow, *nested* VM.
+    // TODO(197531822): Remove once we can give the VM more CPU and/or improve the file caching.
+    max_child_process_seconds_ += kExtraChildProcessSecondsInVm;
+  }
 }
 
 time_t OnDeviceRefresh::GetExecutionTimeUsed() const {
@@ -489,7 +500,7 @@ time_t OnDeviceRefresh::GetExecutionTimeRemaining() const {
 }
 
 time_t OnDeviceRefresh::GetSubprocessTimeout() const {
-  return std::max(GetExecutionTimeRemaining(), kMaxChildProcessSeconds);
+  return std::max(GetExecutionTimeRemaining(), max_child_process_seconds_);
 }
 
 std::optional<std::vector<apex::ApexInfo>> OnDeviceRefresh::GetApexInfoList() const {
@@ -771,12 +782,13 @@ WARN_UNUSED bool OnDeviceRefresh::CheckBootExtensionArtifactsAreUpToDate(
     return false;
   }
 
-  // Check lastUpdateMillis for samegrade installs. If `cached_art_info` is missing
-  // lastUpdateMillis then it is not current with the schema used by this binary so treat it as a
-  // samegrade update. Otherwise check whether the lastUpdateMillis changed.
-  if (!cached_art_info->hasLastUpdateMillis() ||
-      cached_art_info->getLastUpdateMillis() != art_apex_info.getLastUpdateMillis()) {
-    LOG(INFO) << "ART APEX last update time mismatch (" << cached_art_info->getLastUpdateMillis()
+  // Check lastUpdateMillis for samegrade installs. If `cached_art_info` is missing the
+  // lastUpdateMillis field then it is not current with the schema used by this binary so treat
+  // it as a samegrade update. Otherwise check whether the lastUpdateMillis changed.
+  const int64_t cached_art_last_update_millis =
+      cached_art_info->hasLastUpdateMillis() ? cached_art_info->getLastUpdateMillis() : -1;
+  if (cached_art_last_update_millis != art_apex_info.getLastUpdateMillis()) {
+    LOG(INFO) << "ART APEX last update time mismatch (" << cached_art_last_update_millis
               << " != " << art_apex_info.getLastUpdateMillis() << ").";
     metrics.SetTrigger(OdrMetrics::Trigger::kApexVersionMismatch);
     *cleanup_required = true;
@@ -1013,6 +1025,9 @@ WARN_UNUSED ExitCode OnDeviceRefresh::CheckArtifactsAreUpToDate(
 
   // Record ART APEX version for metrics reporting.
   metrics.SetArtApexVersion(art_apex_info->getVersionCode());
+
+  // Log the version so there's a starting point for any issues reported (b/197489543).
+  LOG(INFO) << "ART APEX version " << art_apex_info->getVersionCode();
 
   // Record ART APEX last update milliseconds (used in compilation log).
   metrics.SetArtApexLastUpdateMillis(art_apex_info->getLastUpdateMillis());
