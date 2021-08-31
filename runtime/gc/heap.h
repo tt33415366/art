@@ -972,6 +972,7 @@ class Heap {
   class ConcurrentGCTask;
   class CollectorTransitionTask;
   class HeapTrimTask;
+  class TriggerPostForkCCGcTask;
   class ReduceTargetFootprintTask;
 
   // Compact source space to target space. Returns the collector used.
