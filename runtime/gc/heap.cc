@@ -22,6 +22,9 @@
 #include <malloc.h>  // For mallinfo()
 #endif
 #include <memory>
+#include <random>
+#include <unistd.h>
+#include <sys/types.h>
 #include <vector>
 
 #include "android-base/stringprintf.h"
@@ -4491,6 +4494,27 @@ void Heap::VlogHeapGrowth(size_t old_footprint, size_t new_footprint, size_t all
              << PrettySize(new_footprint) << " for a " << PrettySize(alloc_size) << " allocation";
 }
 
+// Run a gc if we haven't run one since initial_gc_num. This forces processes to
+// reclaim memory allocated during startup, even if they don't do much
+// allocation post startup. If the process is actively allocating and triggering
+// GCs, or has moved to the background and hence forced a GC, this does nothing.
+class Heap::TriggerPostForkCCGcTask : public HeapTask {
+ public:
+  explicit TriggerPostForkCCGcTask(uint64_t target_time, uint32_t initial_gc_num) :
+      HeapTask(target_time), initial_gc_num_(initial_gc_num) {}
+  void Run(Thread* self) override {
+    gc::Heap* heap = Runtime::Current()->GetHeap();
+    if (heap->GetCurrentGcNum() == initial_gc_num_) {
+      if (kLogAllGCs) {
+        LOG(INFO) << "Forcing GC for allocation-inactive process";
+      }
+      heap->RequestConcurrentGC(self, kGcCauseBackground, false, initial_gc_num_);
+    }
+  }
+ private:
+  uint32_t initial_gc_num_;
+};
+
 // Reduce target footprint, if no GC has occurred since initial_gc_num.
 // If a GC already occurred, it will have done this for us.
 class Heap::ReduceTargetFootprintTask : public HeapTask {
@@ -4516,37 +4540,51 @@ class Heap::ReduceTargetFootprintTask : public HeapTask {
   uint32_t initial_gc_num_;
 };
 
+// Return a pseudo-random integer between 0 and 19999, using the uid as a seed.  We want this to
+// be deterministic for a given process, but to vary randomly across processes. Empirically, the
+// uids for processes for which this matters are distinct.
+static uint32_t GetPseudoRandomFromUid() {
+  std::default_random_engine rng(getuid());
+  std::uniform_int_distribution<int> dist(0, 19999);
+  return dist(rng);
+}
+
 void Heap::PostForkChildAction(Thread* self) {
+  uint32_t starting_gc_num = GetCurrentGcNum();
+  uint64_t last_adj_time = NanoTime();
+  next_gc_type_ = NonStickyGcType();  // Always start with a full gc.
+
   // Temporarily increase target_footprint_ and concurrent_start_bytes_ to
   // max values to avoid GC during app launch.
-  if (collector_type_ == kCollectorTypeCC && !IsLowMemoryMode()) {
+  if (!IsLowMemoryMode()) {
     // Set target_footprint_ to the largest allowed value.
     SetIdealFootprint(growth_limit_);
     SetDefaultConcurrentStartBytes();
 
-    uint32_t starting_gc_num = GetCurrentGcNum();
-    uint64_t current_time = NanoTime();
-    next_gc_type_ = NonStickyGcType();
     // Shrink heap after kPostForkMaxHeapDurationMS, to force a memory hog process to GC.
     // This remains high enough that many processes will continue without a GC.
     if (initial_heap_size_ < growth_limit_) {
       size_t first_shrink_size = std::max(growth_limit_ / 4, initial_heap_size_);
+      last_adj_time += MsToNs(kPostForkMaxHeapDurationMS);
       GetTaskProcessor()->AddTask(
-          self, new ReduceTargetFootprintTask(current_time + MsToNs(kPostForkMaxHeapDurationMS),
-                                              first_shrink_size,
-                                              starting_gc_num));
+          self, new ReduceTargetFootprintTask(last_adj_time, first_shrink_size, starting_gc_num));
       // Shrink to a small value after a substantial time period. This will typically force a
       // GC if none has occurred yet. Has no effect if there was a GC before this anyway, which
       // is commonly the case, e.g. because of a process transition.
       if (initial_heap_size_ < first_shrink_size) {
+        last_adj_time += MsToNs(4 * kPostForkMaxHeapDurationMS);
         GetTaskProcessor()->AddTask(
             self,
-            new ReduceTargetFootprintTask(current_time +  5 * MsToNs(kPostForkMaxHeapDurationMS),
-                                          initial_heap_size_,
-                                          starting_gc_num));
+            new ReduceTargetFootprintTask(last_adj_time, initial_heap_size_, starting_gc_num));
       }
     }
   }
+  // Schedule a GC after a substantial period of time. This will become a no-op if another GC is
+  // scheduled in the interim. If not, we want to avoid holding onto start-up garbage.
+  uint64_t post_fork_gc_time = last_adj_time
+      + MsToNs(4 * kPostForkMaxHeapDurationMS + GetPseudoRandomFromUid());
+  GetTaskProcessor()->AddTask(self,
+                              new TriggerPostForkCCGcTask(post_fork_gc_time, starting_gc_num));
 }
 
 void Heap::VisitReflectiveTargets(ReflectiveValueVisitor *visit) {
