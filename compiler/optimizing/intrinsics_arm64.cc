@@ -3819,6 +3819,69 @@ void IntrinsicCodeGeneratorARM64::VisitFP16LessEquals(HInvoke* invoke) {
   GenerateFP16Compare(invoke, codegen_, masm, ls);
 }
 
+void IntrinsicLocationsBuilderARM64::VisitFP16Compare(HInvoke* invoke) {
+  if (!codegen_->GetInstructionSetFeatures().HasFP16()) {
+    return;
+  }
+
+  CreateIntIntToIntLocations(allocator_, invoke);
+  invoke->GetLocations()->AddTemp(Location::RequiresFpuRegister());
+  invoke->GetLocations()->AddTemp(Location::RequiresFpuRegister());
+}
+
+void IntrinsicCodeGeneratorARM64::VisitFP16Compare(HInvoke* invoke) {
+  MacroAssembler* masm = GetVIXLAssembler();
+  auto compareOp = [masm](const Register out,
+                          const VRegister& in0,
+                          const VRegister& in1) {
+    vixl::aarch64::Label end;
+    vixl::aarch64::Label equal;
+    vixl::aarch64::Label normal;
+
+    // The normal cases for this method are:
+    // - in0 > in1 => out = 1
+    // - in0 < in1 => out = -1
+    // - in0 == in1 => out = 0
+    // +/-Infinity are ordered by default so are handled by the normal case.
+    // There are two special cases that Fcmp is insufficient for distinguishing:
+    // - in0 and in1 are +0 and -0 => +0 > -0 so compare encoding instead of value
+    // - in0 or in1 is NaN => manually compare with in0 and in1 separately
+    __ Fcmp(in0, in1);
+    __ B(eq, &equal);  // in0==in1 or +0 -0 case.
+    __ B(vc, &normal);  // in0 and in1 are ordered (not NaN).
+
+    // Either of the inputs is NaN.
+    // NaN is equal to itself and greater than any other number so:
+    // - if only in0 is NaN => return 1
+    // - if only in1 is NaN => return -1
+    // - if both in0 and in1 are NaN => return 0
+    __ Fcmp(in0, 0.0);
+    __ Mov(out, -1);
+    __ B(vc, &end);  // in0 != NaN => out = -1.
+    __ Fcmp(in1, 0.0);
+    __ Cset(out, vc);  // if in1 != NaN => out = 1, otherwise both are NaNs => out = 0.
+    __ B(&end);
+
+    // in0 == in1 or if one of the inputs is +0 and the other is -0.
+    __ Bind(&equal);
+    // Compare encoding of in0 and in1 as the denormal fraction of single precision float.
+    // Reverse operand order because -0 > +0 when compared as S registers.
+    // The instruction Fmov(Hregister, Wregister) zero extends the Hregister.
+    // Therefore the value of bits[127:16] will not matter when doing the
+    // below Fcmp as they are set to 0.
+    __ Fcmp(in1.S(), in0.S());
+
+    __ Bind(&normal);
+    __ Cset(out, gt);  // if in0 > in1 => out = 1, otherwise out = 0.
+                       // Note: could be from equals path or original comparison
+    __ Csinv(out, out, wzr, pl);  // if in0 >= in1 out=out, otherwise out=-1.
+
+    __ Bind(&end);
+  };
+
+  GenerateFP16Compare(invoke, codegen_, masm, compareOp);
+}
+
 static void GenerateDivideUnsigned(HInvoke* invoke, CodeGeneratorARM64* codegen) {
   LocationSummary* locations = invoke->GetLocations();
   MacroAssembler* masm = codegen->GetVIXLAssembler();
@@ -4045,6 +4108,7 @@ static void GenerateVarHandleStaticFieldCheck(HInvoke* invoke,
 static void GenerateVarHandleInstanceFieldChecks(HInvoke* invoke,
                                                  CodeGeneratorARM64* codegen,
                                                  SlowPathCodeARM64* slow_path) {
+  VarHandleOptimizations optimizations(invoke);
   MacroAssembler* masm = codegen->GetVIXLAssembler();
   Register varhandle = InputRegisterAt(invoke, 0);
   Register object = InputRegisterAt(invoke, 1);
@@ -4053,7 +4117,9 @@ static void GenerateVarHandleInstanceFieldChecks(HInvoke* invoke,
   const MemberOffset coordinate_type1_offset = mirror::VarHandle::CoordinateType1Offset();
 
   // Null-check the object.
-  __ Cbz(object, slow_path->GetEntryLabel());
+  if (!optimizations.GetSkipObjectNullCheck()) {
+    __ Cbz(object, slow_path->GetEntryLabel());
+  }
 
   UseScratchRegisterScope temps(masm);
   Register temp = temps.AcquireW();
@@ -4090,6 +4156,7 @@ static DataType::Type GetVarHandleExpectedValueType(HInvoke* invoke,
 static void GenerateVarHandleArrayChecks(HInvoke* invoke,
                                          CodeGeneratorARM64* codegen,
                                          VarHandleSlowPathARM64* slow_path) {
+  VarHandleOptimizations optimizations(invoke);
   MacroAssembler* masm = codegen->GetVIXLAssembler();
   Register varhandle = InputRegisterAt(invoke, 0);
   Register object = InputRegisterAt(invoke, 1);
@@ -4106,7 +4173,9 @@ static void GenerateVarHandleArrayChecks(HInvoke* invoke,
   const MemberOffset array_length_offset = mirror::Array::LengthOffset();
 
   // Null-check the object.
-  __ Cbz(object, slow_path->GetEntryLabel());
+  if (!optimizations.GetSkipObjectNullCheck()) {
+    __ Cbz(object, slow_path->GetEntryLabel());
+  }
 
   UseScratchRegisterScope temps(masm);
   Register temp = temps.AcquireW();
@@ -4262,91 +4331,6 @@ static void GenerateVarHandleTarget(HInvoke* invoke,
   }
 }
 
-static bool HasVarHandleIntrinsicImplementation(HInvoke* invoke) {
-  size_t expected_coordinates_count = GetExpectedVarHandleCoordinatesCount(invoke);
-  if (expected_coordinates_count > 2u) {
-    // Invalid coordinate count. This invoke shall throw at runtime.
-    return false;
-  }
-  if (expected_coordinates_count != 0u &&
-      invoke->InputAt(1)->GetType() != DataType::Type::kReference) {
-    // Except for static fields (no coordinates), the first coordinate must be a reference.
-    return false;
-  }
-  if (expected_coordinates_count == 2u) {
-    // For arrays and views, the second coordinate must be convertible to `int`.
-    // In this context, `boolean` is not convertible but we have to look at the shorty
-    // as compiler transformations can give the invoke a valid boolean input.
-    DataType::Type index_type = GetDataTypeFromShorty(invoke, 2);
-    if (index_type == DataType::Type::kBool ||
-        DataType::Kind(index_type) != DataType::Type::kInt32) {
-      return false;
-    }
-  }
-
-  uint32_t number_of_arguments = invoke->GetNumberOfArguments();
-  DataType::Type return_type = invoke->GetType();
-  mirror::VarHandle::AccessModeTemplate access_mode_template =
-      mirror::VarHandle::GetAccessModeTemplateByIntrinsic(invoke->GetIntrinsic());
-  switch (access_mode_template) {
-    case mirror::VarHandle::AccessModeTemplate::kGet:
-      // The return type should be the same as varType, so it shouldn't be void.
-      if (return_type == DataType::Type::kVoid) {
-        return false;
-      }
-      break;
-    case mirror::VarHandle::AccessModeTemplate::kSet:
-      if (return_type != DataType::Type::kVoid) {
-        return false;
-      }
-      break;
-    case mirror::VarHandle::AccessModeTemplate::kCompareAndSet: {
-      if (return_type != DataType::Type::kBool) {
-        return false;
-      }
-      uint32_t expected_value_index = number_of_arguments - 2;
-      uint32_t new_value_index = number_of_arguments - 1;
-      DataType::Type expected_value_type = GetDataTypeFromShorty(invoke, expected_value_index);
-      DataType::Type new_value_type = GetDataTypeFromShorty(invoke, new_value_index);
-      if (expected_value_type != new_value_type) {
-        return false;
-      }
-      break;
-    }
-    case mirror::VarHandle::AccessModeTemplate::kCompareAndExchange: {
-      uint32_t expected_value_index = number_of_arguments - 2;
-      uint32_t new_value_index = number_of_arguments - 1;
-      DataType::Type expected_value_type = GetDataTypeFromShorty(invoke, expected_value_index);
-      DataType::Type new_value_type = GetDataTypeFromShorty(invoke, new_value_index);
-      if (expected_value_type != new_value_type || return_type != expected_value_type) {
-        return false;
-      }
-      break;
-    }
-    case mirror::VarHandle::AccessModeTemplate::kGetAndUpdate: {
-      DataType::Type value_type = GetDataTypeFromShorty(invoke, number_of_arguments - 1);
-      if (IsVarHandleGetAndAdd(invoke) &&
-          (value_type == DataType::Type::kReference || value_type == DataType::Type::kBool)) {
-        // We should only add numerical types.
-        return false;
-      } else if (IsVarHandleGetAndBitwiseOp(invoke) && !DataType::IsIntegralType(value_type)) {
-        // We can only apply operators to bitwise integral types.
-        // Note that bitwise VarHandle operations accept a non-integral boolean type and
-        // perform the appropriate logical operation. However, the result is the same as
-        // using the bitwise operation on our boolean representation and this fits well
-        // with DataType::IsIntegralType() treating the compiler type kBool as integral.
-        return false;
-      }
-      if (value_type != return_type) {
-        return false;
-      }
-      break;
-    }
-  }
-
-  return true;
-}
-
 static LocationSummary* CreateVarHandleCommonLocations(HInvoke* invoke) {
   size_t expected_coordinates_count = GetExpectedVarHandleCoordinatesCount(invoke);
   DataType::Type return_type = invoke->GetType();
@@ -4399,7 +4383,8 @@ static LocationSummary* CreateVarHandleCommonLocations(HInvoke* invoke) {
 }
 
 static void CreateVarHandleGetLocations(HInvoke* invoke) {
-  if (!HasVarHandleIntrinsicImplementation(invoke)) {
+  VarHandleOptimizations optimizations(invoke);
+  if (optimizations.GetDoNotIntrinsify()) {
     return;
   }
 
@@ -4525,7 +4510,8 @@ void IntrinsicCodeGeneratorARM64::VisitVarHandleGetVolatile(HInvoke* invoke) {
 }
 
 static void CreateVarHandleSetLocations(HInvoke* invoke) {
-  if (!HasVarHandleIntrinsicImplementation(invoke)) {
+  VarHandleOptimizations optimizations(invoke);
+  if (optimizations.GetDoNotIntrinsify()) {
     return;
   }
 
@@ -4630,7 +4616,8 @@ void IntrinsicCodeGeneratorARM64::VisitVarHandleSetVolatile(HInvoke* invoke) {
 }
 
 static void CreateVarHandleCompareAndSetOrExchangeLocations(HInvoke* invoke, bool return_success) {
-  if (!HasVarHandleIntrinsicImplementation(invoke)) {
+  VarHandleOptimizations optimizations(invoke);
+  if (optimizations.GetDoNotIntrinsify()) {
     return;
   }
 
@@ -4977,7 +4964,8 @@ void IntrinsicCodeGeneratorARM64::VisitVarHandleWeakCompareAndSetRelease(HInvoke
 
 static void CreateVarHandleGetAndUpdateLocations(HInvoke* invoke,
                                                  GetAndUpdateOp get_and_update_op) {
-  if (!HasVarHandleIntrinsicImplementation(invoke)) {
+  VarHandleOptimizations optimizations(invoke);
+  if (optimizations.GetDoNotIntrinsify()) {
     return;
   }
 
