@@ -498,7 +498,7 @@ static bool ComputeAndCheckTypeLookupTableData(const DexFile::Header& header,
                      expected_table_size);
     return false;
   }
-  if (UNLIKELY(*type_lookup_table_data > vdex_file->End())) {
+  if (UNLIKELY(!vdex_file->Contains(*type_lookup_table_data))) {
     *error_msg =
         StringPrintf("In vdex file '%s' found invalid type lookup table pointer %p not in [%p, %p]",
                      vdex_file->GetName().c_str(),
@@ -507,7 +507,7 @@ static bool ComputeAndCheckTypeLookupTableData(const DexFile::Header& header,
                      vdex_file->End());
     return false;
   }
-  if (UNLIKELY(*type_lookup_table_data + expected_table_size > vdex_file->End())) {
+  if (UNLIKELY(!vdex_file->Contains(*type_lookup_table_data + expected_table_size - 1))) {
     *error_msg =
         StringPrintf("In vdex file '%s' found overflowing type lookup table %p not in [%p, %p]",
                      vdex_file->GetName().c_str(),
@@ -550,7 +550,6 @@ bool OatFileBase::Setup(const std::vector<const DexFile*>& dex_files, std::strin
         dex_location,
         canonical_location,
         type_lookup_table_data);
-    dex_file->SetOatDexFile(oat_dex_file);
     oat_dex_files_storage_.push_back(oat_dex_file);
 
     // Add the location and canonical location (if different) to the oat_dex_files_ table.
@@ -560,6 +559,10 @@ bool OatFileBase::Setup(const std::vector<const DexFile*>& dex_files, std::strin
       std::string_view canonical_key(oat_dex_file->GetCanonicalDexFileLocation());
       oat_dex_files_.Put(canonical_key, oat_dex_file);
     }
+  }
+  // Now that we've created all the OatDexFile, update the dex files.
+  for (i = 0; i < dex_files.size(); ++i) {
+    dex_files[i]->SetOatDexFile(oat_dex_files_storage_[i]);
   }
   return true;
 }
@@ -1639,7 +1642,7 @@ class OatFileBackedByVdex final : public OatFileBase {
     // Initialize OatDexFiles.
     std::string error_msg;
     if (!oat_file->Setup(dex_files, &error_msg)) {
-      LOG(ERROR) << "Could not create in-memory vdex file: " << error_msg;
+      LOG(WARNING) << "Could not create in-memory vdex file: " << error_msg;
       return nullptr;
     }
     return oat_file.release();
@@ -1660,7 +1663,7 @@ class OatFileBackedByVdex final : public OatFileBase {
            dex_file_start != nullptr;
            dex_file_start = vdex_file->GetNextDexFileData(dex_file_start, ++i)) {
         const DexFile::Header* header = reinterpret_cast<const DexFile::Header*>(dex_file_start);
-        if (UNLIKELY(dex_file_start >= vdex_file->End())) {
+        if (UNLIKELY(!vdex_file->Contains(dex_file_start))) {
           *error_msg =
               StringPrintf("In vdex file '%s' found invalid dex file pointer %p not in [%p, %p]",
                            dex_location.c_str(),
@@ -1669,9 +1672,9 @@ class OatFileBackedByVdex final : public OatFileBase {
                            vdex_file->End());
           return nullptr;
         }
-        if (UNLIKELY(dex_file_start + header->file_size_ > vdex_file->End())) {
+        if (UNLIKELY(!vdex_file->Contains(dex_file_start + header->file_size_ - 1))) {
           *error_msg =
-              StringPrintf("In vdex file '%s' found invalid dex file size %p not in [%p, %p]",
+              StringPrintf("In vdex file '%s' found overflowing dex file %p not in [%p, %p]",
                            dex_location.c_str(),
                            dex_file_start + header->file_size_,
                            vdex_file->Begin(),
