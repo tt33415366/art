@@ -1064,9 +1064,9 @@ static ObjPtr<mirror::Object> CreateInstanceOf(Thread* self, const char* class_d
 
 void UnstartedRuntime::UnstartedThreadLocalGet(
     Thread* self, ShadowFrame* shadow_frame, JValue* result, size_t arg_offset ATTRIBUTE_UNUSED) {
-  if (CheckCallers(shadow_frame, { "sun.misc.FloatingDecimal$BinaryToASCIIBuffer "
-                                       "sun.misc.FloatingDecimal.getBinaryToASCIIBuffer()" })) {
-    result->SetL(CreateInstanceOf(self, "Lsun/misc/FloatingDecimal$BinaryToASCIIBuffer;"));
+  if (CheckCallers(shadow_frame, { "jdk.internal.math.FloatingDecimal$BinaryToASCIIBuffer "
+                                       "jdk.internal.math.FloatingDecimal.getBinaryToASCIIBuffer()" })) {
+    result->SetL(CreateInstanceOf(self, "Ljdk/internal/math/FloatingDecimal$BinaryToASCIIBuffer;"));
   } else {
     AbortTransactionOrFail(self,
                            "ThreadLocal.get() does not support %s",
@@ -1077,14 +1077,14 @@ void UnstartedRuntime::UnstartedThreadLocalGet(
 void UnstartedRuntime::UnstartedThreadCurrentThread(
     Thread* self, ShadowFrame* shadow_frame, JValue* result, size_t arg_offset ATTRIBUTE_UNUSED) {
   if (CheckCallers(shadow_frame,
-                   { "void java.lang.Thread.init(java.lang.ThreadGroup, java.lang.Runnable, "
-                         "java.lang.String, long, java.security.AccessControlContext)",
-                     "void java.lang.Thread.init(java.lang.ThreadGroup, java.lang.Runnable, "
+                   { "void java.lang.Thread.<init>(java.lang.ThreadGroup, java.lang.Runnable, "
+                         "java.lang.String, long, java.security.AccessControlContext, boolean)",
+                     "void java.lang.Thread.<init>(java.lang.ThreadGroup, java.lang.Runnable, "
                          "java.lang.String, long)",
                      "void java.lang.Thread.<init>()",
                      "void java.util.logging.LogManager$Cleaner.<init>("
                          "java.util.logging.LogManager)" })) {
-    // Whitelist LogManager$Cleaner, which is an unstarted Thread (for a shutdown hook). The
+    // Allow list LogManager$Cleaner, which is an unstarted Thread (for a shutdown hook). The
     // Thread constructor only asks for the current thread to set up defaults and add the
     // thread as unstarted to the ThreadGroup. A faked-up main thread peer is good enough for
     // these purposes.
@@ -1113,14 +1113,14 @@ void UnstartedRuntime::UnstartedThreadGetNativeState(
   if (CheckCallers(shadow_frame,
                    { "java.lang.Thread$State java.lang.Thread.getState()",
                      "java.lang.ThreadGroup java.lang.Thread.getThreadGroup()",
-                     "void java.lang.Thread.init(java.lang.ThreadGroup, java.lang.Runnable, "
-                         "java.lang.String, long, java.security.AccessControlContext)",
-                     "void java.lang.Thread.init(java.lang.ThreadGroup, java.lang.Runnable, "
+                     "void java.lang.Thread.<init>(java.lang.ThreadGroup, java.lang.Runnable, "
+                         "java.lang.String, long, java.security.AccessControlContext, boolean)",
+                     "void java.lang.Thread.<init>(java.lang.ThreadGroup, java.lang.Runnable, "
                          "java.lang.String, long)",
                      "void java.lang.Thread.<init>()",
                      "void java.util.logging.LogManager$Cleaner.<init>("
                          "java.util.logging.LogManager)" })) {
-    // Whitelist reading the state of the "main" thread when creating another (unstarted) thread
+    // Allow list reading the state of the "main" thread when creating another (unstarted) thread
     // for LogManager. Report the thread as "new" (it really only counts that it isn't terminated).
     constexpr int32_t kJavaRunnable = 1;
     result->SetI(kJavaRunnable);
