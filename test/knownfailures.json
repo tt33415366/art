@@ -520,7 +520,8 @@
             "607-daemon-stress",
             "602-deoptimizeable",
             "121-simple-suspend-check",
-            "083-compiler-regressions"
+            "083-compiler-regressions",
+            "830-goto-zero"
         ],
         "description": ["Tests that have failed on redefine stress for unknown reasons"],
         "bug": "b/73177368",
@@ -1156,6 +1157,8 @@
                   "822-hiddenapi-future",
                   "827-resolve-method",
                   "830-goto-zero",
+                  "831-unverified-bcp",
+                  "831-unresolved-field",
                   "999-redefine-hiddenapi",
                   "1000-non-moving-space-stress",
                   "1001-app-image-regions",
@@ -1432,5 +1435,12 @@
         "variant": "host",
         "bug": "b/176786675",
         "description": ["Out of memory"]
+    },
+    {
+        "tests": ["2235-JdkUnsafeTest",
+                  "2236-JdkUnsafeGetLong-regression"],
+        "variant": "jvm",
+        "bug": "b/195387473",
+        "description": ["Depends on using language level 11."]
     }
 ]

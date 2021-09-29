@@ -93,9 +93,6 @@ class MethodHandlesLookup;
 class MethodType;
 template<class T> class ObjectArray;
 class StackTraceElement;
-template <typename T> struct NativeDexCachePair;
-using MethodDexCachePair = NativeDexCachePair<ArtMethod>;
-using MethodDexCacheType = std::atomic<MethodDexCachePair>;
 }  // namespace mirror
 
 namespace verifier {
@@ -959,7 +956,7 @@ class ClassLinker {
   // Used for tests and AppendToBootClassPath.
   ObjPtr<mirror::DexCache> AllocAndInitializeDexCache(Thread* self,
                                                       const DexFile& dex_file,
-                                                      LinearAlloc* linear_alloc)
+                                                      ObjPtr<mirror::ClassLoader> class_loader)
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_)
       REQUIRES(!Roles::uninterruptible_);
@@ -1024,20 +1021,26 @@ class ClassLinker {
   // dex files and does not recurse into its parent.
   // The method checks that the provided class loader is either a PathClassLoader or a
   // DexClassLoader.
-  // If the class is found the method returns the resolved class. Otherwise it returns null.
-  ObjPtr<mirror::Class> FindClassInBaseDexClassLoaderClassPath(
+  // If the class is found the method updates `result`.
+  // The method always returns true, to notify to the caller a
+  // BaseDexClassLoader has a known lookup.
+  bool FindClassInBaseDexClassLoaderClassPath(
           ScopedObjectAccessAlreadyRunnable& soa,
           const char* descriptor,
           size_t hash,
-          Handle<mirror::ClassLoader> class_loader)
+          Handle<mirror::ClassLoader> class_loader,
+          /*out*/ ObjPtr<mirror::Class>* result)
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
   // Finds the class in the boot class loader.
-  // If the class is found the method returns the resolved class. Otherwise it returns null.
-  ObjPtr<mirror::Class> FindClassInBootClassLoaderClassPath(Thread* self,
-                                                            const char* descriptor,
-                                                            size_t hash)
+  // If the class is found the method updates `result`.
+  // The method always returns true, to notify to the caller the
+  // boot class loader has a known lookup.
+  bool FindClassInBootClassLoaderClassPath(Thread* self,
+                                           const char* descriptor,
+                                           size_t hash,
+                                           /*out*/ ObjPtr<mirror::Class>* result)
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
