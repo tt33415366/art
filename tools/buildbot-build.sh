@@ -110,6 +110,9 @@ if [[ $build_target == "yes" ]]; then
   make_command+=" build-art-target-tests"
   make_command+=" libnetd_client-target toybox sh libtombstoned_client"
   make_command+=" debuggerd su"
+  # testrunner in chroot requires the class files for conscrypt and ICU (cf.
+  # https://r.android.com/1828052).
+  make_command+=" conscrypt core-icu4j"
   make_command+=" ${ANDROID_PRODUCT_OUT#"${ANDROID_BUILD_TOP}/"}/system/etc/public.libraries.txt"
   # Targets required to generate a linker configuration for device within the
   # chroot environment. The *.libraries.txt targets are required by
