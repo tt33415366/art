@@ -675,13 +675,6 @@ class HGraph : public ArenaObject<kArenaAllocGraph> {
     return cha_single_implementation_list_;
   }
 
-  // In case of OSR we intend to use SuspendChecks as an entry point to the
-  // function; for debuggable graphs we might deoptimize to interpreter from
-  // SuspendChecks. In these cases we shouldn't remove them.
-  bool SuspendChecksAreAllowedToBeRemoved() const {
-    return !IsDebuggable() && !IsCompilingOsr();
-  }
-
   void AddCHASingleImplementationDependency(ArtMethod* method) {
     cha_single_implementation_list_.insert(method);
   }
@@ -4939,7 +4932,18 @@ class HInvokeStaticOrDirect final : public HInvoke {
   }
 
   MethodLoadKind GetMethodLoadKind() const { return dispatch_info_.method_load_kind; }
-  CodePtrLocation GetCodePtrLocation() const { return dispatch_info_.code_ptr_location; }
+  CodePtrLocation GetCodePtrLocation() const {
+    // We do CHA analysis after sharpening. When a method has CHA inlining, it
+    // cannot call itself, as if the CHA optmization is invalid we want to make
+    // sure the method is never executed again. So, while sharpening can return
+    // kCallSelf, we bypass it here if there is a CHA optimization.
+    if (dispatch_info_.code_ptr_location == CodePtrLocation::kCallSelf &&
+        GetBlock()->GetGraph()->HasShouldDeoptimizeFlag()) {
+      return CodePtrLocation::kCallArtMethod;
+    } else {
+      return dispatch_info_.code_ptr_location;
+    }
+  }
   bool IsRecursive() const { return GetMethodLoadKind() == MethodLoadKind::kRecursive; }
   bool IsStringInit() const { return GetMethodLoadKind() == MethodLoadKind::kStringInit; }
   bool HasMethodAddress() const { return GetMethodLoadKind() == MethodLoadKind::kJitDirectAddress; }
