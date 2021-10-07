@@ -63,6 +63,10 @@ class Object;
 template <typename MirrorType> class ObjectArray;
 class PointerArray;
 class String;
+
+template <typename T> struct NativeDexCachePair;
+using MethodDexCachePair = NativeDexCachePair<ArtMethod>;
+using MethodDexCacheType = std::atomic<MethodDexCachePair>;
 }  // namespace mirror
 
 class ArtMethod final {
@@ -616,6 +620,8 @@ class ArtMethod final {
   ALWAYS_INLINE std::string_view GetNameView() REQUIRES_SHARED(Locks::mutator_lock_);
 
   ObjPtr<mirror::String> ResolveNameString() REQUIRES_SHARED(Locks::mutator_lock_);
+
+  bool NameEquals(ObjPtr<mirror::String> name) REQUIRES_SHARED(Locks::mutator_lock_);
 
   const dex::CodeItem* GetCodeItem() REQUIRES_SHARED(Locks::mutator_lock_);
 

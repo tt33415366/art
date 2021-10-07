@@ -1114,6 +1114,49 @@ void ImageWriter::VisitClassLoaders(ClassLoaderVisitor* visitor) {
   Runtime::Current()->GetClassLinker()->VisitClassLoaders(visitor);
 }
 
+void ImageWriter::ClearDexCache(ObjPtr<mirror::DexCache> dex_cache) {
+  // Clear methods.
+  mirror::MethodDexCacheType* resolved_methods = dex_cache->GetResolvedMethods();
+  for (size_t slot_idx = 0, num = dex_cache->NumResolvedMethods(); slot_idx != num; ++slot_idx) {
+    mirror::MethodDexCachePair invalid(nullptr,
+                                       mirror::MethodDexCachePair::InvalidIndexForSlot(slot_idx));
+    mirror::DexCache::SetNativePair(resolved_methods, slot_idx, invalid);
+  }
+  // Clear fields.
+  mirror::FieldDexCacheType* resolved_fields = dex_cache->GetResolvedFields();
+  for (size_t slot_idx = 0, num = dex_cache->NumResolvedFields(); slot_idx != num; ++slot_idx) {
+    mirror::FieldDexCachePair invalid(nullptr,
+                                      mirror::FieldDexCachePair::InvalidIndexForSlot(slot_idx));
+    mirror::DexCache::SetNativePair(resolved_fields, slot_idx, invalid);
+  }
+  // Clear types.
+  mirror::TypeDexCacheType* resolved_types = dex_cache->GetResolvedTypes();
+  for (size_t slot_idx = 0, num = dex_cache->NumResolvedTypes(); slot_idx != num; ++slot_idx) {
+    mirror::TypeDexCachePair invalid(nullptr,
+                                     mirror::TypeDexCachePair::InvalidIndexForSlot(slot_idx));
+    resolved_types[slot_idx].store(invalid, std::memory_order_relaxed);
+  }
+  // Clear strings.
+  mirror::StringDexCacheType* resolved_strings = dex_cache->GetStrings();
+  for (size_t slot_idx = 0, num = dex_cache->NumStrings(); slot_idx != num; ++slot_idx) {
+    mirror::StringDexCachePair invalid(nullptr,
+                                       mirror::StringDexCachePair::InvalidIndexForSlot(slot_idx));
+    resolved_strings[slot_idx].store(invalid, std::memory_order_relaxed);
+  }
+  // Clear method types.
+  mirror::MethodTypeDexCacheType* resolved_method_types = dex_cache->GetResolvedMethodTypes();
+  size_t num_resolved_method_types = dex_cache->NumResolvedMethodTypes();
+  for (size_t slot_idx = 0; slot_idx != num_resolved_method_types; ++slot_idx) {
+    mirror::MethodTypeDexCachePair invalid(
+        nullptr, mirror::MethodTypeDexCachePair::InvalidIndexForSlot(slot_idx));
+    resolved_method_types[slot_idx].store(invalid, std::memory_order_relaxed);
+  }
+  // Clear call sites.
+  std::fill_n(dex_cache->GetResolvedCallSites(),
+              dex_cache->NumResolvedCallSites(),
+              GcRoot<mirror::CallSite>(nullptr));
+}
+
 void ImageWriter::PruneNonImageClasses() {
   Runtime* runtime = Runtime::Current();
   ClassLinker* class_linker = runtime->GetClassLinker();
@@ -1147,7 +1190,7 @@ void ImageWriter::PruneNonImageClasses() {
   // Completely clear DexCaches.
   std::vector<ObjPtr<mirror::DexCache>> dex_caches = FindDexCaches(self);
   for (ObjPtr<mirror::DexCache> dex_cache : dex_caches) {
-    dex_cache->ResetNativeArrays();
+    ClearDexCache(dex_cache);
   }
 
   // Drop the array class cache in the ClassLinker, as these are roots holding those classes live.
@@ -1162,7 +1205,8 @@ std::vector<ObjPtr<mirror::DexCache>> ImageWriter::FindDexCaches(Thread* self) {
   ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
   ReaderMutexLock mu2(self, *Locks::dex_lock_);
   dex_caches.reserve(class_linker->GetDexCachesData().size());
-  for (const ClassLinker::DexCacheData& data : class_linker->GetDexCachesData()) {
+  for (const auto& entry : class_linker->GetDexCachesData()) {
+    const ClassLinker::DexCacheData& data = entry.second;
     if (self->IsJWeakCleared(data.weak_root)) {
       continue;
     }
@@ -1213,7 +1257,8 @@ ObjPtr<mirror::ObjectArray<mirror::Object>> ImageWriter::CollectDexCaches(Thread
   {
     ReaderMutexLock mu(self, *Locks::dex_lock_);
     // Count number of dex caches not in the boot image.
-    for (const ClassLinker::DexCacheData& data : class_linker->GetDexCachesData()) {
+    for (const auto& entry : class_linker->GetDexCachesData()) {
+      const ClassLinker::DexCacheData& data = entry.second;
       ObjPtr<mirror::DexCache> dex_cache =
           ObjPtr<mirror::DexCache>::DownCast(self->DecodeJObject(data.weak_root));
       if (dex_cache == nullptr) {
@@ -1230,23 +1275,10 @@ ObjPtr<mirror::ObjectArray<mirror::Object>> ImageWriter::CollectDexCaches(Thread
   CHECK(dex_caches != nullptr) << "Failed to allocate a dex cache array.";
   {
     ReaderMutexLock mu(self, *Locks::dex_lock_);
-    size_t non_image_dex_caches = 0;
-    // Re-count number of non image dex caches.
-    for (const ClassLinker::DexCacheData& data : class_linker->GetDexCachesData()) {
-      ObjPtr<mirror::DexCache> dex_cache =
-          ObjPtr<mirror::DexCache>::DownCast(self->DecodeJObject(data.weak_root));
-      if (dex_cache == nullptr) {
-        continue;
-      }
-      const DexFile* dex_file = dex_cache->GetDexFile();
-      if (IsImageDexCache(dex_cache)) {
-        non_image_dex_caches += image_dex_files.find(dex_file) != image_dex_files.end() ? 1u : 0u;
-      }
-    }
-    CHECK_EQ(dex_cache_count, non_image_dex_caches)
-        << "The number of non-image dex caches changed.";
-    size_t i = 0;
-    for (const ClassLinker::DexCacheData& data : class_linker->GetDexCachesData()) {
+    // Collect all dex caches (and sort them by registration index to make output deterministic).
+    std::map<uint64_t, ObjPtr<mirror::DexCache>> non_image_dex_caches;
+    for (const auto& entry : class_linker->GetDexCachesData()) {
+      const ClassLinker::DexCacheData& data = entry.second;
       ObjPtr<mirror::DexCache> dex_cache =
           ObjPtr<mirror::DexCache>::DownCast(self->DecodeJObject(data.weak_root));
       if (dex_cache == nullptr) {
@@ -1255,9 +1287,16 @@ ObjPtr<mirror::ObjectArray<mirror::Object>> ImageWriter::CollectDexCaches(Thread
       const DexFile* dex_file = dex_cache->GetDexFile();
       if (IsImageDexCache(dex_cache) &&
           image_dex_files.find(dex_file) != image_dex_files.end()) {
-        dex_caches->Set<false>(i, dex_cache.Ptr());
-        ++i;
+        bool inserted = non_image_dex_caches.emplace(data.registration_index, dex_cache).second;
+        CHECK(inserted);
       }
+    }
+    CHECK_EQ(dex_cache_count, non_image_dex_caches.size())
+        << "The number of non-image dex caches changed.";
+    // Write the dex caches to the output array (in registration order).
+    size_t i = 0;
+    for (const auto& entry : non_image_dex_caches) {
+      dex_caches->Set<false>(i++, entry.second.Ptr());
     }
   }
   return dex_caches;
@@ -2059,7 +2098,8 @@ void ImageWriter::LayoutHelper::VerifyImageBinSlotsAssigned() {
     ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
     Thread* self = Thread::Current();
     ReaderMutexLock mu(self, *Locks::dex_lock_);
-    for (const ClassLinker::DexCacheData& data : class_linker->GetDexCachesData()) {
+    for (const auto& entry : class_linker->GetDexCachesData()) {
+      const ClassLinker::DexCacheData& data = entry.second;
       ObjPtr<mirror::DexCache> dex_cache =
           ObjPtr<mirror::DexCache>::DownCast(self->DecodeJObject(data.weak_root));
       if (dex_cache == nullptr ||
@@ -3131,8 +3171,7 @@ void ImageWriter::FixupObject(Object* orig, Object* copy) {
       ArtField* src_field = src->GetArtField();
       CopyAndFixupPointer(dest, mirror::FieldVarHandle::ArtFieldOffset(), src_field);
     } else if (klass == GetClassRoot<mirror::DexCache>(class_roots)) {
-      down_cast<mirror::DexCache*>(copy)->SetDexFile(nullptr);
-      down_cast<mirror::DexCache*>(copy)->ResetNativeArrays();
+      down_cast<mirror::DexCache*>(copy)->ResetNativeFields();
     } else if (klass->IsClassLoaderClass()) {
       mirror::ClassLoader* copy_loader = down_cast<mirror::ClassLoader*>(copy);
       // If src is a ClassLoader, set the class table to null so that it gets recreated by the
