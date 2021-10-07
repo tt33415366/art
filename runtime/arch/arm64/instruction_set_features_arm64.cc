@@ -30,6 +30,14 @@
 
 #include "base/stl_util.h"
 
+#include <cpu_features_macros.h>
+
+#ifdef CPU_FEATURES_ARCH_AARCH64
+// This header can only be included on aarch64 targets,
+// as determined by cpu_features own define.
+#include <cpuinfo_aarch64.h>
+#endif
+
 namespace art {
 
 using android::base::StringPrintf;
@@ -72,6 +80,7 @@ Arm64FeaturesUniquePtr Arm64InstructionSetFeatures::FromVariant(
       "exynos-m3",
       "kryo",
       "kryo385",
+      "kryo785",
   };
 
   static const char* arm64_variants_with_lse[] = {
@@ -79,6 +88,7 @@ Arm64FeaturesUniquePtr Arm64InstructionSetFeatures::FromVariant(
       "cortex-a75",
       "cortex-a76",
       "kryo385",
+      "kryo785",
   };
 
   static const char* arm64_variants_with_fp16[] = {
@@ -86,6 +96,7 @@ Arm64FeaturesUniquePtr Arm64InstructionSetFeatures::FromVariant(
       "cortex-a75",
       "cortex-a76",
       "kryo385",
+      "kryo785",
   };
 
   static const char* arm64_variants_with_dotprod[] = {
@@ -132,6 +143,7 @@ Arm64FeaturesUniquePtr Arm64InstructionSetFeatures::FromVariant(
         "kryo",
         "kryo300",
         "kryo385",
+        "kryo785",
     };
     if (!FindVariantInArray(arm64_known_variants, arraysize(arm64_known_variants), variant)) {
       std::ostringstream os;
@@ -243,6 +255,22 @@ Arm64FeaturesUniquePtr Arm64InstructionSetFeatures::FromHwcap() {
 Arm64FeaturesUniquePtr Arm64InstructionSetFeatures::FromAssembly() {
   UNIMPLEMENTED(WARNING);
   return FromCppDefines();
+}
+
+Arm64FeaturesUniquePtr Arm64InstructionSetFeatures::FromCpuFeatures() {
+#ifdef CPU_FEATURES_ARCH_AARCH64
+  auto features = cpu_features::GetAarch64Info().features;
+  return Arm64FeaturesUniquePtr(new Arm64InstructionSetFeatures(false,
+                                                                false,
+                                                                features.crc32,
+                                                                features.atomics,
+                                                                features.fphp,
+                                                                features.asimddp,
+                                                                features.sve));
+#else
+  UNIMPLEMENTED(WARNING);
+  return FromCppDefines();
+#endif
 }
 
 bool Arm64InstructionSetFeatures::Equals(const InstructionSetFeatures* other) const {
