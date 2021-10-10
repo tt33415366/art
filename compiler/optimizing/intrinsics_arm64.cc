@@ -739,12 +739,22 @@ static void GenUnsafeGet(HInvoke* invoke,
   }
 }
 
+static bool UnsafeGetIntrinsicOnCallList(Intrinsics intrinsic) {
+  switch (intrinsic) {
+    case Intrinsics::kUnsafeGetObject:
+    case Intrinsics::kUnsafeGetObjectVolatile:
+    case Intrinsics::kJdkUnsafeGetObject:
+    case Intrinsics::kJdkUnsafeGetObjectVolatile:
+    case Intrinsics::kJdkUnsafeGetObjectAcquire:
+      return true;
+    default:
+      break;
+  }
+  return false;
+}
+
 static void CreateIntIntIntToIntLocations(ArenaAllocator* allocator, HInvoke* invoke) {
-  bool can_call = kEmitCompilerReadBarrier &&
-      (invoke->GetIntrinsic() == Intrinsics::kUnsafeGetObject ||
-       invoke->GetIntrinsic() == Intrinsics::kUnsafeGetObjectVolatile ||
-       invoke->GetIntrinsic() == Intrinsics::kJdkUnsafeGetObject ||
-       invoke->GetIntrinsic() == Intrinsics::kJdkUnsafeGetObjectVolatile);
+  bool can_call = kEmitCompilerReadBarrier && UnsafeGetIntrinsicOnCallList(invoke->GetIntrinsic());
   LocationSummary* locations =
       new (allocator) LocationSummary(invoke,
                                       can_call
@@ -789,16 +799,25 @@ void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGet(HInvoke* invoke) {
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetVolatile(HInvoke* invoke) {
   CreateIntIntIntToIntLocations(allocator_, invoke);
 }
+void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetAcquire(HInvoke* invoke) {
+  CreateIntIntIntToIntLocations(allocator_, invoke);
+}
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetLong(HInvoke* invoke) {
   CreateIntIntIntToIntLocations(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetLongVolatile(HInvoke* invoke) {
   CreateIntIntIntToIntLocations(allocator_, invoke);
 }
+void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetLongAcquire(HInvoke* invoke) {
+  CreateIntIntIntToIntLocations(allocator_, invoke);
+}
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetObject(HInvoke* invoke) {
   CreateIntIntIntToIntLocations(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetObjectVolatile(HInvoke* invoke) {
+  CreateIntIntIntToIntLocations(allocator_, invoke);
+}
+void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetObjectAcquire(HInvoke* invoke) {
   CreateIntIntIntToIntLocations(allocator_, invoke);
 }
 
@@ -827,16 +846,25 @@ void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeGet(HInvoke* invoke) {
 void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeGetVolatile(HInvoke* invoke) {
   GenUnsafeGet(invoke, DataType::Type::kInt32, /*is_volatile=*/ true, codegen_);
 }
+void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeGetAcquire(HInvoke* invoke) {
+  GenUnsafeGet(invoke, DataType::Type::kInt32, /*is_volatile=*/ true, codegen_);
+}
 void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeGetLong(HInvoke* invoke) {
   GenUnsafeGet(invoke, DataType::Type::kInt64, /*is_volatile=*/ false, codegen_);
 }
 void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeGetLongVolatile(HInvoke* invoke) {
   GenUnsafeGet(invoke, DataType::Type::kInt64, /*is_volatile=*/ true, codegen_);
 }
+void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeGetLongAcquire(HInvoke* invoke) {
+  GenUnsafeGet(invoke, DataType::Type::kInt64, /*is_volatile=*/ true, codegen_);
+}
 void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeGetObject(HInvoke* invoke) {
   GenUnsafeGet(invoke, DataType::Type::kReference, /*is_volatile=*/ false, codegen_);
 }
 void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeGetObjectVolatile(HInvoke* invoke) {
+  GenUnsafeGet(invoke, DataType::Type::kReference, /*is_volatile=*/ true, codegen_);
+}
+void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeGetObjectAcquire(HInvoke* invoke) {
   GenUnsafeGet(invoke, DataType::Type::kReference, /*is_volatile=*/ true, codegen_);
 }
 
@@ -886,6 +914,9 @@ void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutOrdered(HInvoke* invoke) {
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutVolatile(HInvoke* invoke) {
   CreateIntIntIntIntToVoid(allocator_, invoke);
 }
+void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutRelease(HInvoke* invoke) {
+  CreateIntIntIntIntToVoid(allocator_, invoke);
+}
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutObject(HInvoke* invoke) {
   CreateIntIntIntIntToVoid(allocator_, invoke);
 }
@@ -895,6 +926,9 @@ void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutObjectOrdered(HInvoke* inv
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutObjectVolatile(HInvoke* invoke) {
   CreateIntIntIntIntToVoid(allocator_, invoke);
 }
+void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutObjectRelease(HInvoke* invoke) {
+  CreateIntIntIntIntToVoid(allocator_, invoke);
+}
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutLong(HInvoke* invoke) {
   CreateIntIntIntIntToVoid(allocator_, invoke);
 }
@@ -902,6 +936,9 @@ void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutLongOrdered(HInvoke* invok
   CreateIntIntIntIntToVoid(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutLongVolatile(HInvoke* invoke) {
+  CreateIntIntIntIntToVoid(allocator_, invoke);
+}
+void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutLongRelease(HInvoke* invoke) {
   CreateIntIntIntIntToVoid(allocator_, invoke);
 }
 
@@ -994,6 +1031,13 @@ void IntrinsicCodeGeneratorARM64::VisitJdkUnsafePutVolatile(HInvoke* invoke) {
                /*is_ordered=*/ false,
                codegen_);
 }
+void IntrinsicCodeGeneratorARM64::VisitJdkUnsafePutRelease(HInvoke* invoke) {
+  GenUnsafePut(invoke,
+               DataType::Type::kInt32,
+               /*is_volatile=*/ true,
+               /*is_ordered=*/ false,
+               codegen_);
+}
 void IntrinsicCodeGeneratorARM64::VisitJdkUnsafePutObject(HInvoke* invoke) {
   GenUnsafePut(invoke,
                DataType::Type::kReference,
@@ -1015,6 +1059,13 @@ void IntrinsicCodeGeneratorARM64::VisitJdkUnsafePutObjectVolatile(HInvoke* invok
                /*is_ordered=*/ false,
                codegen_);
 }
+void IntrinsicCodeGeneratorARM64::VisitJdkUnsafePutObjectRelease(HInvoke* invoke) {
+  GenUnsafePut(invoke,
+               DataType::Type::kReference,
+               /*is_volatile=*/ true,
+               /*is_ordered=*/ false,
+               codegen_);
+}
 void IntrinsicCodeGeneratorARM64::VisitJdkUnsafePutLong(HInvoke* invoke) {
   GenUnsafePut(invoke,
                DataType::Type::kInt64,
@@ -1030,6 +1081,13 @@ void IntrinsicCodeGeneratorARM64::VisitJdkUnsafePutLongOrdered(HInvoke* invoke) 
                codegen_);
 }
 void IntrinsicCodeGeneratorARM64::VisitJdkUnsafePutLongVolatile(HInvoke* invoke) {
+  GenUnsafePut(invoke,
+               DataType::Type::kInt64,
+               /*is_volatile=*/ true,
+               /*is_ordered=*/ false,
+               codegen_);
+}
+void IntrinsicCodeGeneratorARM64::VisitJdkUnsafePutLongRelease(HInvoke* invoke) {
   GenUnsafePut(invoke,
                DataType::Type::kInt64,
                /*is_volatile=*/ true,
@@ -1478,6 +1536,12 @@ void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeCASObject(HInvoke* invoke) {
     }
   }
 }
+void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeCompareAndSetInt(HInvoke* invoke) {
+  CreateUnsafeCASLocations(allocator_, invoke);
+}
+void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeCompareAndSetLong(HInvoke* invoke) {
+  CreateUnsafeCASLocations(allocator_, invoke);
+}
 
 void IntrinsicCodeGeneratorARM64::VisitUnsafeCASInt(HInvoke* invoke) {
   VisitJdkUnsafeCASInt(invoke);
@@ -1497,6 +1561,12 @@ void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeCASLong(HInvoke* invoke) {
 }
 void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeCASObject(HInvoke* invoke) {
   GenUnsafeCas(invoke, DataType::Type::kReference, codegen_);
+}
+void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeCompareAndSetInt(HInvoke* invoke) {
+  GenUnsafeCas(invoke, DataType::Type::kInt32, codegen_);
+}
+void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeCompareAndSetLong(HInvoke* invoke) {
+  GenUnsafeCas(invoke, DataType::Type::kInt64, codegen_);
 }
 
 enum class GetAndUpdateOp {
@@ -5553,6 +5623,7 @@ UNIMPLEMENTED_INTRINSIC(ARM64, JdkUnsafeGetAndAddLong)
 UNIMPLEMENTED_INTRINSIC(ARM64, JdkUnsafeGetAndSetInt)
 UNIMPLEMENTED_INTRINSIC(ARM64, JdkUnsafeGetAndSetLong)
 UNIMPLEMENTED_INTRINSIC(ARM64, JdkUnsafeGetAndSetObject)
+UNIMPLEMENTED_INTRINSIC(ARM64, JdkUnsafeCompareAndSetObject)
 
 UNREACHABLE_INTRINSICS(ARM64)
 
