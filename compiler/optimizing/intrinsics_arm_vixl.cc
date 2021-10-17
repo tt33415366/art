@@ -4144,18 +4144,6 @@ static void GenerateVarHandleInstanceFieldChecks(HInvoke* invoke,
       codegen, slow_path, object, temp, /*object_can_be_null=*/ false);
 }
 
-static DataType::Type GetVarHandleExpectedValueType(HInvoke* invoke,
-                                                    size_t expected_coordinates_count) {
-  DCHECK_EQ(expected_coordinates_count, GetExpectedVarHandleCoordinatesCount(invoke));
-  uint32_t number_of_arguments = invoke->GetNumberOfArguments();
-  DCHECK_GE(number_of_arguments, /* VarHandle object */ 1u + expected_coordinates_count);
-  if (number_of_arguments == /* VarHandle object */ 1u + expected_coordinates_count) {
-    return invoke->GetType();
-  } else {
-    return GetDataTypeFromShorty(invoke, number_of_arguments - 1u);
-  }
-}
-
 static void GenerateVarHandleArrayChecks(HInvoke* invoke,
                                          CodeGeneratorARMVIXL* codegen,
                                          VarHandleSlowPathARMVIXL* slow_path) {
@@ -5428,6 +5416,7 @@ void VarHandleSlowPathARMVIXL::EmitByteArrayViewCode(CodeGenerator* codegen_in) 
     // the class of the actual coordinate argument but it does not match the value type.
     // Check if the `varhandle` references a ByteArrayViewVarHandle instance.
     __ Ldr(temp, MemOperand(varhandle, class_offset.Int32Value()));
+    codegen->GetAssembler()->MaybeUnpoisonHeapReference(temp);
     codegen->LoadClassRootForIntrinsic(temp2, ClassRoot::kJavaLangInvokeByteArrayViewVarHandle);
     __ Cmp(temp, temp2);
     __ B(ne, GetEntryLabel());
