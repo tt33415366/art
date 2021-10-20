@@ -1956,6 +1956,9 @@ bool ClassLinker::AddImageSpace(
         const dex::CodeItem* code_item = method.GetDexFile()->GetCodeItem(
             reinterpret_cast32<uint32_t>(method.GetDataPtrSize(image_pointer_size_)));
         method.SetCodeItem(code_item);
+        // The hotness counter may have changed since we compiled the image, so
+        // reset it with the runtime value.
+        method.ResetCounter();
       }
       // Set image methods' entry point that point to the interpreter bridge to the
       // nterp entry point.
@@ -3052,18 +3055,6 @@ ObjPtr<mirror::Class> ClassLinker::DefineClass(Thread* self,
     } else if (strcmp(descriptor, "Ldalvik/system/ClassExt;") == 0) {
       klass.Assign(GetClassRoot<mirror::ClassExt>(this));
     }
-  }
-
-  // For AOT-compilation of an app, we may use a shortened boot class path that excludes
-  // some runtime modules. Prevent definition of classes in app class loader that could clash
-  // with these modules as these classes could be resolved differently during execution.
-  if (class_loader != nullptr &&
-      Runtime::Current()->IsAotCompiler() &&
-      IsUpdatableBootClassPathDescriptor(descriptor)) {
-    ObjPtr<mirror::Throwable> pre_allocated =
-        Runtime::Current()->GetPreAllocatedNoClassDefFoundError();
-    self->SetException(pre_allocated);
-    return sdc.Finish(nullptr);
   }
 
   // For AOT-compilation of an app, we may use only a public SDK to resolve symbols. If the SDK
@@ -4752,6 +4743,7 @@ bool ClassLinker::VerifyClassUsingOatFile(Thread* self,
   if (oat_file != nullptr) {
     ClassStatus vdex_status = oat_file->GetVdexFile()->ComputeClassStatus(self, klass);
     if (vdex_status >= ClassStatus::kVerifiedNeedsAccessChecks) {
+      VLOG(verifier) << "Vdex verification success for " << klass->PrettyClass();
       oat_file_class_status = vdex_status;
       return true;
     }
@@ -10115,12 +10107,6 @@ ObjPtr<mirror::IfTable> ClassLinker::AllocIfTable(Thread* self, size_t ifcount) 
       mirror::IfTable::Alloc(self,
                              GetClassRoot<mirror::ObjectArray<mirror::Object>>(this),
                              ifcount * mirror::IfTable::kMax)));
-}
-
-bool ClassLinker::IsUpdatableBootClassPathDescriptor(const char* descriptor ATTRIBUTE_UNUSED) {
-  // Should not be called on ClassLinker, only on AotClassLinker that overrides this.
-  LOG(FATAL) << "UNREACHABLE";
-  UNREACHABLE();
 }
 
 bool ClassLinker::DenyAccessBasedOnPublicSdk(ArtMethod* art_method ATTRIBUTE_UNUSED) const
