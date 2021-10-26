@@ -43,6 +43,7 @@ specific_targets="libjavacoretests libwrapagentproperties libwrapagentproperties
 build_host="no"
 build_target="no"
 installclean="no"
+skip_run_tests_build="no"
 j_arg="-j$(nproc)"
 showcommands=
 make_command=
@@ -56,6 +57,9 @@ while true; do
     shift
   elif [[ "$1" == "--installclean" ]]; then
     installclean="yes"
+    shift
+  elif [[ "$1" == "--skip-run-tests-build" ]]; then
+    skip_run_tests_build="yes"
     shift
   elif [[ "$1" == -j* ]]; then
     j_arg=$1
@@ -96,7 +100,8 @@ apexes=(
 
 make_command="build/soong/soong_ui.bash --make-mode $j_arg $extra_args $showcommands $common_targets"
 if [[ $build_host == "yes" ]]; then
-  make_command+=" build-art-host-tests"
+  make_command+=" build-art-host-gtests"
+  test $skip_run_tests_build == "yes" || make_command+=" build-art-host-run-tests"
   make_command+=" dx-tests junit-host libjdwp-host"
   for LIB in ${specific_targets} ; do
     make_command+=" $LIB-host"
@@ -107,16 +112,23 @@ if [[ $build_target == "yes" ]]; then
     echo 'ANDROID_PRODUCT_OUT environment variable is empty; did you forget to run `lunch`?'
     exit 1
   fi
-  make_command+=" build-art-target-tests"
-  make_command+=" libnetd_client-target toybox sh libtombstoned_client"
-  make_command+=" debuggerd su"
-  # vogar requires the class files for conscrypt and ICU.
+  make_command+=" build-art-target-gtests"
+  test $skip_run_tests_build == "yes" || make_command+=" build-art-target-run-tests"
+  make_command+=" debuggerd sh su toybox"
+  # Indirect dependencies in the platform, e.g. through heapprofd_client_api.
+  # These are built to go into system/lib(64) to be part of the system linker
+  # namespace.
+  make_command+=" libbacktrace libnetd_client-target libprocinfo libtombstoned_client libunwindstack"
+  # Extract jars from other APEX SDKs for use by vogar. Note these go into
+  # out/target/common/obj/JAVA_LIBRARIES which isn't removed by "m installclean".
   make_command+=" conscrypt core-icu4j"
   make_command+=" ${ANDROID_PRODUCT_OUT#"${ANDROID_BUILD_TOP}/"}/system/etc/public.libraries.txt"
   # Targets required to generate a linker configuration for device within the
   # chroot environment. The *.libraries.txt targets are required by
   # the source linkerconfig but not included in the prebuilt one.
   make_command+=" linkerconfig conv_linker_config sanitizer.libraries.txt vndkcorevariant.libraries.txt"
+  # Additional dependency in /system
+  make_command+=" libbinder_ndk"
   # Additional targets needed for the chroot environment.
   make_command+=" event-log-tags"
   # Needed to extract prebuilt APEXes.
@@ -129,6 +141,9 @@ fi
 if [[ $installclean == "yes" ]]; then
   echo "Perform installclean"
   ANDROID_QUIET_BUILD=true build/soong/soong_ui.bash --make-mode $extra_args installclean
+  # The common java library directory is not cleaned up by installclean. Do that
+  # explicitly to not overcache them in incremental builds.
+  rm -rf $java_libraries_dir
 else
   echo "WARNING: Missing --installclean argument to buildbot-build.sh"
   echo "WARNING: This is usually ok, but may cause rare odd failures."
@@ -149,9 +164,15 @@ if [[ $build_target == "yes" ]]; then
   debugfs=$ANDROID_HOST_OUT/bin/debugfs_static
   for apex in ${apexes[@]}; do
     dir="$ANDROID_PRODUCT_OUT/system/apex/${apex}"
-    file="$ANDROID_PRODUCT_OUT/system/apex/${apex}.apex"
-    if [ -f "${file}" ]; then
-      echo "Extracting APEX file: ${apex}"
+    apexbase="$ANDROID_PRODUCT_OUT/system/apex/${apex}"
+    unset file
+    if [ -f "${apexbase}.apex" ]; then
+      file="${apexbase}.apex"
+    elif [ -f "${apexbase}.capex" ]; then
+      file="${apexbase}.capex"
+    fi
+    if [ -n "${file}" ]; then
+      echo "Extracting APEX file: ${file}"
       rm -rf $dir
       mkdir -p $dir
       $ANDROID_HOST_OUT/bin/deapexer --debugfs_path $debugfs extract $file $dir

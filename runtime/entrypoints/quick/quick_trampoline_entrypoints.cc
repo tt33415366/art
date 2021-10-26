@@ -855,10 +855,7 @@ extern "C" uint64_t artQuickProxyInvokeHandler(
   // that performs allocations or instrumentation events.
   instrumentation::Instrumentation* instr = Runtime::Current()->GetInstrumentation();
   if (instr->HasMethodEntryListeners()) {
-    instr->MethodEnterEvent(soa.Self(),
-                            soa.Decode<mirror::Object>(rcvr_jobj),
-                            proxy_method,
-                            0);
+    instr->MethodEnterEvent(soa.Self(), proxy_method);
     if (soa.Self()->IsExceptionPending()) {
       instr->MethodUnwindEvent(self,
                                soa.Decode<mirror::Object>(rcvr_jobj),
@@ -2119,27 +2116,33 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
     }
   }
 
-  uint32_t cookie;
-  uint32_t* sp32;
   // Skip calling JniMethodStart for @CriticalNative.
   if (LIKELY(!critical_native)) {
-    // Start JNI, save the cookie.
+    // Start JNI.
     if (called->IsSynchronized()) {
       DCHECK(normal_native) << " @FastNative and synchronize is not supported";
       jobject lock = GetGenericJniSynchronizationObject(self, called);
-      cookie = JniMethodStartSynchronized(lock, self);
+      JniMethodStartSynchronized(lock, self);
       if (self->IsExceptionPending()) {
         return nullptr;  // Report error.
       }
     } else {
       if (fast_native) {
-        cookie = JniMethodFastStart(self);
+        JniMethodFastStart(self);
       } else {
         DCHECK(normal_native);
-        cookie = JniMethodStart(self);
+        JniMethodStart(self);
       }
     }
-    sp32 = reinterpret_cast<uint32_t*>(managed_sp);
+
+    // Push local reference frame.
+    JNIEnvExt* env = self->GetJniEnv();
+    DCHECK(env != nullptr);
+    uint32_t cookie = bit_cast<uint32_t>(env->GetLocalRefCookie());
+    env->SetLocalRefCookie(env->GetLocalsSegmentState());
+
+    // Save the cookie on the stack.
+    uint32_t* sp32 = reinterpret_cast<uint32_t*>(managed_sp);
     *(sp32 - 1) = cookie;
   }
 

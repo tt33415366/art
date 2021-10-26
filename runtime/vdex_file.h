@@ -157,8 +157,6 @@ class VdexFile {
     return size;
   }
 
-  bool IsDexSectionValid() const;
-
   bool HasDexSection() const {
     return GetSectionHeader(VdexSection::kDexFileSection).section_size != 0u;
   }
@@ -248,9 +246,15 @@ class VdexFile {
                          error_msg);
   }
 
+  static std::unique_ptr<VdexFile> OpenFromDm(const std::string& filename,
+                                              const ZipArchive& archive);
+
   const uint8_t* Begin() const { return mmap_.Begin(); }
   const uint8_t* End() const { return mmap_.End(); }
   size_t Size() const { return mmap_.Size(); }
+  bool Contains(const uint8_t* pointer) const {
+    return pointer >= Begin() && pointer < End();
+  }
 
   const VdexFileHeader& GetVdexFileHeader() const {
     return *reinterpret_cast<const VdexFileHeader*>(Begin());

@@ -42,9 +42,9 @@
 #include <sstream>
 
 #include "android-base/file.h"
+#include "android-base/logging.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
-
 #include "base/bit_utils.h"
 #include "base/globals.h"
 #include "base/os.h"
@@ -358,11 +358,30 @@ std::string GetDefaultBootImageLocation(std::string* error_msg) {
   return GetDefaultBootImageLocation(android_root, /*deny_art_apex_data_files=*/false);
 }
 
+std::string GetBootImagePath(bool on_system, const std::string& jar_path) {
+  if (on_system) {
+    const std::string jar_name = android::base::Basename(jar_path);
+    const std::string image_name = ReplaceFileExtension(jar_name, "art");
+    // Typically "/system/framework/boot-framework.art".
+    return StringPrintf("%s/framework/boot-%s", GetAndroidRoot().c_str(), image_name.c_str());
+  } else {
+    // Typically "/data/misc/apexdata/com.android.art/dalvik-cache/boot-framework.art".
+    return GetApexDataBootImage(jar_path);
+  }
+}
+
+static /*constinit*/ std::string_view dalvik_cache_sub_dir = "dalvik-cache";
+
+void OverrideDalvikCacheSubDirectory(std::string sub_dir) {
+    static std::string overridden_dalvik_cache_sub_dir;
+    overridden_dalvik_cache_sub_dir = std::move(sub_dir);
+    dalvik_cache_sub_dir = overridden_dalvik_cache_sub_dir;
+}
+
 static std::string GetDalvikCacheDirectory(std::string_view root_directory,
                                            std::string_view sub_directory = {}) {
-  static constexpr std::string_view kDalvikCache = "dalvik-cache";
   std::stringstream oss;
-  oss << root_directory << '/' << kDalvikCache;
+  oss << root_directory << '/' << dalvik_cache_sub_dir;
   if (!sub_directory.empty()) {
     oss << '/' << sub_directory;
   }
@@ -403,8 +422,12 @@ void GetDalvikCache(const char* subdir, const bool create_if_absent, std::string
 #endif
 }
 
-bool GetDalvikCacheFilename(const char* location, const char* cache_location,
-                            std::string* filename, std::string* error_msg) {
+// Returns a path formed by encoding the dex location into the filename. The path returned will be
+// rooted at `cache_location`.
+static bool GetLocationEncodedFilename(const char* location,
+                                       const char* cache_location,
+                                       std::string* filename,
+                                       std::string* error_msg) {
   if (location[0] != '/') {
     *error_msg = StringPrintf("Expected path in location to be absolute: %s", location);
     return false;
@@ -419,6 +442,13 @@ bool GetDalvikCacheFilename(const char* location, const char* cache_location,
   std::replace(cache_file.begin(), cache_file.end(), '/', '@');
   *filename = StringPrintf("%s/%s", cache_location, cache_file.c_str());
   return true;
+}
+
+bool GetDalvikCacheFilename(const char* location,
+                            const char* cache_location,
+                            std::string* filename,
+                            std::string* error_msg) {
+  return GetLocationEncodedFilename(location, cache_location, filename, error_msg);
 }
 
 static std::string GetApexDataDalvikCacheDirectory(InstructionSet isa) {
@@ -487,6 +517,22 @@ std::string GetApexDataDalvikCacheFilename(std::string_view dex_location,
 
 std::string GetVdexFilename(const std::string& oat_location) {
   return ReplaceFileExtension(oat_location, "vdex");
+}
+
+std::string GetDmFilename(const std::string& dex_location) {
+  return ReplaceFileExtension(dex_location, "dm");
+}
+
+std::string GetSystemOdexFilenameForApex(std::string_view location, InstructionSet isa) {
+  DCHECK(LocationIsOnApex(location));
+  std::string dir = GetAndroidRoot() + "/framework/oat/" + GetInstructionSetString(isa);
+  std::string result, error_msg;
+  bool ret =
+      GetLocationEncodedFilename(std::string{location}.c_str(), dir.c_str(), &result, &error_msg);
+  // This should never fail. The function fails only if the location is not absolute, and a location
+  // on /apex is always absolute.
+  DCHECK(ret) << error_msg;
+  return ReplaceFileExtension(result, "odex");
 }
 
 static void InsertIsaDirectory(const InstructionSet isa, std::string* filename) {
@@ -621,14 +667,12 @@ bool LocationIsOnSystem(const std::string& location) {
   LOG(FATAL) << "LocationIsOnSystem is unsupported on Windows.";
   return false;
 #else
-  UniqueCPtr<const char[]> full_path(realpath(location.c_str(), nullptr));
-  return full_path != nullptr &&
-      android::base::StartsWith(full_path.get(), GetAndroidRoot().c_str());
+  return android::base::StartsWith(location, GetAndroidRoot().c_str());
 #endif
 }
 
 bool LocationIsTrusted(const std::string& location, bool trust_art_apex_data_files) {
-  if (LocationIsOnSystem(location)) {
+  if (LocationIsOnSystem(location) || LocationIsOnArtModule(location)) {
     return true;
   }
   return LocationIsOnArtApexData(location) & trust_art_apex_data_files;

@@ -343,6 +343,7 @@ Heap::Heap(size_t initial_size,
       old_native_bytes_allocated_(0),
       native_objects_notified_(0),
       num_bytes_freed_revoke_(0),
+      num_bytes_alive_after_gc_(0),
       verify_missing_card_marks_(false),
       verify_system_weaks_(false),
       verify_pre_gc_heap_(verify_pre_gc_heap),
@@ -410,7 +411,8 @@ Heap::Heap(size_t initial_size,
       dump_region_info_after_gc_(dump_region_info_after_gc),
       boot_image_spaces_(),
       boot_images_start_address_(0u),
-      boot_images_size_(0u) {
+      boot_images_size_(0u),
+      pre_oome_gc_count_(0u) {
   if (VLOG_IS_ON(heap) || VLOG_IS_ON(startup)) {
     LOG(INFO) << "Heap() entering";
   }
@@ -1244,7 +1246,7 @@ void Heap::DumpGcPerformanceInfo(std::ostream& os) {
   os << "Total GC time: " << PrettyDuration(GetGcTime()) << "\n";
   os << "Total blocking GC count: " << GetBlockingGcCount() << "\n";
   os << "Total blocking GC time: " << PrettyDuration(GetBlockingGcTime()) << "\n";
-
+  os << "Total pre-OOME GC count: " << GetPreOomeGcCount() << "\n";
   {
     MutexLock mu(Thread::Current(), *gc_complete_lock_);
     if (gc_count_rate_histogram_.SampleSize() > 0U) {
@@ -1291,6 +1293,7 @@ void Heap::ResetGcPerformanceInfo() {
   total_wait_time_ = 0;
   blocking_gc_count_ = 0;
   blocking_gc_time_ = 0;
+  pre_oome_gc_count_.store(0, std::memory_order_relaxed);
   gc_count_last_window_ = 0;
   blocking_gc_count_last_window_ = 0;
   last_update_time_gc_count_rate_histograms_ =  // Round down by the window duration.
@@ -1338,6 +1341,10 @@ void Heap::DumpBlockingGcCountRateHistogram(std::ostream& os) const {
   if (blocking_gc_count_rate_histogram_.SampleSize() > 0U) {
     blocking_gc_count_rate_histogram_.DumpBins(os);
   }
+}
+
+uint64_t Heap::GetPreOomeGcCount() const {
+  return pre_oome_gc_count_.load(std::memory_order_relaxed);
 }
 
 ALWAYS_INLINE
@@ -1906,6 +1913,7 @@ mirror::Object* Heap::AllocateInternalWithGc(Thread* self,
   // TODO: Should check whether another thread already just ran a GC with soft
   // references.
   DCHECK(!gc_plan_.empty());
+  pre_oome_gc_count_.fetch_add(1, std::memory_order_relaxed);
   PERFORM_SUSPENDING_OPERATION(
       CollectGarbageInternal(gc_plan_.back(), kGcCauseForAlloc, true, GC_NUM_ANY));
   if ((was_default_allocator && allocator != GetCurrentAllocator()) ||
@@ -2341,6 +2349,8 @@ void Heap::IncrementFreedEver() {
 #  pragma clang diagnostic ignored "-Wframe-larger-than="
 #endif
 // This has a large frame, but shouldn't be run anywhere near the stack limit.
+// FIXME: BUT it did exceed... http://b/197647048
+#  pragma clang diagnostic ignored "-Wframe-larger-than="
 void Heap::PreZygoteFork() {
   if (!HasZygoteSpace()) {
     // We still want to GC in case there is some unreachable non moving objects that could cause a
@@ -3665,6 +3675,9 @@ void Heap::GrowForUtilization(collector::GarbageCollector* collector_ran,
       const uint64_t freed_bytes = current_gc_iteration_.GetFreedBytes() +
           current_gc_iteration_.GetFreedLargeObjectBytes() +
           current_gc_iteration_.GetFreedRevokeBytes();
+      // Records the number of bytes allocated at the time of GC finish,excluding the number of
+      // bytes allocated during GC.
+      num_bytes_alive_after_gc_ = UnsignedDifference(bytes_allocated_before_gc, freed_bytes);
       // Bytes allocated will shrink by freed_bytes after the GC runs, so if we want to figure out
       // how many bytes were allocated during the GC we need to add freed_bytes back on.
       // Almost always bytes_allocated + freed_bytes >= bytes_allocated_before_gc.
@@ -3864,6 +3877,16 @@ void Heap::RequestCollectorTransition(CollectorType desired_collector_type, uint
     // For CC, we invoke a full compaction when going to the background, but the collector type
     // doesn't change.
     DCHECK_EQ(desired_collector_type_, kCollectorTypeCCBackground);
+    // App's allocations (since last GC) more than the threshold then do TransitionGC
+    // when the app was in background. If not then don't do TransitionGC.
+    size_t num_bytes_allocated_since_gc = GetBytesAllocated() - num_bytes_alive_after_gc_;
+    if (num_bytes_allocated_since_gc <
+        (UnsignedDifference(target_footprint_.load(std::memory_order_relaxed),
+                            num_bytes_alive_after_gc_)/4)
+        && !kStressCollectorTransition
+        && !IsLowMemoryMode()) {
+      return;
+    }
   }
   DCHECK_NE(collector_type_, kCollectorTypeCCBackground);
   CollectorTransitionTask* added_task = nullptr;

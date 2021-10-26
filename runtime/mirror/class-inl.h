@@ -32,10 +32,10 @@
 #include "dex/dex_file-inl.h"
 #include "dex/invoke_type.h"
 #include "dex_cache.h"
+#include "hidden_api.h"
 #include "iftable-inl.h"
 #include "imtable.h"
 #include "object-inl.h"
-#include "object_array.h"
 #include "read_barrier-inl.h"
 #include "runtime.h"
 #include "string.h"
@@ -412,6 +412,18 @@ inline void Class::SetObjectSize(uint32_t new_object_size) {
   return SetField32<false>(OFFSET_OF_OBJECT_MEMBER(Class, object_size_), new_object_size);
 }
 
+template<typename T>
+inline bool Class::IsDiscoverable(bool public_only,
+                                  const hiddenapi::AccessContext& access_context,
+                                  T* member) {
+  if (public_only && ((member->GetAccessFlags() & kAccPublic) == 0)) {
+    return false;
+  }
+
+  return !hiddenapi::ShouldDenyAccessToMember(
+      member, access_context, hiddenapi::AccessMethod::kNone);
+}
+
 // Determine whether "this" is assignable from "src", where both of these
 // are array classes.
 //
@@ -468,7 +480,7 @@ inline bool Class::ResolvedFieldAccessTest(ObjPtr<Class> access_to,
     ObjPtr<Class> dex_access_to = Runtime::Current()->GetClassLinker()->LookupResolvedType(
         class_idx,
         dex_cache,
-        access_to->GetClassLoader());
+        GetClassLoader());
     DCHECK(dex_access_to != nullptr);
     if (UNLIKELY(!this->CanAccess(dex_access_to))) {
       if (throw_on_failure) {
@@ -504,8 +516,10 @@ inline bool Class::ResolvedMethodAccessTest(ObjPtr<Class> access_to,
     ObjPtr<Class> dex_access_to = Runtime::Current()->GetClassLinker()->LookupResolvedType(
         class_idx,
         dex_cache,
-        access_to->GetClassLoader());
-    DCHECK(dex_access_to != nullptr);
+        GetClassLoader());
+    DCHECK(dex_access_to != nullptr)
+        << " Could not resolve " << dex_cache->GetDexFile()->StringByTypeIdx(class_idx)
+        << " when checking access to " << method->PrettyMethod() << " from " << PrettyDescriptor();
     if (UNLIKELY(!this->CanAccess(dex_access_to))) {
       if (throw_on_failure) {
         ThrowIllegalAccessErrorClassForMethodDispatch(this,

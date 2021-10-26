@@ -37,7 +37,7 @@ namespace arm64 {
 #define reg_d(D) Arm64Assembler::reg_d(D)
 #define reg_s(S) Arm64Assembler::reg_s(S)
 
-// The AAPCS64 requires 16-byte alignement. This is the same as the Managed ABI stack alignment.
+// The AAPCS64 requires 16-byte alignment. This is the same as the Managed ABI stack alignment.
 static constexpr size_t kAapcs64StackAlignment = 16u;
 static_assert(kAapcs64StackAlignment == kStackAlignment);
 
@@ -45,9 +45,6 @@ Arm64JNIMacroAssembler::~Arm64JNIMacroAssembler() {
 }
 
 void Arm64JNIMacroAssembler::FinalizeCode() {
-  for (const std::unique_ptr<Arm64Exception>& exception : exception_blocks_) {
-    EmitExceptionPoll(exception.get());
-  }
   ___ FinalizeCode();
 }
 
@@ -74,6 +71,30 @@ void Arm64JNIMacroAssembler::DecreaseFrameSize(size_t adjust) {
     CHECK_ALIGNED(adjust, kStackAlignment);
     AddConstant(SP, adjust);
     cfi().AdjustCFAOffset(-adjust);
+  }
+}
+
+ManagedRegister Arm64JNIMacroAssembler::CoreRegisterWithSize(ManagedRegister m_src, size_t size) {
+  DCHECK(size == 4u || size == 8u) << size;
+  Arm64ManagedRegister src = m_src.AsArm64();
+  // Switch between X and W registers using the `XRegister` and `WRegister` enumerations.
+  static_assert(W0 == static_cast<std::underlying_type_t<XRegister>>(X0));
+  static_assert(W30 == static_cast<std::underlying_type_t<XRegister>>(X30));
+  static_assert(WSP == static_cast<std::underlying_type_t<XRegister>>(SP));
+  static_assert(WZR == static_cast<std::underlying_type_t<XRegister>>(XZR));
+  if (src.IsXRegister()) {
+    if (size == 8u) {
+      return m_src;
+    }
+    auto id = static_cast<std::underlying_type_t<XRegister>>(src.AsXRegister());
+    return Arm64ManagedRegister::FromWRegister(enum_cast<WRegister>(id));
+  } else {
+    CHECK(src.IsWRegister());
+    if (size == 4u) {
+      return m_src;
+    }
+    auto id = static_cast<std::underlying_type_t<WRegister>>(src.AsWRegister());
+    return Arm64ManagedRegister::FromXRegister(enum_cast<XRegister>(id));
   }
 }
 
@@ -132,20 +153,28 @@ void Arm64JNIMacroAssembler::StoreDToOffset(DRegister source, XRegister base, in
 }
 
 void Arm64JNIMacroAssembler::Store(FrameOffset offs, ManagedRegister m_src, size_t size) {
+  Store(Arm64ManagedRegister::FromXRegister(SP), MemberOffset(offs.Int32Value()), m_src, size);
+}
+
+void Arm64JNIMacroAssembler::Store(ManagedRegister m_base,
+                                   MemberOffset offs,
+                                   ManagedRegister m_src,
+                                   size_t size) {
+  Arm64ManagedRegister base = m_base.AsArm64();
   Arm64ManagedRegister src = m_src.AsArm64();
   if (src.IsNoRegister()) {
     CHECK_EQ(0u, size);
   } else if (src.IsWRegister()) {
     CHECK_EQ(4u, size);
-    StoreWToOffset(kStoreWord, src.AsWRegister(), SP, offs.Int32Value());
+    StoreWToOffset(kStoreWord, src.AsWRegister(), base.AsXRegister(), offs.Int32Value());
   } else if (src.IsXRegister()) {
     CHECK_EQ(8u, size);
-    StoreToOffset(src.AsXRegister(), SP, offs.Int32Value());
+    StoreToOffset(src.AsXRegister(), base.AsXRegister(), offs.Int32Value());
   } else if (src.IsSRegister()) {
-    StoreSToOffset(src.AsSRegister(), SP, offs.Int32Value());
+    StoreSToOffset(src.AsSRegister(), base.AsXRegister(), offs.Int32Value());
   } else {
     CHECK(src.IsDRegister()) << src;
-    StoreDToOffset(src.AsDRegister(), SP, offs.Int32Value());
+    StoreDToOffset(src.AsDRegister(), base.AsXRegister(), offs.Int32Value());
   }
 }
 
@@ -278,6 +307,13 @@ void Arm64JNIMacroAssembler::Load(Arm64ManagedRegister dest,
 
 void Arm64JNIMacroAssembler::Load(ManagedRegister m_dst, FrameOffset src, size_t size) {
   return Load(m_dst.AsArm64(), SP, src.Int32Value(), size);
+}
+
+void Arm64JNIMacroAssembler::Load(ManagedRegister m_dst,
+                                  ManagedRegister m_base,
+                                  MemberOffset offs,
+                                  size_t size) {
+  return Load(m_dst.AsArm64(), m_base.AsArm64().AsXRegister(), offs.Int32Value(), size);
 }
 
 void Arm64JNIMacroAssembler::LoadFromThread(ManagedRegister m_dst,
@@ -698,13 +734,24 @@ void Arm64JNIMacroAssembler::CreateJObject(FrameOffset out_off,
   ___ Str(scratch, MEM_OP(reg_x(SP), out_off.Int32Value()));
 }
 
-void Arm64JNIMacroAssembler::ExceptionPoll(size_t stack_adjust) {
-  CHECK_ALIGNED(stack_adjust, kStackAlignment);
+void Arm64JNIMacroAssembler::ExceptionPoll(JNIMacroLabel* label) {
   UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
   Register scratch = temps.AcquireX();
-  exception_blocks_.emplace_back(new Arm64Exception(scratch, stack_adjust));
   ___ Ldr(scratch, MEM_OP(reg_x(TR), Thread::ExceptionOffset<kArm64PointerSize>().Int32Value()));
-  ___ Cbnz(scratch, exception_blocks_.back()->Entry());
+  ___ Cbnz(scratch, Arm64JNIMacroLabel::Cast(label)->AsArm64());
+}
+
+void Arm64JNIMacroAssembler::DeliverPendingException() {
+  // Pass exception object as argument.
+  // Don't care about preserving X0 as this won't return.
+  // Note: The scratch register from `ExceptionPoll()` may have been clobbered.
+  ___ Ldr(reg_x(X0), MEM_OP(reg_x(TR), Thread::ExceptionOffset<kArm64PointerSize>().Int32Value()));
+  ___ Ldr(lr,
+          MEM_OP(reg_x(TR),
+                 QUICK_ENTRYPOINT_OFFSET(kArm64PointerSize, pDeliverException).Int32Value()));
+  ___ Blr(lr);
+  // Call should never return.
+  ___ Brk();
 }
 
 std::unique_ptr<JNIMacroLabel> Arm64JNIMacroAssembler::CreateLabel() {
@@ -751,27 +798,6 @@ void Arm64JNIMacroAssembler::TestGcMarking(JNIMacroLabel* label, JNIMacroUnaryCo
 void Arm64JNIMacroAssembler::Bind(JNIMacroLabel* label) {
   CHECK(label != nullptr);
   ___ Bind(Arm64JNIMacroLabel::Cast(label)->AsArm64());
-}
-
-void Arm64JNIMacroAssembler::EmitExceptionPoll(Arm64Exception* exception) {
-  UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
-  temps.Exclude(exception->scratch_);
-
-  // Bind exception poll entry.
-  ___ Bind(exception->Entry());
-  if (exception->stack_adjust_ != 0) {  // Fix up the frame.
-    DecreaseFrameSize(exception->stack_adjust_);
-  }
-  // Pass exception object as argument.
-  // Don't care about preserving X0 as this won't return.
-  ___ Mov(reg_x(X0), exception->scratch_);
-  ___ Ldr(lr,
-          MEM_OP(reg_x(TR),
-                 QUICK_ENTRYPOINT_OFFSET(kArm64PointerSize, pDeliverException).Int32Value()));
-
-  ___ Blr(lr);
-  // Call should never return.
-  ___ Brk();
 }
 
 void Arm64JNIMacroAssembler::BuildFrame(size_t frame_size,

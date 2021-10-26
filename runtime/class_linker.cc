@@ -1905,13 +1905,10 @@ bool ClassLinker::AddImageSpace(
       return false;
     }
 
-    LinearAlloc* linear_alloc = GetOrCreateAllocatorForClassLoader(class_loader.Get());
-    DCHECK(linear_alloc != nullptr);
-    DCHECK_EQ(linear_alloc == Runtime::Current()->GetLinearAlloc(), !app_image);
     {
-      // Native fields are all null.  Initialize them and allocate native memory.
+      // Native fields are all null.  Initialize them.
       WriterMutexLock mu(self, *Locks::dex_lock_);
-      dex_cache->InitializeNativeFields(dex_file.get(), linear_alloc);
+      dex_cache->Initialize(dex_file.get(), class_loader.Get());
     }
     if (!app_image) {
       // Register dex files, keep track of existing ones that are conflicts.
@@ -1959,6 +1956,9 @@ bool ClassLinker::AddImageSpace(
         const dex::CodeItem* code_item = method.GetDexFile()->GetCodeItem(
             reinterpret_cast32<uint32_t>(method.GetDataPtrSize(image_pointer_size_)));
         method.SetCodeItem(code_item);
+        // The hotness counter may have changed since we compiled the image, so
+        // reset it with the runtime value.
+        method.ResetCounter();
       }
       // Set image methods' entry point that point to the interpreter bridge to the
       // nterp entry point.
@@ -2367,13 +2367,14 @@ ObjPtr<mirror::DexCache> ClassLinker::AllocDexCache(Thread* self, const DexFile&
   return dex_cache.Get();
 }
 
-ObjPtr<mirror::DexCache> ClassLinker::AllocAndInitializeDexCache(Thread* self,
-                                                                 const DexFile& dex_file,
-                                                                 LinearAlloc* linear_alloc) {
+ObjPtr<mirror::DexCache> ClassLinker::AllocAndInitializeDexCache(
+    Thread* self, const DexFile& dex_file, ObjPtr<mirror::ClassLoader> class_loader) {
+  StackHandleScope<1> hs(self);
+  Handle<mirror::ClassLoader> h_class_loader(hs.NewHandle(class_loader));
   ObjPtr<mirror::DexCache> dex_cache = AllocDexCache(self, dex_file);
   if (dex_cache != nullptr) {
     WriterMutexLock mu(self, *Locks::dex_lock_);
-    dex_cache->InitializeNativeFields(&dex_file, linear_alloc);
+    dex_cache->Initialize(&dex_file, h_class_loader.Get());
   }
   return dex_cache;
 }
@@ -2583,6 +2584,26 @@ ClassPathEntry FindInClassPath(const char* descriptor,
   return ClassPathEntry(nullptr, nullptr);
 }
 
+// Helper macro to make sure each class loader lookup call handles the case the
+// class loader is not recognized, or the lookup threw an exception.
+#define RETURN_IF_UNRECOGNIZED_OR_FOUND_OR_EXCEPTION(call_, result_, thread_) \
+do {                                                                          \
+  auto local_call = call_;                                                    \
+  if (!local_call) {                                                          \
+    return false;                                                             \
+  }                                                                           \
+  auto local_result = result_;                                                \
+  if (local_result != nullptr) {                                              \
+    return true;                                                              \
+  }                                                                           \
+  auto local_thread = thread_;                                                \
+  if (local_thread->IsExceptionPending()) {                                   \
+    /* Pending exception means there was an error other than */               \
+    /* ClassNotFound that must be returned to the caller. */                  \
+    return false;                                                             \
+  }                                                                           \
+} while (0)
+
 bool ClassLinker::FindClassInSharedLibraries(ScopedObjectAccessAlreadyRunnable& soa,
                                              Thread* self,
                                              const char* descriptor,
@@ -2591,6 +2612,16 @@ bool ClassLinker::FindClassInSharedLibraries(ScopedObjectAccessAlreadyRunnable& 
                                              /*out*/ ObjPtr<mirror::Class>* result) {
   ArtField* field =
       jni::DecodeArtField(WellKnownClasses::dalvik_system_BaseDexClassLoader_sharedLibraryLoaders);
+  return FindClassInSharedLibrariesHelper(soa, self, descriptor, hash, class_loader, field, result);
+}
+
+bool ClassLinker::FindClassInSharedLibrariesHelper(ScopedObjectAccessAlreadyRunnable& soa,
+                                                   Thread* self,
+                                                   const char* descriptor,
+                                                   size_t hash,
+                                                   Handle<mirror::ClassLoader> class_loader,
+                                                   ArtField* field,
+                                                   /*out*/ ObjPtr<mirror::Class>* result) {
   ObjPtr<mirror::Object> raw_shared_libraries = field->GetObject(class_loader.Get());
   if (raw_shared_libraries == nullptr) {
     return true;
@@ -2602,14 +2633,23 @@ bool ClassLinker::FindClassInSharedLibraries(ScopedObjectAccessAlreadyRunnable& 
   MutableHandle<mirror::ClassLoader> temp_loader = hs.NewHandle<mirror::ClassLoader>(nullptr);
   for (auto loader : shared_libraries.Iterate<mirror::ClassLoader>()) {
     temp_loader.Assign(loader);
-    if (!FindClassInBaseDexClassLoader(soa, self, descriptor, hash, temp_loader, result)) {
-      return false;  // One of the shared libraries is not supported.
-    }
-    if (*result != nullptr) {
-      return true;  // Found the class up the chain.
-    }
+    RETURN_IF_UNRECOGNIZED_OR_FOUND_OR_EXCEPTION(
+        FindClassInBaseDexClassLoader(soa, self, descriptor, hash, temp_loader, result),
+        *result,
+        self);
   }
   return true;
+}
+
+bool ClassLinker::FindClassInSharedLibrariesAfter(ScopedObjectAccessAlreadyRunnable& soa,
+                                                  Thread* self,
+                                                  const char* descriptor,
+                                                  size_t hash,
+                                                  Handle<mirror::ClassLoader> class_loader,
+                                                  /*out*/ ObjPtr<mirror::Class>* result) {
+  ArtField* field = jni::DecodeArtField(
+      WellKnownClasses::dalvik_system_BaseDexClassLoader_sharedLibraryLoadersAfter);
+  return FindClassInSharedLibrariesHelper(soa, self, descriptor, hash, class_loader, field, result);
 }
 
 bool ClassLinker::FindClassInBaseDexClassLoader(ScopedObjectAccessAlreadyRunnable& soa,
@@ -2620,7 +2660,8 @@ bool ClassLinker::FindClassInBaseDexClassLoader(ScopedObjectAccessAlreadyRunnabl
                                                 /*out*/ ObjPtr<mirror::Class>* result) {
   // Termination case: boot class loader.
   if (IsBootClassLoader(soa, class_loader.Get())) {
-    *result = FindClassInBootClassLoaderClassPath(self, descriptor, hash);
+    RETURN_IF_UNRECOGNIZED_OR_FOUND_OR_EXCEPTION(
+        FindClassInBootClassLoaderClassPath(self, descriptor, hash, result), *result, self);
     return true;
   }
 
@@ -2630,26 +2671,28 @@ bool ClassLinker::FindClassInBaseDexClassLoader(ScopedObjectAccessAlreadyRunnabl
     //    - shared libraries
     //    - class loader dex files
 
-    // Handles as RegisterDexFile may allocate dex caches (and cause thread suspension).
+    // Create a handle as RegisterDexFile may allocate dex caches (and cause thread suspension).
     StackHandleScope<1> hs(self);
     Handle<mirror::ClassLoader> h_parent(hs.NewHandle(class_loader->GetParent()));
-    if (!FindClassInBaseDexClassLoader(soa, self, descriptor, hash, h_parent, result)) {
-      return false;  // One of the parents is not supported.
-    }
-    if (*result != nullptr) {
-      return true;  // Found the class up the chain.
-    }
-
-    if (!FindClassInSharedLibraries(soa, self, descriptor, hash, class_loader, result)) {
-      return false;  // One of the shared library loader is not supported.
-    }
-    if (*result != nullptr) {
-      return true;  // Found the class in a shared library.
-    }
-
-    // Search the current class loader classpath.
-    *result = FindClassInBaseDexClassLoaderClassPath(soa, descriptor, hash, class_loader);
-    return !soa.Self()->IsExceptionPending();
+    RETURN_IF_UNRECOGNIZED_OR_FOUND_OR_EXCEPTION(
+        FindClassInBaseDexClassLoader(soa, self, descriptor, hash, h_parent, result),
+        *result,
+        self);
+    RETURN_IF_UNRECOGNIZED_OR_FOUND_OR_EXCEPTION(
+        FindClassInSharedLibraries(soa, self, descriptor, hash, class_loader, result),
+        *result,
+        self);
+    RETURN_IF_UNRECOGNIZED_OR_FOUND_OR_EXCEPTION(
+        FindClassInBaseDexClassLoaderClassPath(soa, descriptor, hash, class_loader, result),
+        *result,
+        self);
+    RETURN_IF_UNRECOGNIZED_OR_FOUND_OR_EXCEPTION(
+        FindClassInSharedLibrariesAfter(soa, self, descriptor, hash, class_loader, result),
+        *result,
+        self);
+    // We did not find a class, but the class loader chain was recognized, so we
+    // return true.
+    return true;
   }
 
   if (IsDelegateLastClassLoader(soa, class_loader)) {
@@ -2658,43 +2701,39 @@ bool ClassLinker::FindClassInBaseDexClassLoader(ScopedObjectAccessAlreadyRunnabl
     //    - shared libraries
     //    - class loader dex files
     //    - parent
-    *result = FindClassInBootClassLoaderClassPath(self, descriptor, hash);
-    if (*result != nullptr) {
-      return true;  // The class is part of the boot class path.
-    }
-    if (self->IsExceptionPending()) {
-      // Pending exception means there was an error other than ClassNotFound that must be returned
-      // to the caller.
-      return false;
-    }
+    RETURN_IF_UNRECOGNIZED_OR_FOUND_OR_EXCEPTION(
+        FindClassInBootClassLoaderClassPath(self, descriptor, hash, result), *result, self);
+    RETURN_IF_UNRECOGNIZED_OR_FOUND_OR_EXCEPTION(
+        FindClassInSharedLibraries(soa, self, descriptor, hash, class_loader, result),
+        *result,
+        self);
+    RETURN_IF_UNRECOGNIZED_OR_FOUND_OR_EXCEPTION(
+        FindClassInBaseDexClassLoaderClassPath(soa, descriptor, hash, class_loader, result),
+        *result,
+        self);
+    RETURN_IF_UNRECOGNIZED_OR_FOUND_OR_EXCEPTION(
+        FindClassInSharedLibrariesAfter(soa, self, descriptor, hash, class_loader, result),
+        *result,
+        self);
 
-    if (!FindClassInSharedLibraries(soa, self, descriptor, hash, class_loader, result)) {
-      return false;  // One of the shared library loader is not supported.
-    }
-    if (*result != nullptr) {
-      return true;  // Found the class in a shared library.
-    }
-
-    *result = FindClassInBaseDexClassLoaderClassPath(soa, descriptor, hash, class_loader);
-    if (*result != nullptr) {
-      return true;  // Found the class in the current class loader
-    }
-    if (self->IsExceptionPending()) {
-      // Pending exception means there was an error other than ClassNotFound that must be returned
-      // to the caller.
-      return false;
-    }
-
-    // Handles as RegisterDexFile may allocate dex caches (and cause thread suspension).
+    // Create a handle as RegisterDexFile may allocate dex caches (and cause thread suspension).
     StackHandleScope<1> hs(self);
     Handle<mirror::ClassLoader> h_parent(hs.NewHandle(class_loader->GetParent()));
-    return FindClassInBaseDexClassLoader(soa, self, descriptor, hash, h_parent, result);
+    RETURN_IF_UNRECOGNIZED_OR_FOUND_OR_EXCEPTION(
+        FindClassInBaseDexClassLoader(soa, self, descriptor, hash, h_parent, result),
+        *result,
+        self);
+    // We did not find a class, but the class loader chain was recognized, so we
+    // return true.
+    return true;
   }
 
   // Unsupported class loader.
   *result = nullptr;
   return false;
 }
+
+#undef RETURN_IF_UNRECOGNIZED_OR_FOUND_OR_EXCEPTION
 
 namespace {
 
@@ -2723,36 +2762,38 @@ ALWAYS_INLINE void FilterDexFileCaughtExceptions(Thread* self, ClassLinker* clas
 
 // Finds the class in the boot class loader.
 // If the class is found the method returns the resolved class. Otherwise it returns null.
-ObjPtr<mirror::Class> ClassLinker::FindClassInBootClassLoaderClassPath(Thread* self,
-                                                                       const char* descriptor,
-                                                                       size_t hash) {
-  ObjPtr<mirror::Class> result = nullptr;
+bool ClassLinker::FindClassInBootClassLoaderClassPath(Thread* self,
+                                                      const char* descriptor,
+                                                      size_t hash,
+                                                      /*out*/ ObjPtr<mirror::Class>* result) {
   ClassPathEntry pair = FindInClassPath(descriptor, hash, boot_class_path_);
   if (pair.second != nullptr) {
     ObjPtr<mirror::Class> klass = LookupClass(self, descriptor, hash, nullptr);
     if (klass != nullptr) {
-      result = EnsureResolved(self, descriptor, klass);
+      *result = EnsureResolved(self, descriptor, klass);
     } else {
-      result = DefineClass(self,
-                           descriptor,
-                           hash,
-                           ScopedNullHandle<mirror::ClassLoader>(),
-                           *pair.first,
-                           *pair.second);
+      *result = DefineClass(self,
+                            descriptor,
+                            hash,
+                            ScopedNullHandle<mirror::ClassLoader>(),
+                            *pair.first,
+                            *pair.second);
     }
-    if (result == nullptr) {
+    if (*result == nullptr) {
       CHECK(self->IsExceptionPending()) << descriptor;
       FilterDexFileCaughtExceptions(self, this);
     }
   }
-  return result;
+  // The boot classloader is always a known lookup.
+  return true;
 }
 
-ObjPtr<mirror::Class> ClassLinker::FindClassInBaseDexClassLoaderClassPath(
+bool ClassLinker::FindClassInBaseDexClassLoaderClassPath(
     ScopedObjectAccessAlreadyRunnable& soa,
     const char* descriptor,
     size_t hash,
-    Handle<mirror::ClassLoader> class_loader) {
+    Handle<mirror::ClassLoader> class_loader,
+    /*out*/ ObjPtr<mirror::Class>* result) {
   DCHECK(IsPathOrDexClassLoader(soa, class_loader) ||
          IsInMemoryDexClassLoader(soa, class_loader) ||
          IsDelegateLastClassLoader(soa, class_loader))
@@ -2772,17 +2813,17 @@ ObjPtr<mirror::Class> ClassLinker::FindClassInBaseDexClassLoaderClassPath(
   };
   VisitClassLoaderDexFiles(soa, class_loader, find_class_def);
 
-  ObjPtr<mirror::Class> klass = nullptr;
   if (class_def != nullptr) {
-    klass = DefineClass(soa.Self(), descriptor, hash, class_loader, *dex_file, *class_def);
-    if (UNLIKELY(klass == nullptr)) {
+    *result = DefineClass(soa.Self(), descriptor, hash, class_loader, *dex_file, *class_def);
+    if (UNLIKELY(*result == nullptr)) {
       CHECK(soa.Self()->IsExceptionPending()) << descriptor;
       FilterDexFileCaughtExceptions(soa.Self(), this);
     } else {
       DCHECK(!soa.Self()->IsExceptionPending());
     }
   }
-  return klass;
+  // A BaseDexClassLoader is always a known lookup.
+  return true;
 }
 
 ObjPtr<mirror::Class> ClassLinker::FindClass(Thread* self,
@@ -3045,18 +3086,6 @@ ObjPtr<mirror::Class> ClassLinker::DefineClass(Thread* self,
     }
   }
 
-  // For AOT-compilation of an app, we may use a shortened boot class path that excludes
-  // some runtime modules. Prevent definition of classes in app class loader that could clash
-  // with these modules as these classes could be resolved differently during execution.
-  if (class_loader != nullptr &&
-      Runtime::Current()->IsAotCompiler() &&
-      IsUpdatableBootClassPathDescriptor(descriptor)) {
-    ObjPtr<mirror::Throwable> pre_allocated =
-        Runtime::Current()->GetPreAllocatedNoClassDefFoundError();
-    self->SetException(pre_allocated);
-    return sdc.Finish(nullptr);
-  }
-
   // For AOT-compilation of an app, we may use only a public SDK to resolve symbols. If the SDK
   // checks are configured (a non null SdkChecker) and the descriptor is not in the provided
   // public class path then we prevent the definition of the class.
@@ -3188,7 +3217,7 @@ ObjPtr<mirror::Class> ClassLinker::DefineClass(Thread* self,
   }
   self->AssertNoPendingException();
   CHECK(h_new_class != nullptr) << descriptor;
-  CHECK(h_new_class->IsResolved() && !h_new_class->IsErroneousResolved()) << descriptor;
+  CHECK(h_new_class->IsResolved()) << descriptor << " " << h_new_class->GetStatus();
 
   // Instrumentation may have updated entrypoints for all methods of all
   // classes. However it could not update methods of this class while we
@@ -3833,10 +3862,8 @@ void ClassLinker::LoadMethod(const DexFile& dex_file,
 }
 
 void ClassLinker::AppendToBootClassPath(Thread* self, const DexFile* dex_file) {
-  ObjPtr<mirror::DexCache> dex_cache = AllocAndInitializeDexCache(
-      self,
-      *dex_file,
-      Runtime::Current()->GetLinearAlloc());
+  ObjPtr<mirror::DexCache> dex_cache =
+      AllocAndInitializeDexCache(self, *dex_file, /* class_loader= */ nullptr);
   CHECK(dex_cache != nullptr) << "Failed to allocate dex cache for " << dex_file->GetLocation();
   AppendToBootClassPath(dex_file, dex_cache);
 }
@@ -3883,14 +3910,14 @@ void ClassLinker::RegisterDexFileLocked(const DexFile& dex_file,
   bool initialize_oat_file_data = (oat_file != nullptr) && oat_file->IsExecutable();
   JavaVMExt* const vm = self->GetJniEnv()->GetVm();
   for (auto it = dex_caches_.begin(); it != dex_caches_.end(); ) {
-    DexCacheData data = *it;
+    const DexCacheData& data = it->second;
     if (self->IsJWeakCleared(data.weak_root)) {
       vm->DeleteWeakGlobalRef(self, data.weak_root);
       it = dex_caches_.erase(it);
     } else {
       if (initialize_oat_file_data &&
-          it->dex_file->GetOatDexFile() != nullptr &&
-          it->dex_file->GetOatDexFile()->GetOatFile() == oat_file) {
+          it->first->GetOatDexFile() != nullptr &&
+          it->first->GetOatDexFile()->GetOatFile() == oat_file) {
         initialize_oat_file_data = false;  // Already initialized.
       }
       ++it;
@@ -3905,9 +3932,8 @@ void ClassLinker::RegisterDexFileLocked(const DexFile& dex_file,
   jweak dex_cache_jweak = vm->AddWeakGlobalRef(self, dex_cache);
   DexCacheData data;
   data.weak_root = dex_cache_jweak;
-  data.dex_file = dex_cache->GetDexFile();
   data.class_table = ClassTableForClassLoader(class_loader);
-  AddNativeDebugInfoForDex(self, data.dex_file);
+  AddNativeDebugInfoForDex(self, &dex_file);
   DCHECK(data.class_table != nullptr);
   // Make sure to hold the dex cache live in the class table. This case happens for the boot class
   // path dex caches without an image.
@@ -3919,7 +3945,8 @@ void ClassLinker::RegisterDexFileLocked(const DexFile& dex_file,
     // remembered sets and generational GCs.
     WriteBarrier::ForEveryFieldWrite(class_loader);
   }
-  dex_caches_.push_back(data);
+  bool inserted = dex_caches_.emplace(&dex_file, std::move(data)).second;
+  CHECK(inserted);
 }
 
 ObjPtr<mirror::DexCache> ClassLinker::DecodeDexCacheLocked(Thread* self, const DexCacheData* data) {
@@ -3933,7 +3960,7 @@ bool ClassLinker::IsSameClassLoader(
     const DexCacheData* data,
     ObjPtr<mirror::ClassLoader> class_loader) {
   CHECK(data != nullptr);
-  DCHECK_EQ(dex_cache->GetDexFile(), data->dex_file);
+  DCHECK_EQ(FindDexCacheDataLocked(*dex_cache->GetDexFile()), data);
   return data->class_table == ClassTableForClassLoader(class_loader);
 }
 
@@ -4026,10 +4053,10 @@ ObjPtr<mirror::DexCache> ClassLinker::RegisterDexFile(const DexFile& dex_file,
     const DexCacheData* old_data = FindDexCacheDataLocked(dex_file);
     old_dex_cache = DecodeDexCacheLocked(self, old_data);
     if (old_dex_cache == nullptr && h_dex_cache != nullptr) {
-      // Do InitializeNativeFields while holding dex lock to make sure two threads don't call it
+      // Do Initialize while holding dex lock to make sure two threads don't call it
       // at the same time with the same dex cache. Since the .bss is shared this can cause failing
       // DCHECK that the arrays are null.
-      h_dex_cache->InitializeNativeFields(&dex_file, linear_alloc);
+      h_dex_cache->Initialize(&dex_file, h_class_loader.Get());
       RegisterDexFileLocked(dex_file, h_dex_cache.Get(), h_class_loader.Get());
     }
     if (old_dex_cache != nullptr) {
@@ -4078,13 +4105,14 @@ ObjPtr<mirror::DexCache> ClassLinker::FindDexCache(Thread* self, const DexFile& 
     return dex_cache;
   }
   // Failure, dump diagnostic and abort.
-  for (const DexCacheData& data : dex_caches_) {
+  for (const auto& entry : dex_caches_) {
+    const DexCacheData& data = entry.second;
     if (DecodeDexCacheLocked(self, &data) != nullptr) {
-      LOG(FATAL_WITHOUT_ABORT) << "Registered dex file " << data.dex_file->GetLocation();
+      LOG(FATAL_WITHOUT_ABORT) << "Registered dex file " << entry.first->GetLocation();
     }
   }
   LOG(FATAL) << "Failed to find DexCache for DexFile " << dex_file.GetLocation()
-             << " " << &dex_file << " " << dex_cache_data->dex_file;
+             << " " << &dex_file;
   UNREACHABLE();
 }
 
@@ -4092,29 +4120,21 @@ ClassTable* ClassLinker::FindClassTable(Thread* self, ObjPtr<mirror::DexCache> d
   const DexFile* dex_file = dex_cache->GetDexFile();
   DCHECK(dex_file != nullptr);
   ReaderMutexLock mu(self, *Locks::dex_lock_);
-  // Search assuming unique-ness of dex file.
-  for (const DexCacheData& data : dex_caches_) {
-    // Avoid decoding (and read barriers) other unrelated dex caches.
-    if (data.dex_file == dex_file) {
-      ObjPtr<mirror::DexCache> registered_dex_cache = DecodeDexCacheLocked(self, &data);
-      if (registered_dex_cache != nullptr) {
-        CHECK_EQ(registered_dex_cache, dex_cache) << dex_file->GetLocation();
-        return data.class_table;
-      }
+  auto it = dex_caches_.find(dex_file);
+  if (it != dex_caches_.end()) {
+    const DexCacheData& data = it->second;
+    ObjPtr<mirror::DexCache> registered_dex_cache = DecodeDexCacheLocked(self, &data);
+    if (registered_dex_cache != nullptr) {
+      CHECK_EQ(registered_dex_cache, dex_cache) << dex_file->GetLocation();
+      return data.class_table;
     }
   }
   return nullptr;
 }
 
 const ClassLinker::DexCacheData* ClassLinker::FindDexCacheDataLocked(const DexFile& dex_file) {
-  // Search assuming unique-ness of dex file.
-  for (const DexCacheData& data : dex_caches_) {
-    // Avoid decoding (and read barriers) other unrelated dex caches.
-    if (data.dex_file == &dex_file) {
-      return &data;
-    }
-  }
-  return nullptr;
+  auto it = dex_caches_.find(&dex_file);
+  return it != dex_caches_.end() ? &it->second : nullptr;
 }
 
 void ClassLinker::CreatePrimitiveClass(Thread* self,
@@ -4709,7 +4729,6 @@ verifier::FailureKind ClassLinker::PerformClassVerification(Thread* self,
                                               class_loader,
                                               *klass->GetClassDef(),
                                               runtime->GetCompilerCallbacks(),
-                                              runtime->IsAotCompiler(),
                                               log_level,
                                               Runtime::Current()->GetTargetSdkVersion(),
                                               error_msg);
@@ -4753,6 +4772,7 @@ bool ClassLinker::VerifyClassUsingOatFile(Thread* self,
   if (oat_file != nullptr) {
     ClassStatus vdex_status = oat_file->GetVdexFile()->ComputeClassStatus(self, klass);
     if (vdex_status >= ClassStatus::kVerifiedNeedsAccessChecks) {
+      VLOG(verifier) << "Vdex verification success for " << klass->PrettyClass();
       oat_file_class_status = vdex_status;
       return true;
     }
@@ -7607,8 +7627,10 @@ class ClassLinker::LinkInterfaceMethodsHelper {
     if (kIsDebugBuild) {
       PointerSize pointer_size = class_linker_->GetImagePointerSize();
       // Check that there are no stale methods are in the dex cache array.
-      auto* resolved_methods = klass_->GetDexCache()->GetResolvedMethods();
-      for (size_t i = 0, count = klass_->GetDexCache()->NumResolvedMethods(); i < count; ++i) {
+      ObjPtr<mirror::DexCache> dex_cache = klass_->GetDexCache();
+      auto* resolved_methods = dex_cache->GetResolvedMethods();
+      size_t num_methods = dex_cache->NumResolvedMethods();
+      for (size_t i = 0; resolved_methods != nullptr && i < num_methods; ++i) {
         auto pair = mirror::DexCache::GetNativePair(resolved_methods, i);
         ArtMethod* m = pair.object;
         CHECK(move_table_.find(m) == move_table_.end() ||
@@ -8867,6 +8889,7 @@ ObjPtr<mirror::Class> ClassLinker::DoLookupResolvedType(dex::TypeIndex type_idx,
 ObjPtr<mirror::Class> ClassLinker::DoLookupResolvedType(dex::TypeIndex type_idx,
                                                         ObjPtr<mirror::DexCache> dex_cache,
                                                         ObjPtr<mirror::ClassLoader> class_loader) {
+  DCHECK(dex_cache->GetClassLoader() == class_loader);
   const DexFile& dex_file = *dex_cache->GetDexFile();
   const char* descriptor = dex_file.StringByTypeIdx(type_idx);
   ObjPtr<mirror::Class> type = LookupResolvedType(descriptor, class_loader);
@@ -8914,6 +8937,7 @@ template ObjPtr<mirror::Class> ClassLinker::DoResolveType(dex::TypeIndex type_id
 ObjPtr<mirror::Class> ClassLinker::DoResolveType(dex::TypeIndex type_idx,
                                                  Handle<mirror::DexCache> dex_cache,
                                                  Handle<mirror::ClassLoader> class_loader) {
+  DCHECK(dex_cache->GetClassLoader() == class_loader.Get());
   Thread* self = Thread::Current();
   const char* descriptor = dex_cache->GetDexFile()->StringByTypeIdx(type_idx);
   ObjPtr<mirror::Class> resolved = FindClass(self, descriptor, class_loader);
@@ -8944,6 +8968,7 @@ ArtMethod* ClassLinker::FindResolvedMethod(ObjPtr<mirror::Class> klass,
                                            ObjPtr<mirror::DexCache> dex_cache,
                                            ObjPtr<mirror::ClassLoader> class_loader,
                                            uint32_t method_idx) {
+  DCHECK(dex_cache->GetClassLoader() == class_loader);
   // Search for the method using dex_cache and method_idx. The Class::Find*Method()
   // functions can optimize the search if the dex_cache is the same as the DexCache
   // of the class, with fall-back to name and signature search otherwise.
@@ -9004,6 +9029,7 @@ static bool CheckNoSuchMethod(ArtMethod* method,
                               ObjPtr<mirror::DexCache> dex_cache,
                               ObjPtr<mirror::ClassLoader> class_loader)
       REQUIRES_SHARED(Locks::mutator_lock_) {
+  DCHECK(dex_cache->GetClassLoader().Ptr() == class_loader.Ptr());
   return method == nullptr ||
          hiddenapi::ShouldDenyAccessToMember(method,
                                              hiddenapi::AccessContext(class_loader, dex_cache),
@@ -9014,6 +9040,7 @@ ArtMethod* ClassLinker::FindIncompatibleMethod(ObjPtr<mirror::Class> klass,
                                                ObjPtr<mirror::DexCache> dex_cache,
                                                ObjPtr<mirror::ClassLoader> class_loader,
                                                uint32_t method_idx) {
+  DCHECK(dex_cache->GetClassLoader() == class_loader);
   if (klass->IsInterface()) {
     ArtMethod* method = klass->FindClassMethod(dex_cache, method_idx, image_pointer_size_);
     return CheckNoSuchMethod(method, dex_cache, class_loader) ? nullptr : method;
@@ -9036,6 +9063,7 @@ ArtMethod* ClassLinker::ResolveMethod(uint32_t method_idx,
                                       Handle<mirror::ClassLoader> class_loader,
                                       ArtMethod* referrer,
                                       InvokeType type) {
+  DCHECK(dex_cache->GetClassLoader() == class_loader.Get());
   DCHECK(!Thread::Current()->IsExceptionPending()) << Thread::Current()->GetException()->Dump();
   DCHECK(dex_cache != nullptr);
   DCHECK(referrer == nullptr || !referrer->IsProxyMethod());
@@ -9130,6 +9158,7 @@ ArtMethod* ClassLinker::ResolveMethod(uint32_t method_idx,
 ArtMethod* ClassLinker::ResolveMethodWithoutInvokeType(uint32_t method_idx,
                                                        Handle<mirror::DexCache> dex_cache,
                                                        Handle<mirror::ClassLoader> class_loader) {
+  DCHECK(dex_cache->GetClassLoader() == class_loader.Get());
   ArtMethod* resolved = dex_cache->GetResolvedMethod(method_idx);
   Thread::PoisonObjectPointersIfDebug();
   if (resolved != nullptr) {
@@ -9163,6 +9192,7 @@ ArtField* ClassLinker::LookupResolvedField(uint32_t field_idx,
                                            ObjPtr<mirror::DexCache> dex_cache,
                                            ObjPtr<mirror::ClassLoader> class_loader,
                                            bool is_static) {
+  DCHECK(dex_cache->GetClassLoader().Ptr() == class_loader.Ptr());
   const DexFile& dex_file = *dex_cache->GetDexFile();
   const dex::FieldId& field_id = dex_file.GetFieldId(field_idx);
   ObjPtr<mirror::Class> klass = dex_cache->GetResolvedType(field_id.class_idx_);
@@ -9183,6 +9213,7 @@ ArtField* ClassLinker::ResolveField(uint32_t field_idx,
                                     Handle<mirror::ClassLoader> class_loader,
                                     bool is_static) {
   DCHECK(dex_cache != nullptr);
+  DCHECK(dex_cache->GetClassLoader().Ptr() == class_loader.Get());
   DCHECK(!Thread::Current()->IsExceptionPending()) << Thread::Current()->GetException()->Dump();
   ArtField* resolved = dex_cache->GetResolvedField(field_idx);
   Thread::PoisonObjectPointersIfDebug();
@@ -9210,6 +9241,7 @@ ArtField* ClassLinker::ResolveFieldJLS(uint32_t field_idx,
                                        Handle<mirror::DexCache> dex_cache,
                                        Handle<mirror::ClassLoader> class_loader) {
   DCHECK(dex_cache != nullptr);
+  DCHECK(dex_cache->GetClassLoader() == class_loader.Get());
   ArtField* resolved = dex_cache->GetResolvedField(field_idx);
   Thread::PoisonObjectPointersIfDebug();
   if (resolved != nullptr) {
@@ -9237,6 +9269,7 @@ ArtField* ClassLinker::FindResolvedField(ObjPtr<mirror::Class> klass,
                                          ObjPtr<mirror::ClassLoader> class_loader,
                                          uint32_t field_idx,
                                          bool is_static) {
+  DCHECK(dex_cache->GetClassLoader() == class_loader);
   ArtField* resolved = is_static ? klass->FindStaticField(dex_cache, field_idx)
                                  : klass->FindInstanceField(dex_cache, field_idx);
   if (resolved != nullptr &&
@@ -9257,6 +9290,7 @@ ArtField* ClassLinker::FindResolvedFieldJLS(ObjPtr<mirror::Class> klass,
                                             ObjPtr<mirror::DexCache> dex_cache,
                                             ObjPtr<mirror::ClassLoader> class_loader,
                                             uint32_t field_idx) {
+  DCHECK(dex_cache->GetClassLoader().Ptr() == class_loader.Ptr());
   ArtField* resolved = klass->FindField(dex_cache, field_idx);
 
   if (resolved != nullptr &&
@@ -9280,6 +9314,7 @@ ObjPtr<mirror::MethodType> ClassLinker::ResolveMethodType(
     Handle<mirror::ClassLoader> class_loader) {
   DCHECK(Runtime::Current()->IsMethodHandlesEnabled());
   DCHECK(dex_cache != nullptr);
+  DCHECK(dex_cache->GetClassLoader() == class_loader.Get());
 
   ObjPtr<mirror::MethodType> resolved = dex_cache->GetResolvedMethodType(proto_idx);
   if (resolved != nullptr) {
@@ -9731,13 +9766,14 @@ void ClassLinker::DumpForSigQuit(std::ostream& os) {
     if (loader != nullptr) {
       os << "#" << class_loader_index++ << " " << loader->GetClass()->PrettyDescriptor() << ": [";
       bool saw_one_dex_file = false;
-      for (const DexCacheData& dex_cache : dex_caches_) {
-        if (dex_cache.IsValid() && dex_cache.class_table == class_loader.class_table) {
+      for (const auto& entry : dex_caches_) {
+        const DexCacheData& dex_cache = entry.second;
+        if (dex_cache.class_table == class_loader.class_table) {
           if (saw_one_dex_file) {
             os << ":";
           }
           saw_one_dex_file = true;
-          os << dex_cache.dex_file->GetLocation();
+          os << entry.first->GetLocation();
         }
       }
       os << "]";
@@ -9832,7 +9868,8 @@ ObjPtr<mirror::ClassLoader> ClassLinker::CreateWellKnownClassLoader(
     const std::vector<const DexFile*>& dex_files,
     Handle<mirror::Class> loader_class,
     Handle<mirror::ClassLoader> parent_loader,
-    Handle<mirror::ObjectArray<mirror::ClassLoader>> shared_libraries) {
+    Handle<mirror::ObjectArray<mirror::ClassLoader>> shared_libraries,
+    Handle<mirror::ObjectArray<mirror::ClassLoader>> shared_libraries_after) {
 
   StackHandleScope<5> hs(self);
 
@@ -9952,6 +9989,12 @@ ObjPtr<mirror::ClassLoader> ClassLinker::CreateWellKnownClassLoader(
   DCHECK(shared_libraries_field != nullptr);
   shared_libraries_field->SetObject<false>(h_class_loader.Get(), shared_libraries.Get());
 
+  ArtField* shared_libraries_after_field =
+        jni::DecodeArtField(
+        WellKnownClasses::dalvik_system_BaseDexClassLoader_sharedLibraryLoadersAfter);
+  DCHECK(shared_libraries_after_field != nullptr);
+  shared_libraries_after_field->SetObject<false>(h_class_loader.Get(),
+                                                 shared_libraries_after.Get());
   return h_class_loader.Get();
 }
 
@@ -9959,7 +10002,8 @@ jobject ClassLinker::CreateWellKnownClassLoader(Thread* self,
                                                 const std::vector<const DexFile*>& dex_files,
                                                 jclass loader_class,
                                                 jobject parent_loader,
-                                                jobject shared_libraries) {
+                                                jobject shared_libraries,
+                                                jobject shared_libraries_after) {
   CHECK(self->GetJniEnv()->IsSameObject(loader_class,
                                         WellKnownClasses::dalvik_system_PathClassLoader) ||
         self->GetJniEnv()->IsSameObject(loader_class,
@@ -9972,7 +10016,7 @@ jobject ClassLinker::CreateWellKnownClassLoader(Thread* self,
   ScopedObjectAccessUnchecked soa(self);
 
   // For now, create a libcore-level DexFile for each ART DexFile. This "explodes" multidex.
-  StackHandleScope<4> hs(self);
+  StackHandleScope<5> hs(self);
 
   Handle<mirror::Class> h_loader_class =
       hs.NewHandle<mirror::Class>(soa.Decode<mirror::Class>(loader_class));
@@ -9980,13 +10024,16 @@ jobject ClassLinker::CreateWellKnownClassLoader(Thread* self,
       hs.NewHandle<mirror::ClassLoader>(soa.Decode<mirror::ClassLoader>(parent_loader));
   Handle<mirror::ObjectArray<mirror::ClassLoader>> h_shared_libraries =
       hs.NewHandle(soa.Decode<mirror::ObjectArray<mirror::ClassLoader>>(shared_libraries));
+  Handle<mirror::ObjectArray<mirror::ClassLoader>> h_shared_libraries_after =
+        hs.NewHandle(soa.Decode<mirror::ObjectArray<mirror::ClassLoader>>(shared_libraries_after));
 
   ObjPtr<mirror::ClassLoader> loader = CreateWellKnownClassLoader(
       self,
       dex_files,
       h_loader_class,
       h_parent,
-      h_shared_libraries);
+      h_shared_libraries,
+      h_shared_libraries_after);
 
   // Make it a global ref and return.
   ScopedLocalRef<jobject> local_ref(
@@ -10100,12 +10147,6 @@ ObjPtr<mirror::IfTable> ClassLinker::AllocIfTable(Thread* self, size_t ifcount) 
       mirror::IfTable::Alloc(self,
                              GetClassRoot<mirror::ObjectArray<mirror::Object>>(this),
                              ifcount * mirror::IfTable::kMax)));
-}
-
-bool ClassLinker::IsUpdatableBootClassPathDescriptor(const char* descriptor ATTRIBUTE_UNUSED) {
-  // Should not be called on ClassLinker, only on AotClassLinker that overrides this.
-  LOG(FATAL) << "UNREACHABLE";
-  UNREACHABLE();
 }
 
 bool ClassLinker::DenyAccessBasedOnPublicSdk(ArtMethod* art_method ATTRIBUTE_UNUSED) const

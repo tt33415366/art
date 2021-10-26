@@ -220,6 +220,17 @@ inline ObjPtr<mirror::String> ArtMethod::ResolveNameString() {
   return Runtime::Current()->GetClassLinker()->ResolveString(method_id.name_idx_, this);
 }
 
+inline bool ArtMethod::NameEquals(ObjPtr<mirror::String> name) {
+  DCHECK(!IsProxyMethod());
+  const DexFile* dex_file = GetDexFile();
+  const dex::MethodId& method_id = dex_file->GetMethodId(GetDexMethodIndex());
+  const dex::StringIndex name_idx = method_id.name_idx_;
+  uint32_t utf16_length;
+  const char* utf8_name = dex_file->StringDataAndUtf16LengthByIdx(name_idx, &utf16_length);
+  return dchecked_integral_cast<uint32_t>(name->GetLength()) == utf16_length &&
+         name->Equals(utf8_name);
+}
+
 inline const dex::CodeItem* ArtMethod::GetCodeItem() {
   if (!HasCodeItem()) {
     return nullptr;
@@ -410,9 +421,42 @@ inline CodeItemDebugInfoAccessor ArtMethod::DexInstructionDebugInfo() {
   return CodeItemDebugInfoAccessor(*GetDexFile(), GetCodeItem(), GetDexMethodIndex());
 }
 
-inline void ArtMethod::SetCounter(uint16_t hotness_count) {
+inline bool ArtMethod::CounterHasChanged() {
   DCHECK(!IsAbstract());
-  hotness_count_ = hotness_count;
+  return hotness_count_ != interpreter::kNterpHotnessMask;
+}
+
+inline void ArtMethod::ResetCounter() {
+  DCHECK(!IsAbstract());
+  // Avoid dirtying the value if possible.
+  if (hotness_count_ != interpreter::kNterpHotnessMask) {
+    hotness_count_ = interpreter::kNterpHotnessMask;
+  }
+}
+
+inline void ArtMethod::SetHotCounter() {
+  DCHECK(!IsAbstract());
+  // Avoid dirtying the value if possible.
+  if (hotness_count_ != 0) {
+    hotness_count_ = 0;
+  }
+}
+
+inline void ArtMethod::UpdateCounter(int32_t new_samples) {
+  DCHECK(!IsAbstract());
+  DCHECK_GT(new_samples, 0);
+  DCHECK_LE(new_samples, std::numeric_limits<uint16_t>::max());
+  uint16_t old_hotness_count = hotness_count_;
+  uint16_t new_count = (old_hotness_count <= new_samples) ? 0u : old_hotness_count - new_samples;
+  // Avoid dirtying the value if possible.
+  if (old_hotness_count != new_count) {
+    hotness_count_ = new_count;
+  }
+}
+
+inline bool ArtMethod::CounterIsHot() {
+  DCHECK(!IsAbstract());
+  return hotness_count_ == 0;
 }
 
 inline uint16_t ArtMethod::GetCounter() {

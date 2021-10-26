@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 
+#include "android-base/parseint.h"
 #include "android-base/properties.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
@@ -70,25 +71,6 @@ NO_RETURN void ArgumentError(const char* fmt, ...) {
   exit(EX_USAGE);
 }
 
-NO_RETURN void UsageHelp(const char* argv0) {
-  std::string name(android::base::Basename(argv0));
-  UsageError("Usage: %s ACTION", name.c_str());
-  UsageError("On-device refresh tool for boot class path extensions and system server");
-  UsageError("following an update of the ART APEX.");
-  UsageError("");
-  UsageError("Valid ACTION choices are:");
-  UsageError("");
-  UsageError(
-      "--check          Check compilation artifacts are up-to-date based on metadata (fast).");
-  UsageError("--compile        Compile boot class path extensions and system_server jars");
-  UsageError("                 when necessary.");
-  UsageError("--force-compile  Unconditionally compile the boot class path extensions and");
-  UsageError("                 system_server jars.");
-  UsageError("--verify         Verify artifacts are up-to-date with dexoptanalyzer (slow).");
-  UsageError("--help           Display this help information.");
-  exit(EX_USAGE);
-}
-
 bool ParseZygoteKind(const char* input, ZygoteKind* zygote_kind) {
   std::string_view z(input);
   if (z == "zygote32") {
@@ -134,7 +116,11 @@ bool InitializeCommonConfig(std::string_view argument, OdrConfig* config) {
   return false;
 }
 
-int InitializeHostConfig(int argc, const char** argv, OdrConfig* config) {
+void CommonOptionsHelp() {
+  UsageError("--dry-run");
+}
+
+int InitializeHostConfig(int argc, char** argv, OdrConfig* config) {
   __android_log_set_logger(__android_log_stderr_logger);
 
   std::string current_binary;
@@ -167,8 +153,6 @@ int InitializeHostConfig(int argc, const char** argv, OdrConfig* config) {
       config->SetIsa(art::GetInstructionSetFromString(value.c_str()));
     } else if (ArgumentMatches(arg, "--system-server-classpath=", &value)) {
       config->SetSystemServerClasspath(arg);
-    } else if (ArgumentMatches(arg, "--updatable-bcp-packages-file=", &value)) {
-      config->SetUpdatableBcpPackagesFile(value);
     } else if (ArgumentMatches(arg, "--zygote-arch=", &value)) {
       ZygoteKind zygote_kind;
       if (!ParseZygoteKind(value.c_str(), &zygote_kind)) {
@@ -182,7 +166,18 @@ int InitializeHostConfig(int argc, const char** argv, OdrConfig* config) {
   return n;
 }
 
-int InitializeTargetConfig(int argc, const char** argv, OdrConfig* config) {
+void HostOptionsHelp() {
+  UsageError("--android-root");
+  UsageError("--android-art-root");
+  UsageError("--apex-info-list");
+  UsageError("--art-apex-data");
+  UsageError("--dex2oat-bootclasspath");
+  UsageError("--isa-root");
+  UsageError("--system-server-classpath");
+  UsageError("--zygote-arch");
+}
+
+int InitializeTargetConfig(int argc, char** argv, OdrConfig* config) {
   config->SetApexInfoListFile("/apex/apex-info-list.xml");
   config->SetArtBinDir(art::GetArtBinDir());
   config->SetBootClasspath(GetEnvironmentVariableOrDie("BOOTCLASSPATH"));
@@ -197,16 +192,32 @@ int InitializeTargetConfig(int argc, const char** argv, OdrConfig* config) {
   }
   config->SetZygoteKind(zygote_kind);
 
-  const std::string updatable_packages =
-      android::base::GetProperty("dalvik.vm.dex2oat-updatable-bcp-packages-file", {});
-  config->SetUpdatableBcpPackagesFile(updatable_packages);
-
   int n = 1;
   for (; n < argc - 1; ++n) {
     const char* arg = argv[n];
     std::string value;
     if (ArgumentMatches(arg, "--use-compilation-os=", &value)) {
-      config->SetCompilationOsAddress(value);
+      int cid;
+      if (!android::base::ParseInt(value, &cid)) {
+        ArgumentError("Failed to parse CID: %s", value.c_str());
+      }
+      config->SetCompilationOsAddress(cid);
+    } else if (ArgumentMatches(arg, "--dalvik-cache=", &value)) {
+      art::OverrideDalvikCacheSubDirectory(value);
+      config->SetArtifactDirectory(Concatenate(
+          {android::base::Dirname(art::odrefresh::kOdrefreshArtifactDirectory), "/", value}));
+    } else if (ArgumentMatches(arg, "--max-execution-seconds=", &value)) {
+      int seconds;
+      if (!android::base::ParseInt(value, &seconds)) {
+        ArgumentError("Failed to parse integer: %s", value.c_str());
+      }
+      config->SetMaxExecutionSeconds(seconds);
+    } else if (ArgumentMatches(arg, "--max-child-process-seconds=", &value)) {
+      int seconds;
+      if (!android::base::ParseInt(value, &seconds)) {
+        ArgumentError("Failed to parse integer: %s", value.c_str());
+      }
+      config->SetMaxChildProcessSeconds(seconds);
     } else if (!InitializeCommonConfig(arg, config)) {
       UsageError("Unrecognized argument: '%s'", arg);
     }
@@ -214,7 +225,16 @@ int InitializeTargetConfig(int argc, const char** argv, OdrConfig* config) {
   return n;
 }
 
-int InitializeConfig(int argc, const char** argv, OdrConfig* config) {
+void TargetOptionsHelp() {
+  UsageError("--use-compilation-os=<CID>       Run compilation in the VM with the given CID.");
+  UsageError("                                 (0 = do not use VM, -1 = use composd's VM)");
+  UsageError(
+      "--dalvik-cache=<DIR>             Write artifacts to .../<DIR> rather than .../dalvik-cache");
+  UsageError("--max-execution-seconds=<N>      Maximum timeout of all compilation combined");
+  UsageError("--max-child-process-seconds=<N>  Maximum timeout of each compilation task");
+}
+
+int InitializeConfig(int argc, char** argv, OdrConfig* config) {
   if (art::kIsTargetBuild) {
     return InitializeTargetConfig(argc, argv, config);
   } else {
@@ -222,13 +242,45 @@ int InitializeConfig(int argc, const char** argv, OdrConfig* config) {
   }
 }
 
+NO_RETURN void UsageHelp(const char* argv0) {
+  std::string name(android::base::Basename(argv0));
+  UsageError("Usage: %s [OPTION...] ACTION", name.c_str());
+  UsageError("On-device refresh tool for boot class path extensions and system server");
+  UsageError("following an update of the ART APEX.");
+  UsageError("");
+  UsageError("Valid ACTION choices are:");
+  UsageError("");
+  UsageError(
+      "--check          Check compilation artifacts are up-to-date based on metadata (fast).");
+  UsageError("--compile        Compile boot class path extensions and system_server jars");
+  UsageError("                 when necessary.");
+  UsageError("--force-compile  Unconditionally compile the boot class path extensions and");
+  UsageError("                 system_server jars.");
+  UsageError("--verify         Verify artifacts are up-to-date with dexoptanalyzer (slow).");
+  UsageError("--help           Display this help information.");
+  UsageError("");
+  UsageError("Available OPTIONs are:");
+  UsageError("");
+  CommonOptionsHelp();
+  if (art::kIsTargetBuild) {
+    TargetOptionsHelp();
+  } else {
+    HostOptionsHelp();
+  }
+
+  exit(EX_USAGE);
+}
+
 }  // namespace
 
-int main(int argc, const char** argv) {
+int main(int argc, char** argv) {
   // odrefresh is launched by `init` which sets the umask of forked processed to
   // 077 (S_IRWXG | S_IRWXO). This blocks the ability to make files and directories readable
   // by others and prevents system_server from loading generated artifacts.
   umask(S_IWGRP | S_IWOTH);
+
+  // Explicitly initialize logging (b/201042799).
+  android::base::InitLogging(argv, android::base::LogdLogger(android::base::SYSTEM));
 
   OdrConfig config(argv[0]);
   int n = InitializeConfig(argc, argv, &config);
@@ -238,7 +290,7 @@ int main(int argc, const char** argv) {
     UsageError("Expected 1 argument, but have %d.", argc);
   }
 
-  OdrMetrics metrics(art::odrefresh::kOdrefreshArtifactDirectory);
+  OdrMetrics metrics(config.GetArtifactDirectory());
   OnDeviceRefresh odr(config);
   for (int i = 0; i < argc; ++i) {
     std::string_view action(argv[i]);

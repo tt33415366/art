@@ -37,7 +37,7 @@ namespace arm {
 #define ___   asm_.GetVIXLAssembler()->
 #endif
 
-// The AAPCS requires 8-byte alignement. This is not as strict as the Managed ABI stack alignment.
+// The AAPCS requires 8-byte alignment. This is not as strict as the Managed ABI stack alignment.
 static constexpr size_t kAapcsStackAlignment = 8u;
 static_assert(kAapcsStackAlignment < kStackAlignment);
 
@@ -68,10 +68,6 @@ static inline vixl::aarch32::Register AsVIXLRegisterPairHigh(ArmManagedRegister 
 }
 
 void ArmVIXLJNIMacroAssembler::FinalizeCode() {
-  for (const std::unique_ptr<
-      ArmVIXLJNIMacroAssembler::ArmException>& exception : exception_blocks_) {
-    EmitExceptionPoll(exception.get());
-  }
   asm_.FinalizeCode();
 }
 
@@ -267,7 +263,21 @@ void ArmVIXLJNIMacroAssembler::DecreaseFrameSize(size_t adjust) {
   }
 }
 
+ManagedRegister ArmVIXLJNIMacroAssembler::CoreRegisterWithSize(ManagedRegister src, size_t size) {
+  DCHECK(src.AsArm().IsCoreRegister());
+  DCHECK_EQ(size, 4u);
+  return src;
+}
+
 void ArmVIXLJNIMacroAssembler::Store(FrameOffset dest, ManagedRegister m_src, size_t size) {
+  Store(ArmManagedRegister::FromCoreRegister(SP), MemberOffset(dest.Int32Value()), m_src, size);
+}
+
+void ArmVIXLJNIMacroAssembler::Store(ManagedRegister m_base,
+                                     MemberOffset offs,
+                                     ManagedRegister m_src,
+                                     size_t size) {
+  ArmManagedRegister base = m_base.AsArm();
   ArmManagedRegister src = m_src.AsArm();
   if (src.IsNoRegister()) {
     CHECK_EQ(0u, size);
@@ -275,19 +285,19 @@ void ArmVIXLJNIMacroAssembler::Store(FrameOffset dest, ManagedRegister m_src, si
     CHECK_EQ(4u, size);
     UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
     temps.Exclude(AsVIXLRegister(src));
-    asm_.StoreToOffset(kStoreWord, AsVIXLRegister(src), sp, dest.Int32Value());
+    asm_.StoreToOffset(kStoreWord, AsVIXLRegister(src), AsVIXLRegister(base), offs.Int32Value());
   } else if (src.IsRegisterPair()) {
     CHECK_EQ(8u, size);
     ___ Strd(AsVIXLRegisterPairLow(src),
              AsVIXLRegisterPairHigh(src),
-             MemOperand(sp, dest.Int32Value()));
+             MemOperand(AsVIXLRegister(base), offs.Int32Value()));
   } else if (src.IsSRegister()) {
     CHECK_EQ(4u, size);
-    asm_.StoreSToOffset(AsVIXLSRegister(src), sp, dest.Int32Value());
+    asm_.StoreSToOffset(AsVIXLSRegister(src), AsVIXLRegister(base), offs.Int32Value());
   } else {
     CHECK_EQ(8u, size);
     CHECK(src.IsDRegister()) << src;
-    asm_.StoreDToOffset(AsVIXLDRegister(src), sp, dest.Int32Value());
+    asm_.StoreDToOffset(AsVIXLDRegister(src), AsVIXLRegister(base), offs.Int32Value());
   }
 }
 
@@ -371,6 +381,13 @@ void ArmVIXLJNIMacroAssembler::StoreImmediateToFrame(FrameOffset dest, uint32_t 
 
 void ArmVIXLJNIMacroAssembler::Load(ManagedRegister m_dst, FrameOffset src, size_t size) {
   return Load(m_dst.AsArm(), sp, src.Int32Value(), size);
+}
+
+void ArmVIXLJNIMacroAssembler::Load(ManagedRegister m_dst,
+                                    ManagedRegister m_base,
+                                    MemberOffset offs,
+                                    size_t size) {
+  return Load(m_dst.AsArm(), AsVIXLRegister(m_base.AsArm()), offs.Int32Value(), size);
 }
 
 void ArmVIXLJNIMacroAssembler::LoadFromThread(ManagedRegister m_dst,
@@ -965,21 +982,31 @@ void ArmVIXLJNIMacroAssembler::GetCurrentThread(FrameOffset dest_offset) {
   asm_.StoreToOffset(kStoreWord, tr, sp, dest_offset.Int32Value());
 }
 
-void ArmVIXLJNIMacroAssembler::ExceptionPoll(size_t stack_adjust) {
-  CHECK_ALIGNED(stack_adjust, kAapcsStackAlignment);
+void ArmVIXLJNIMacroAssembler::ExceptionPoll(JNIMacroLabel* label) {
   UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
   vixl32::Register scratch = temps.Acquire();
-  exception_blocks_.emplace_back(
-      new ArmVIXLJNIMacroAssembler::ArmException(scratch, stack_adjust));
   asm_.LoadFromOffset(kLoadWord,
                       scratch,
                       tr,
                       Thread::ExceptionOffset<kArmPointerSize>().Int32Value());
 
   ___ Cmp(scratch, 0);
-  vixl32::Label* label = exception_blocks_.back()->Entry();
-  ___ BPreferNear(ne, label);
+  ___ BPreferNear(ne, ArmVIXLJNIMacroLabel::Cast(label)->AsArm());
   // TODO: think about using CBNZ here.
+}
+
+void ArmVIXLJNIMacroAssembler::DeliverPendingException() {
+  // Pass exception object as argument.
+  // Don't care about preserving r0 as this won't return.
+  // Note: The scratch register from `ExceptionPoll()` may have been clobbered.
+  asm_.LoadFromOffset(kLoadWord,
+                      r0,
+                      tr,
+                      Thread::ExceptionOffset<kArmPointerSize>().Int32Value());
+  ___ Ldr(lr,
+          MemOperand(tr,
+              QUICK_ENTRYPOINT_OFFSET(kArmPointerSize, pDeliverException).Int32Value()));
+  ___ Blx(lr);
 }
 
 std::unique_ptr<JNIMacroLabel> ArmVIXLJNIMacroAssembler::CreateLabel() {
@@ -1027,31 +1054,11 @@ void ArmVIXLJNIMacroAssembler::Bind(JNIMacroLabel* label) {
   ___ Bind(ArmVIXLJNIMacroLabel::Cast(label)->AsArm());
 }
 
-void ArmVIXLJNIMacroAssembler::EmitExceptionPoll(
-    ArmVIXLJNIMacroAssembler::ArmException* exception) {
-  ___ Bind(exception->Entry());
-  if (exception->stack_adjust_ != 0) {  // Fix up the frame.
-    DecreaseFrameSize(exception->stack_adjust_);
-  }
-
-  vixl32::Register scratch = exception->scratch_;
-  UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
-  temps.Exclude(scratch);
-  // Pass exception object as argument.
-  // Don't care about preserving r0 as this won't return.
-  ___ Mov(r0, scratch);
-  ___ Ldr(lr,
-          MemOperand(tr,
-              QUICK_ENTRYPOINT_OFFSET(kArmPointerSize, pDeliverException).Int32Value()));
-  ___ Blx(lr);
-}
-
 void ArmVIXLJNIMacroAssembler::MemoryBarrier(ManagedRegister scratch ATTRIBUTE_UNUSED) {
   UNIMPLEMENTED(FATAL);
 }
 
-void ArmVIXLJNIMacroAssembler::Load(ArmManagedRegister
-                                    dest,
+void ArmVIXLJNIMacroAssembler::Load(ArmManagedRegister dest,
                                     vixl32::Register base,
                                     int32_t offset,
                                     size_t size) {

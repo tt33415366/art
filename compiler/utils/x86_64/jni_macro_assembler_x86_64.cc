@@ -151,35 +151,44 @@ void X86_64JNIMacroAssembler::DecreaseFrameSize(size_t adjust) {
   DecreaseFrameSizeImpl(adjust, &asm_);
 }
 
+ManagedRegister X86_64JNIMacroAssembler::CoreRegisterWithSize(ManagedRegister src, size_t size) {
+  DCHECK(src.AsX86_64().IsCpuRegister());
+  DCHECK(size == 4u || size == 8u) << size;
+  return src;
+}
+
 void X86_64JNIMacroAssembler::Store(FrameOffset offs, ManagedRegister msrc, size_t size) {
+  Store(X86_64ManagedRegister::FromCpuRegister(RSP), MemberOffset(offs.Int32Value()), msrc, size);
+}
+
+void X86_64JNIMacroAssembler::Store(ManagedRegister mbase,
+                                    MemberOffset offs,
+                                    ManagedRegister msrc,
+                                    size_t size) {
+  X86_64ManagedRegister base = mbase.AsX86_64();
   X86_64ManagedRegister src = msrc.AsX86_64();
   if (src.IsNoRegister()) {
     CHECK_EQ(0u, size);
   } else if (src.IsCpuRegister()) {
     if (size == 4) {
       CHECK_EQ(4u, size);
-      __ movl(Address(CpuRegister(RSP), offs), src.AsCpuRegister());
+      __ movl(Address(base.AsCpuRegister(), offs), src.AsCpuRegister());
     } else {
       CHECK_EQ(8u, size);
-      __ movq(Address(CpuRegister(RSP), offs), src.AsCpuRegister());
+      __ movq(Address(base.AsCpuRegister(), offs), src.AsCpuRegister());
     }
-  } else if (src.IsRegisterPair()) {
-    CHECK_EQ(0u, size);
-    __ movq(Address(CpuRegister(RSP), offs), src.AsRegisterPairLow());
-    __ movq(Address(CpuRegister(RSP), FrameOffset(offs.Int32Value()+4)),
-            src.AsRegisterPairHigh());
   } else if (src.IsX87Register()) {
     if (size == 4) {
-      __ fstps(Address(CpuRegister(RSP), offs));
+      __ fstps(Address(base.AsCpuRegister(), offs));
     } else {
-      __ fstpl(Address(CpuRegister(RSP), offs));
+      __ fstpl(Address(base.AsCpuRegister(), offs));
     }
   } else {
     CHECK(src.IsXmmRegister());
     if (size == 4) {
-      __ movss(Address(CpuRegister(RSP), offs), src.AsXmmRegister());
+      __ movss(Address(base.AsCpuRegister(), offs), src.AsXmmRegister());
     } else {
-      __ movsd(Address(CpuRegister(RSP), offs), src.AsXmmRegister());
+      __ movsd(Address(base.AsCpuRegister(), offs), src.AsXmmRegister());
     }
   }
 }
@@ -218,33 +227,37 @@ void X86_64JNIMacroAssembler::StoreSpanning(FrameOffset /*dst*/,
 }
 
 void X86_64JNIMacroAssembler::Load(ManagedRegister mdest, FrameOffset src, size_t size) {
+  Load(mdest, X86_64ManagedRegister::FromCpuRegister(RSP), MemberOffset(src.Int32Value()), size);
+}
+
+void X86_64JNIMacroAssembler::Load(ManagedRegister mdest,
+                                   ManagedRegister mbase,
+                                   MemberOffset offs,
+                                   size_t size) {
   X86_64ManagedRegister dest = mdest.AsX86_64();
+  X86_64ManagedRegister base = mbase.AsX86_64();
   if (dest.IsNoRegister()) {
     CHECK_EQ(0u, size);
   } else if (dest.IsCpuRegister()) {
     if (size == 4) {
       CHECK_EQ(4u, size);
-      __ movl(dest.AsCpuRegister(), Address(CpuRegister(RSP), src));
+      __ movl(dest.AsCpuRegister(), Address(base.AsCpuRegister(), offs));
     } else {
       CHECK_EQ(8u, size);
-      __ movq(dest.AsCpuRegister(), Address(CpuRegister(RSP), src));
+      __ movq(dest.AsCpuRegister(), Address(base.AsCpuRegister(), offs));
     }
-  } else if (dest.IsRegisterPair()) {
-    CHECK_EQ(0u, size);
-    __ movq(dest.AsRegisterPairLow(), Address(CpuRegister(RSP), src));
-    __ movq(dest.AsRegisterPairHigh(), Address(CpuRegister(RSP), FrameOffset(src.Int32Value()+4)));
   } else if (dest.IsX87Register()) {
     if (size == 4) {
-      __ flds(Address(CpuRegister(RSP), src));
+      __ flds(Address(base.AsCpuRegister(), offs));
     } else {
-      __ fldl(Address(CpuRegister(RSP), src));
+      __ fldl(Address(base.AsCpuRegister(), offs));
     }
   } else {
     CHECK(dest.IsXmmRegister());
     if (size == 4) {
-      __ movss(dest.AsXmmRegister(), Address(CpuRegister(RSP), src));
+      __ movss(dest.AsXmmRegister(), Address(base.AsCpuRegister(), offs));
     } else {
-      __ movsd(dest.AsXmmRegister(), Address(CpuRegister(RSP), src));
+      __ movsd(dest.AsXmmRegister(), Address(base.AsCpuRegister(), offs));
     }
   }
 }
@@ -629,21 +642,20 @@ void X86_64JNIMacroAssembler::GetCurrentThread(FrameOffset offset) {
   __ movq(Address(CpuRegister(RSP), offset), scratch);
 }
 
-// Slowpath entered when Thread::Current()->_exception is non-null
-class X86_64ExceptionSlowPath final : public SlowPath {
- public:
-  explicit X86_64ExceptionSlowPath(size_t stack_adjust) : stack_adjust_(stack_adjust) {}
-  void Emit(Assembler *sp_asm) override;
- private:
-  const size_t stack_adjust_;
-};
-
-void X86_64JNIMacroAssembler::ExceptionPoll(size_t stack_adjust) {
-  X86_64ExceptionSlowPath* slow = new (__ GetAllocator()) X86_64ExceptionSlowPath(stack_adjust);
-  __ GetBuffer()->EnqueueSlowPath(slow);
+void X86_64JNIMacroAssembler::ExceptionPoll(JNIMacroLabel* label) {
   __ gs()->cmpl(Address::Absolute(Thread::ExceptionOffset<kX86_64PointerSize>(), true),
                 Immediate(0));
-  __ j(kNotEqual, slow->Entry());
+  __ j(kNotEqual, X86_64JNIMacroLabel::Cast(label)->AsX86_64());
+}
+
+void X86_64JNIMacroAssembler::DeliverPendingException() {
+  // Pass exception as argument in RDI
+  __ gs()->movq(CpuRegister(RDI),
+                Address::Absolute(Thread::ExceptionOffset<kX86_64PointerSize>(), true));
+  __ gs()->call(
+      Address::Absolute(QUICK_ENTRYPOINT_OFFSET(kX86_64PointerSize, pDeliverException), true));
+  // this call should never return
+  __ int3();
 }
 
 std::unique_ptr<JNIMacroLabel> X86_64JNIMacroAssembler::CreateLabel() {
@@ -685,24 +697,6 @@ void X86_64JNIMacroAssembler::Bind(JNIMacroLabel* label) {
 }
 
 #undef __
-
-void X86_64ExceptionSlowPath::Emit(Assembler *sasm) {
-  X86_64Assembler* sp_asm = down_cast<X86_64Assembler*>(sasm);
-#define __ sp_asm->
-  __ Bind(&entry_);
-  // Note: the return value is dead
-  if (stack_adjust_ != 0) {  // Fix up the frame.
-    DecreaseFrameSizeImpl(stack_adjust_, sp_asm);
-  }
-  // Pass exception as argument in RDI
-  __ gs()->movq(CpuRegister(RDI),
-                Address::Absolute(Thread::ExceptionOffset<kX86_64PointerSize>(), true));
-  __ gs()->call(
-      Address::Absolute(QUICK_ENTRYPOINT_OFFSET(kX86_64PointerSize, pDeliverException), true));
-  // this call should never return
-  __ int3();
-#undef __
-}
 
 }  // namespace x86_64
 }  // namespace art

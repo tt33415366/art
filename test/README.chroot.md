@@ -59,7 +59,6 @@ Note that using this chroot-based approach requires root access to the device
         ```
     * With a full Android (AOSP) `aosp/master` tree:
         ```bash
-        export OVERRIDE_TARGET_FLATTEN_APEX=true
         . ./build/envsetup.sh
         lunch aosp_arm64-eng  # or aosp_arm-eng for 32-bit ARM
         m adb
@@ -67,6 +66,10 @@ Note that using this chroot-based approach requires root access to the device
 3. Build ART and required dependencies:
     ```bash
     art/tools/buildbot-build.sh --target
+    ```
+    After building it is fine to see it finish with an error like:
+    ```
+    linkerconfig E [...] variableloader.cc:83] Unable to access VNDK APEX at path: <path>: No such file or directory
     ```
 4. Clean up the device:
     ```bash

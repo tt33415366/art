@@ -681,6 +681,10 @@ class ReadBarrierForHeapReferenceSlowPathARM64 : public SlowPathCodeARM64 {
         DCHECK(intrinsic == Intrinsics::kUnsafeGetObject ||
                intrinsic == Intrinsics::kUnsafeGetObjectVolatile ||
                intrinsic == Intrinsics::kUnsafeCASObject ||
+               intrinsic == Intrinsics::kJdkUnsafeGetObject ||
+               intrinsic == Intrinsics::kJdkUnsafeGetObjectVolatile ||
+               intrinsic == Intrinsics::kJdkUnsafeGetObjectAcquire ||
+               intrinsic == Intrinsics::kJdkUnsafeCASObject ||
                mirror::VarHandle::GetAccessModeTemplateByIntrinsic(intrinsic) ==
                    mirror::VarHandle::AccessModeTemplate::kGet ||
                mirror::VarHandle::GetAccessModeTemplateByIntrinsic(intrinsic) ==
@@ -1119,10 +1123,12 @@ void CodeGeneratorARM64::MaybeIncrementHotness(bool is_frame_entry) {
       __ Ldr(method, MemOperand(sp, 0));
     }
     __ Ldrh(counter, MemOperand(method, ArtMethod::HotnessCountOffset().Int32Value()));
-    __ Add(counter, counter, 1);
-    // Subtract one if the counter would overflow.
-    __ Sub(counter, counter, Operand(counter, LSR, 16));
+    vixl::aarch64::Label done;
+    DCHECK_EQ(0u, interpreter::kNterpHotnessValue);
+    __ Cbz(counter, &done);
+    __ Add(counter, counter, -1);
     __ Strh(counter, MemOperand(method, ArtMethod::HotnessCountOffset().Int32Value()));
+    __ Bind(&done);
   }
 
   if (GetGraph()->IsCompilingBaseline() && !Runtime::Current()->IsAotCompiler()) {
@@ -4636,6 +4642,7 @@ void CodeGeneratorARM64::GenerateStaticOrDirectCall(
   switch (invoke->GetCodePtrLocation()) {
     case CodePtrLocation::kCallSelf:
       {
+        DCHECK(!GetGraph()->HasShouldDeoptimizeFlag());
         // Use a scope to help guarantee that `RecordPcInfo()` records the correct pc.
         ExactAssemblyScope eas(GetVIXLAssembler(),
                                kInstructionSize,
@@ -6909,15 +6916,17 @@ SVEMemOperand InstructionCodeGeneratorARM64::VecSVEAddress(
   Register base = InputRegisterAt(instruction, 0);
   Location index = locations->InAt(1);
 
-  // TODO: Support intermediate address sharing for SVE accesses.
   DCHECK(!instruction->InputAt(1)->IsIntermediateAddressIndex());
-  DCHECK(!instruction->InputAt(0)->IsIntermediateAddress());
   DCHECK(!index.IsConstant());
 
   uint32_t offset = is_string_char_at
       ? mirror::String::ValueOffset().Uint32Value()
       : mirror::Array::DataOffset(size).Uint32Value();
   size_t shift = ComponentSizeShiftWidth(size);
+
+  if (instruction->InputAt(0)->IsIntermediateAddress()) {
+    return SVEMemOperand(base.X(), XRegisterFrom(index), LSL, shift);
+  }
 
   *scratch = temps_scope->AcquireSameSizeAs(base);
   __ Add(*scratch, base, offset);

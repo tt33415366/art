@@ -34,6 +34,7 @@
 #include "base/string_view_cpp20.h"
 #include "base/systrace.h"
 #include "base/utils.h"
+#include "base/zip_archive.h"
 #include "class_linker.h"
 #include "class_loader_context.h"
 #include "dex/art_dex_file_loader.h"
@@ -53,6 +54,7 @@ using android::base::StringPrintf;
 
 static constexpr const char* kAnonymousDexPrefix = "Anonymous-DexFile@";
 static constexpr const char* kVdexExtension = ".vdex";
+static constexpr const char* kDmExtension = ".dm";
 
 std::ostream& operator << (std::ostream& stream, const OatFileAssistant::OatStatus status) {
   switch (status) {
@@ -107,6 +109,8 @@ OatFileAssistant::OatFileAssistant(const char* dex_location,
       oat_(this, /*is_oat_location=*/ true),
       vdex_for_odex_(this, /*is_oat_location=*/ false),
       vdex_for_oat_(this, /*is_oat_location=*/ true),
+      dm_for_odex_(this, /*is_oat_location=*/ false),
+      dm_for_oat_(this, /*is_oat_location=*/ true),
       zip_fd_(zip_fd) {
   CHECK(dex_location != nullptr) << "OatFileAssistant: null dex location";
   CHECK(!load_executable || context != nullptr) << "Loading executable without a context";
@@ -141,6 +145,13 @@ OatFileAssistant::OatFileAssistant(const char* dex_location,
                          DupCloexec(zip_fd),
                          DupCloexec(vdex_fd),
                          DupCloexec(oat_fd));
+
+    std::string dm_file_name = GetDmFilename(dex_location_);
+    dm_for_odex_.Reset(dm_file_name,
+                       UseFdToReadFiles(),
+                       DupCloexec(zip_fd),
+                       DupCloexec(vdex_fd),
+                       DupCloexec(oat_fd));
   } else {
     LOG(WARNING) << "Failed to determine odex file name: " << error_msg;
   }
@@ -152,6 +163,8 @@ OatFileAssistant::OatFileAssistant(const char* dex_location,
       oat_.Reset(oat_file_name, /*use_fd=*/ false);
       std::string vdex_file_name = GetVdexFilename(oat_file_name);
       vdex_for_oat_.Reset(vdex_file_name, UseFdToReadFiles(), zip_fd, vdex_fd, oat_fd);
+      std::string dm_file_name = GetDmFilename(dex_location);
+      dm_for_oat_.Reset(dm_file_name, UseFdToReadFiles(), zip_fd, vdex_fd, oat_fd);
     } else {
       LOG(WARNING) << "Failed to determine oat file name for dex location "
                    << dex_location_ << ": " << error_msg;
@@ -523,6 +536,18 @@ bool OatFileAssistant::DexLocationToOdexFilename(const std::string& location,
   CHECK(odex_filename != nullptr);
   CHECK(error_msg != nullptr);
 
+  // For a DEX file on /apex, check if there is an odex file on /system. If so, and the file exists,
+  // use it.
+  if (LocationIsOnApex(location)) {
+    const std::string system_file = GetSystemOdexFilenameForApex(location, isa);
+    if (OS::FileExists(system_file.c_str(), /*check_file_type=*/true)) {
+      *odex_filename = system_file;
+      return true;
+    } else if (errno != ENOENT) {
+      PLOG(ERROR) << "Could not check odex file " << system_file;
+    }
+  }
+
   // The odex file name is formed by replacing the dex_location extension with
   // .odex and inserting an oat/<isa> directory. For example:
   //   location = /foo/bar/baz.jar
@@ -690,8 +715,12 @@ OatFileAssistant::OatFileInfo& OatFileAssistant::GetBestInfo() {
 
     // If the odex is not useable, and we have a useable vdex, return the vdex
     // instead.
-    if (!odex_.IsUseable() && vdex_for_odex_.IsUseable()) {
-      return vdex_for_odex_;
+    if (!odex_.IsUseable()) {
+      if (vdex_for_odex_.IsUseable()) {
+        return vdex_for_odex_;
+      } else if (dm_for_odex_.IsUseable()) {
+        return dm_for_odex_;
+      }
     }
     return odex_;
   }
@@ -716,6 +745,12 @@ OatFileAssistant::OatFileInfo& OatFileAssistant::GetBestInfo() {
   }
   if (vdex_for_odex_.IsUseable()) {
     return vdex_for_odex_;
+  }
+  if (dm_for_oat_.IsUseable()) {
+    return dm_for_oat_;
+  }
+  if (dm_for_odex_.IsUseable()) {
+    return dm_for_odex_;
   }
 
   // We got into the worst situation here:
@@ -860,6 +895,19 @@ const OatFile* OatFileAssistant::OatFileInfo::GetFile() {
                                         std::move(vdex),
                                         oat_file_assistant_->dex_location_,
                                         &error_msg));
+    }
+  } else if (android::base::EndsWith(filename_, kDmExtension)) {
+    executable = false;
+    // Check to see if there is a vdex file we can make use of.
+    std::unique_ptr<ZipArchive> dm_file(ZipArchive::Open(filename_.c_str(), &error_msg));
+    if (dm_file != nullptr) {
+      std::unique_ptr<VdexFile> vdex(VdexFile::OpenFromDm(filename_, *dm_file));
+      if (vdex != nullptr) {
+        file_.reset(OatFile::OpenFromVdex(zip_fd_,
+                                          std::move(vdex),
+                                          oat_file_assistant_->dex_location_,
+                                          &error_msg));
+      }
     }
   } else {
     if (executable && oat_file_assistant_->only_load_trusted_executable_) {

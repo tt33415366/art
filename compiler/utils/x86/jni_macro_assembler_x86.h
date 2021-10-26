@@ -54,8 +54,11 @@ class X86JNIMacroAssembler final : public JNIMacroAssemblerFwd<X86Assembler, Poi
   void IncreaseFrameSize(size_t adjust) override;
   void DecreaseFrameSize(size_t adjust) override;
 
+  ManagedRegister CoreRegisterWithSize(ManagedRegister src, size_t size) override;
+
   // Store routines
   void Store(FrameOffset offs, ManagedRegister src, size_t size) override;
+  void Store(ManagedRegister base, MemberOffset offs, ManagedRegister src, size_t size) override;
   void StoreRef(FrameOffset dest, ManagedRegister src) override;
   void StoreRawPtr(FrameOffset dest, ManagedRegister src) override;
 
@@ -69,6 +72,7 @@ class X86JNIMacroAssembler final : public JNIMacroAssemblerFwd<X86Assembler, Poi
 
   // Load routines
   void Load(ManagedRegister dest, FrameOffset src, size_t size) override;
+  void Load(ManagedRegister dest, ManagedRegister base, MemberOffset offs, size_t size) override;
 
   void LoadFromThread(ManagedRegister dest, ThreadOffset32 src, size_t size) override;
 
@@ -155,8 +159,10 @@ class X86JNIMacroAssembler final : public JNIMacroAssemblerFwd<X86Assembler, Poi
   void CallFromThread(ThreadOffset32 offset) override;
 
   // Generate code to check if Thread::Current()->exception_ is non-null
-  // and branch to a ExceptionSlowPath if it is.
-  void ExceptionPoll(size_t stack_adjust) override;
+  // and branch to the `label` if it is.
+  void ExceptionPoll(JNIMacroLabel* label) override;
+  // Deliver pending exception.
+  void DeliverPendingException() override;
 
   // Create a new label that can be used with Jump/Bind calls.
   std::unique_ptr<JNIMacroLabel> CreateLabel() override;

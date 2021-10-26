@@ -144,6 +144,7 @@
 #include "native/org_apache_harmony_dalvik_ddmc_DdmServer.h"
 #include "native/org_apache_harmony_dalvik_ddmc_DdmVmInternal.h"
 #include "native/sun_misc_Unsafe.h"
+#include "native/jdk_internal_misc_Unsafe.h"
 #include "native_bridge_art_interface.h"
 #include "native_stack_dump.h"
 #include "nativehelper/scoped_local_ref.h"
@@ -1290,40 +1291,47 @@ void Runtime::InitializeApexVersions() {
       bcp_apexes.push_back(apex);
     }
   }
-  std::string result;
   static const char* kApexFileName = "/apex/apex-info-list.xml";
-  // When running on host or chroot, we just encode empty markers.
+  // Start with empty markers.
+  apex_versions_ = std::string(bcp_apexes.size(), '/');
+  // When running on host or chroot, we just use empty markers.
   if (!kIsTargetBuild || !OS::FileExists(kApexFileName)) {
-    for (uint32_t i = 0; i < bcp_apexes.size(); ++i) {
-      result += '/';
-    }
-  } else {
+    return;
+  }
 #ifdef ART_TARGET_ANDROID
-    auto info_list = apex::readApexInfoList(kApexFileName);
-    CHECK(info_list.has_value());
-    std::map<std::string_view, const apex::ApexInfo*> apex_infos;
-    for (const apex::ApexInfo& info : info_list->getApexInfo()) {
-      if (info.getIsActive()) {
-        apex_infos.emplace(info.getModuleName(), &info);
-      }
+  if (access(kApexFileName, R_OK) != 0) {
+    PLOG(WARNING) << "Failed to read " << kApexFileName;
+    return;
+  }
+  auto info_list = apex::readApexInfoList(kApexFileName);
+  if (!info_list.has_value()) {
+    LOG(WARNING) << "Failed to parse " << kApexFileName;
+    return;
+  }
+
+  std::string result;
+  std::map<std::string_view, const apex::ApexInfo*> apex_infos;
+  for (const apex::ApexInfo& info : info_list->getApexInfo()) {
+    if (info.getIsActive()) {
+      apex_infos.emplace(info.getModuleName(), &info);
     }
-    for (const std::string_view& str : bcp_apexes) {
-      auto info = apex_infos.find(str);
-      if (info == apex_infos.end() || info->second->getIsFactory()) {
-        result += '/';
-      } else {
-        // In case lastUpdateMillis field is populated in apex-info-list.xml, we
-        // prefer to use it as version scheme. If the field is missing we
-        // fallback to the version code of the APEX.
-        uint64_t version = info->second->hasLastUpdateMillis()
-            ? info->second->getLastUpdateMillis()
-            : info->second->getVersionCode();
-        android::base::StringAppendF(&result, "/%" PRIu64, version);
-      }
+  }
+  for (const std::string_view& str : bcp_apexes) {
+    auto info = apex_infos.find(str);
+    if (info == apex_infos.end() || info->second->getIsFactory()) {
+      result += '/';
+    } else {
+      // In case lastUpdateMillis field is populated in apex-info-list.xml, we
+      // prefer to use it as version scheme. If the field is missing we
+      // fallback to the version code of the APEX.
+      uint64_t version = info->second->hasLastUpdateMillis()
+          ? info->second->getLastUpdateMillis()
+          : info->second->getVersionCode();
+      android::base::StringAppendF(&result, "/%" PRIu64, version);
     }
-#endif
   }
   apex_versions_ = result;
+#endif
 }
 
 void Runtime::ReloadAllFlags(const std::string& caller) {
@@ -1390,9 +1398,9 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
 
   QuasiAtomic::Startup();
 
-  oat_file_manager_ = new OatFileManager;
+  oat_file_manager_ = new OatFileManager();
 
-  jni_id_manager_.reset(new jni::JniIdManager);
+  jni_id_manager_.reset(new jni::JniIdManager());
 
   Thread::SetSensitiveThreadHook(runtime_options.GetOrDefault(Opt::HookIsSensitiveThread));
   Monitor::Init(runtime_options.GetOrDefault(Opt::LockProfThreshold),
@@ -1437,6 +1445,10 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   is_explicit_gc_disabled_ = runtime_options.Exists(Opt::DisableExplicitGC);
   image_dex2oat_enabled_ = runtime_options.GetOrDefault(Opt::ImageDex2Oat);
   dump_native_stack_on_sig_quit_ = runtime_options.GetOrDefault(Opt::DumpNativeStackOnSigQuit);
+
+  if (is_zygote_ || runtime_options.Exists(Opt::OnlyUseTrustedOatFiles)) {
+    oat_file_manager_->SetOnlyUseTrustedOatFiles();
+  }
 
   vfprintf_ = runtime_options.GetOrDefault(Opt::HookVfprintf);
   exit_ = runtime_options.GetOrDefault(Opt::HookExit);
@@ -1981,11 +1993,6 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
 
   VLOG(startup) << "Runtime::Init exiting";
 
-  // Set OnlyUseTrustedOatFiles only after the boot classpath has been set up.
-  if (runtime_options.Exists(Opt::OnlyUseTrustedOatFiles)) {
-    oat_file_manager_->SetOnlyUseTrustedOatFiles();
-  }
-
   return true;
 }
 
@@ -2185,6 +2192,7 @@ void Runtime::RegisterRuntimeNativeMethods(JNIEnv* env) {
   register_java_lang_Throwable(env);
   register_java_lang_VMClassLoader(env);
   register_java_util_concurrent_atomic_AtomicLong(env);
+  register_jdk_internal_misc_Unsafe(env);
   register_libcore_util_CharsetUtils(env);
   register_org_apache_harmony_dalvik_ddmc_DdmServer(env);
   register_org_apache_harmony_dalvik_ddmc_DdmVmInternal(env);

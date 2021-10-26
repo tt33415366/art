@@ -111,8 +111,13 @@ class JNIMacroAssembler : public DeletableArenaObject<kArenaAllocAssembler> {
   virtual void IncreaseFrameSize(size_t adjust) = 0;
   virtual void DecreaseFrameSize(size_t adjust) = 0;
 
+  // Return the same core register but with correct size if the architecture-specific
+  // ManagedRegister has different representation for different sizes.
+  virtual ManagedRegister CoreRegisterWithSize(ManagedRegister src, size_t size) = 0;
+
   // Store routines
   virtual void Store(FrameOffset offs, ManagedRegister src, size_t size) = 0;
+  virtual void Store(ManagedRegister base, MemberOffset offs, ManagedRegister src, size_t size) = 0;
   virtual void StoreRef(FrameOffset dest, ManagedRegister src) = 0;
   virtual void StoreRawPtr(FrameOffset dest, ManagedRegister src) = 0;
 
@@ -129,6 +134,7 @@ class JNIMacroAssembler : public DeletableArenaObject<kArenaAllocAssembler> {
 
   // Load routines
   virtual void Load(ManagedRegister dest, FrameOffset src, size_t size) = 0;
+  virtual void Load(ManagedRegister dest, ManagedRegister base, MemberOffset offs, size_t size) = 0;
 
   virtual void LoadFromThread(ManagedRegister dest,
                               ThreadOffset<kPointerSize> src,
@@ -237,8 +243,10 @@ class JNIMacroAssembler : public DeletableArenaObject<kArenaAllocAssembler> {
   virtual void CallFromThread(ThreadOffset<kPointerSize> offset) = 0;
 
   // Generate code to check if Thread::Current()->exception_ is non-null
-  // and branch to a ExceptionSlowPath if it is.
-  virtual void ExceptionPoll(size_t stack_adjust) = 0;
+  // and branch to the `label` if it is.
+  virtual void ExceptionPoll(JNIMacroLabel* label) = 0;
+  // Deliver pending exception.
+  virtual void DeliverPendingException() = 0;
 
   // Create a new label that can be used with Jump/Bind calls.
   virtual std::unique_ptr<JNIMacroLabel> CreateLabel() = 0;

@@ -168,7 +168,7 @@ class Heap {
   // as object allocation time. time_to_call_mallinfo seems to be on the order of 1 usec
   // on Android.
 #ifdef __ANDROID__
-  static constexpr uint32_t kNotifyNativeInterval = 32;
+  static constexpr uint32_t kNotifyNativeInterval = 64;
 #else
   // Some host mallinfo() implementations are slow. And memory is less scarce.
   static constexpr uint32_t kNotifyNativeInterval = 384;
@@ -866,6 +866,7 @@ class Heap {
   uint64_t GetTotalTimeWaitingForGC() const {
     return total_wait_time_;
   }
+  uint64_t GetPreOomeGcCount() const;
 
   // Perfetto Art Heap Profiler Support.
   HeapSampler& GetHeapSampler() {
@@ -1474,6 +1475,10 @@ class Heap {
   // GC.
   Atomic<size_t> num_bytes_freed_revoke_;
 
+  // Records the number of bytes allocated at the time of GC, which is used later to calculate
+  // how many bytes have been allocated since the last GC
+  size_t num_bytes_alive_after_gc_;
+
   // Info related to the current or previous GC iteration.
   collector::Iteration current_gc_iteration_;
 
@@ -1687,6 +1692,9 @@ class Heap {
   // Boot image address range. Includes images and oat files.
   uint32_t boot_images_start_address_;
   uint32_t boot_images_size_;
+
+  // The number of times we initiated a GC of last resort to try to avoid an OOME.
+  Atomic<uint64_t> pre_oome_gc_count_;
 
   // An installed allocation listener.
   Atomic<AllocationListener*> alloc_listener_;

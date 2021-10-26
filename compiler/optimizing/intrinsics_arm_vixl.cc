@@ -2784,13 +2784,25 @@ static void GenerateIntrinsicGet(HInvoke* invoke,
   }
 }
 
+static bool UnsafeGetIntrinsicOnCallList(Intrinsics intrinsic) {
+  switch (intrinsic) {
+    case Intrinsics::kUnsafeGetObject:
+    case Intrinsics::kUnsafeGetObjectVolatile:
+    case Intrinsics::kJdkUnsafeGetObject:
+    case Intrinsics::kJdkUnsafeGetObjectVolatile:
+    case Intrinsics::kJdkUnsafeGetObjectAcquire:
+      return true;
+    default:
+      break;
+  }
+  return false;
+}
+
 static void CreateUnsafeGetLocations(HInvoke* invoke,
                                      CodeGeneratorARMVIXL* codegen,
                                      DataType::Type type,
                                      bool atomic) {
-  bool can_call = kEmitCompilerReadBarrier &&
-      (invoke->GetIntrinsic() == Intrinsics::kUnsafeGetObject ||
-       invoke->GetIntrinsic() == Intrinsics::kUnsafeGetObjectVolatile);
+  bool can_call = kEmitCompilerReadBarrier && UnsafeGetIntrinsicOnCallList(invoke->GetIntrinsic());
   ArenaAllocator* allocator = invoke->GetBlock()->GetGraph()->GetAllocator();
   LocationSummary* locations =
       new (allocator) LocationSummary(invoke,
@@ -2843,57 +2855,132 @@ static void GenUnsafeGet(HInvoke* invoke,
 }
 
 void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeGet(HInvoke* invoke) {
-  CreateUnsafeGetLocations(invoke, codegen_, DataType::Type::kInt32, /*atomic=*/ false);
+  VisitJdkUnsafeGet(invoke);
 }
 
 void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeGet(HInvoke* invoke) {
+  VisitJdkUnsafeGet(invoke);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeGetVolatile(HInvoke* invoke) {
+  VisitJdkUnsafeGetVolatile(invoke);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeGetVolatile(HInvoke* invoke) {
+  VisitJdkUnsafeGetVolatile(invoke);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeGetLong(HInvoke* invoke) {
+  VisitJdkUnsafeGetLong(invoke);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeGetLong(HInvoke* invoke) {
+  VisitJdkUnsafeGetLong(invoke);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeGetLongVolatile(HInvoke* invoke) {
+  VisitJdkUnsafeGetLongVolatile(invoke);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeGetLongVolatile(HInvoke* invoke) {
+  VisitJdkUnsafeGetLongVolatile(invoke);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeGetObject(HInvoke* invoke) {
+  VisitJdkUnsafeGetObject(invoke);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeGetObject(HInvoke* invoke) {
+  VisitJdkUnsafeGetObject(invoke);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeGetObjectVolatile(HInvoke* invoke) {
+  VisitJdkUnsafeGetObjectVolatile(invoke);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeGetObjectVolatile(HInvoke* invoke) {
+  VisitJdkUnsafeGetObjectVolatile(invoke);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafeGet(HInvoke* invoke) {
+  CreateUnsafeGetLocations(invoke, codegen_, DataType::Type::kInt32, /*atomic=*/ false);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafeGet(HInvoke* invoke) {
   GenUnsafeGet(
       invoke, codegen_, DataType::Type::kInt32, std::memory_order_relaxed, /*atomic=*/ false);
 }
 
-void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeGetVolatile(HInvoke* invoke) {
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafeGetVolatile(HInvoke* invoke) {
   CreateUnsafeGetLocations(invoke, codegen_, DataType::Type::kInt32, /*atomic=*/ true);
 }
 
-void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeGetVolatile(HInvoke* invoke) {
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafeGetVolatile(HInvoke* invoke) {
   GenUnsafeGet(
       invoke, codegen_, DataType::Type::kInt32, std::memory_order_seq_cst, /*atomic=*/ true);
 }
 
-void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeGetLong(HInvoke* invoke) {
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafeGetAcquire(HInvoke* invoke) {
+  CreateUnsafeGetLocations(invoke, codegen_, DataType::Type::kInt32, /*atomic=*/ true);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafeGetAcquire(HInvoke* invoke) {
+  GenUnsafeGet(
+      invoke, codegen_, DataType::Type::kInt32, std::memory_order_acquire, /*atomic=*/ true);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafeGetLong(HInvoke* invoke) {
   CreateUnsafeGetLocations(invoke, codegen_, DataType::Type::kInt64, /*atomic=*/ false);
 }
 
-void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeGetLong(HInvoke* invoke) {
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafeGetLong(HInvoke* invoke) {
   GenUnsafeGet(
       invoke, codegen_, DataType::Type::kInt64, std::memory_order_relaxed, /*atomic=*/ false);
 }
 
-void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeGetLongVolatile(HInvoke* invoke) {
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafeGetLongVolatile(HInvoke* invoke) {
   CreateUnsafeGetLocations(invoke, codegen_, DataType::Type::kInt64, /*atomic=*/ true);
 }
 
-void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeGetLongVolatile(HInvoke* invoke) {
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafeGetLongVolatile(HInvoke* invoke) {
   GenUnsafeGet(
       invoke, codegen_, DataType::Type::kInt64, std::memory_order_seq_cst, /*atomic=*/ true);
 }
 
-void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeGetObject(HInvoke* invoke) {
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafeGetLongAcquire(HInvoke* invoke) {
+  CreateUnsafeGetLocations(invoke, codegen_, DataType::Type::kInt64, /*atomic=*/ true);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafeGetLongAcquire(HInvoke* invoke) {
+  GenUnsafeGet(
+      invoke, codegen_, DataType::Type::kInt64, std::memory_order_acquire, /*atomic=*/ true);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafeGetObject(HInvoke* invoke) {
   CreateUnsafeGetLocations(invoke, codegen_, DataType::Type::kReference, /*atomic=*/ false);
 }
 
-void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeGetObject(HInvoke* invoke) {
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafeGetObject(HInvoke* invoke) {
   GenUnsafeGet(
       invoke, codegen_, DataType::Type::kReference, std::memory_order_relaxed, /*atomic=*/ false);
 }
 
-void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeGetObjectVolatile(HInvoke* invoke) {
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafeGetObjectVolatile(HInvoke* invoke) {
   CreateUnsafeGetLocations(invoke, codegen_, DataType::Type::kReference, /*atomic=*/ true);
 }
 
-void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeGetObjectVolatile(HInvoke* invoke) {
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafeGetObjectVolatile(HInvoke* invoke) {
   GenUnsafeGet(
       invoke, codegen_, DataType::Type::kReference, std::memory_order_seq_cst, /*atomic=*/ true);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafeGetObjectAcquire(HInvoke* invoke) {
+  CreateUnsafeGetLocations(invoke, codegen_, DataType::Type::kReference, /*atomic=*/ true);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafeGetObjectAcquire(HInvoke* invoke) {
+  GenUnsafeGet(
+      invoke, codegen_, DataType::Type::kReference, std::memory_order_acquire, /*atomic=*/ true);
 }
 
 static void GenerateIntrinsicSet(CodeGeneratorARMVIXL* codegen,
@@ -3046,45 +3133,129 @@ static void GenUnsafePut(HInvoke* invoke,
 }
 
 void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePut(HInvoke* invoke) {
-  CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kInt32, /*atomic=*/ false);
+  VisitJdkUnsafePut(invoke);
 }
 
 void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePut(HInvoke* invoke) {
-  GenUnsafePut(invoke,
-               DataType::Type::kInt32,
-               std::memory_order_relaxed,
-               /*atomic=*/ false,
-               codegen_);
+  VisitJdkUnsafePut(invoke);
 }
 
 void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutOrdered(HInvoke* invoke) {
-  CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kInt32, /*atomic=*/ true);
+  VisitJdkUnsafePutOrdered(invoke);
 }
 
 void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutOrdered(HInvoke* invoke) {
-  GenUnsafePut(invoke,
-               DataType::Type::kInt32,
-               std::memory_order_release,
-               /*atomic=*/ true,
-               codegen_);
+  VisitJdkUnsafePutOrdered(invoke);
 }
 
 void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutVolatile(HInvoke* invoke) {
-  CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kInt32, /*atomic=*/ true);
+  VisitJdkUnsafePutVolatile(invoke);
 }
 
 void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutVolatile(HInvoke* invoke) {
+  VisitJdkUnsafePutVolatile(invoke);
+}
+void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutObject(HInvoke* invoke) {
+  VisitJdkUnsafePutObject(invoke);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutObject(HInvoke* invoke) {
+  VisitJdkUnsafePutObject(invoke);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutObjectOrdered(HInvoke* invoke) {
+  VisitJdkUnsafePutObjectOrdered(invoke);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutObjectOrdered(HInvoke* invoke) {
+  VisitJdkUnsafePutObjectOrdered(invoke);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutObjectVolatile(HInvoke* invoke) {
+  VisitJdkUnsafePutObjectVolatile(invoke);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutObjectVolatile(HInvoke* invoke) {
+  VisitJdkUnsafePutObjectVolatile(invoke);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutLong(HInvoke* invoke) {
+  VisitJdkUnsafePutLong(invoke);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutLong(HInvoke* invoke) {
+  VisitJdkUnsafePutLong(invoke);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutLongOrdered(HInvoke* invoke) {
+  VisitJdkUnsafePutLongOrdered(invoke);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutLongOrdered(HInvoke* invoke) {
+  VisitJdkUnsafePutLongOrdered(invoke);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutLongVolatile(HInvoke* invoke) {
+  VisitJdkUnsafePutLongVolatile(invoke);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutLongVolatile(HInvoke* invoke) {
+  VisitJdkUnsafePutLongVolatile(invoke);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafePut(HInvoke* invoke) {
+  CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kInt32, /*atomic=*/ false);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafePut(HInvoke* invoke) {
+  GenUnsafePut(invoke,
+               DataType::Type::kInt32,
+               std::memory_order_relaxed,
+               /*atomic=*/ false,
+               codegen_);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafePutOrdered(HInvoke* invoke) {
+  CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kInt32, /*atomic=*/ true);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafePutOrdered(HInvoke* invoke) {
+  GenUnsafePut(invoke,
+               DataType::Type::kInt32,
+               std::memory_order_release,
+               /*atomic=*/ true,
+               codegen_);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafePutVolatile(HInvoke* invoke) {
+  CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kInt32, /*atomic=*/ true);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafePutVolatile(HInvoke* invoke) {
   GenUnsafePut(invoke,
                DataType::Type::kInt32,
                std::memory_order_seq_cst,
                /*atomic=*/ true,
                codegen_);
 }
-void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutObject(HInvoke* invoke) {
+
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafePutRelease(HInvoke* invoke) {
+  CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kInt32, /*atomic=*/ true);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafePutRelease(HInvoke* invoke) {
+  GenUnsafePut(invoke,
+               DataType::Type::kInt32,
+               std::memory_order_release,
+               /*atomic=*/ true,
+               codegen_);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafePutObject(HInvoke* invoke) {
   CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kReference, /*atomic=*/ false);
 }
 
-void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutObject(HInvoke* invoke) {
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafePutObject(HInvoke* invoke) {
   GenUnsafePut(invoke,
                DataType::Type::kReference,
                std::memory_order_relaxed,
@@ -3092,11 +3263,11 @@ void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutObject(HInvoke* invoke) {
                codegen_);
 }
 
-void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutObjectOrdered(HInvoke* invoke) {
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafePutObjectOrdered(HInvoke* invoke) {
   CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kReference, /*atomic=*/ true);
 }
 
-void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutObjectOrdered(HInvoke* invoke) {
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafePutObjectOrdered(HInvoke* invoke) {
   GenUnsafePut(invoke,
                DataType::Type::kReference,
                std::memory_order_release,
@@ -3104,11 +3275,11 @@ void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutObjectOrdered(HInvoke* invoke)
                codegen_);
 }
 
-void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutObjectVolatile(HInvoke* invoke) {
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafePutObjectVolatile(HInvoke* invoke) {
   CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kReference, /*atomic=*/ true);
 }
 
-void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutObjectVolatile(HInvoke* invoke) {
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafePutObjectVolatile(HInvoke* invoke) {
   GenUnsafePut(invoke,
                DataType::Type::kReference,
                std::memory_order_seq_cst,
@@ -3116,11 +3287,23 @@ void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutObjectVolatile(HInvoke* invoke
                codegen_);
 }
 
-void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutLong(HInvoke* invoke) {
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafePutObjectRelease(HInvoke* invoke) {
+  CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kReference, /*atomic=*/ true);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafePutObjectRelease(HInvoke* invoke) {
+  GenUnsafePut(invoke,
+               DataType::Type::kReference,
+               std::memory_order_release,
+               /*atomic=*/ true,
+               codegen_);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafePutLong(HInvoke* invoke) {
   CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kInt64, /*atomic=*/ false);
 }
 
-void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutLong(HInvoke* invoke) {
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafePutLong(HInvoke* invoke) {
   GenUnsafePut(invoke,
                DataType::Type::kInt64,
                std::memory_order_relaxed,
@@ -3128,11 +3311,11 @@ void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutLong(HInvoke* invoke) {
                codegen_);
 }
 
-void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutLongOrdered(HInvoke* invoke) {
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafePutLongOrdered(HInvoke* invoke) {
   CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kInt64, /*atomic=*/ true);
 }
 
-void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutLongOrdered(HInvoke* invoke) {
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafePutLongOrdered(HInvoke* invoke) {
   GenUnsafePut(invoke,
                DataType::Type::kInt64,
                std::memory_order_release,
@@ -3140,14 +3323,26 @@ void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutLongOrdered(HInvoke* invoke) {
                codegen_);
 }
 
-void IntrinsicLocationsBuilderARMVIXL::VisitUnsafePutLongVolatile(HInvoke* invoke) {
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafePutLongVolatile(HInvoke* invoke) {
   CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kInt64, /*atomic=*/ true);
 }
 
-void IntrinsicCodeGeneratorARMVIXL::VisitUnsafePutLongVolatile(HInvoke* invoke) {
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafePutLongVolatile(HInvoke* invoke) {
   GenUnsafePut(invoke,
                DataType::Type::kInt64,
                std::memory_order_seq_cst,
+               /*atomic=*/ true,
+               codegen_);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafePutLongRelease(HInvoke* invoke) {
+  CreateUnsafePutLocations(invoke, codegen_, DataType::Type::kInt64, /*atomic=*/ true);
+}
+
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafePutLongRelease(HInvoke* invoke) {
+  GenUnsafePut(invoke,
+               DataType::Type::kInt64,
+               std::memory_order_release,
                /*atomic=*/ true,
                codegen_);
 }
@@ -3456,7 +3651,8 @@ class ReadBarrierCasSlowPathARMVIXL : public SlowPathCodeARMVIXL {
 
 static void CreateUnsafeCASLocations(ArenaAllocator* allocator, HInvoke* invoke) {
   bool can_call = kEmitCompilerReadBarrier &&
-      (invoke->GetIntrinsic() == Intrinsics::kUnsafeCASObject);
+      (invoke->GetIntrinsic() == Intrinsics::kUnsafeCASObject ||
+       invoke->GetIntrinsic() == Intrinsics::kJdkUnsafeCASObject);
   LocationSummary* locations =
       new (allocator) LocationSummary(invoke,
                                       can_call
@@ -3551,9 +3747,22 @@ static void GenUnsafeCas(HInvoke* invoke, DataType::Type type, CodeGeneratorARMV
 }
 
 void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeCASInt(HInvoke* invoke) {
-  CreateUnsafeCASLocations(allocator_, invoke);
+  VisitJdkUnsafeCASInt(invoke);
 }
 void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeCASObject(HInvoke* invoke) {
+  VisitJdkUnsafeCASObject(invoke);
+}
+void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeCASInt(HInvoke* invoke) {
+  VisitJdkUnsafeCASInt(invoke);
+}
+void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeCASObject(HInvoke* invoke) {
+  VisitJdkUnsafeCASObject(invoke);
+}
+
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafeCASInt(HInvoke* invoke) {
+  CreateUnsafeCASLocations(allocator_, invoke);
+}
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafeCASObject(HInvoke* invoke) {
   // The only read barrier implementation supporting the
   // UnsafeCASObject intrinsic is the Baker-style read barriers. b/173104084
   if (kEmitCompilerReadBarrier && !kUseBakerReadBarrier) {
@@ -3562,11 +3771,17 @@ void IntrinsicLocationsBuilderARMVIXL::VisitUnsafeCASObject(HInvoke* invoke) {
 
   CreateUnsafeCASLocations(allocator_, invoke);
 }
-void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeCASInt(HInvoke* invoke) {
+void IntrinsicLocationsBuilderARMVIXL::VisitJdkUnsafeCompareAndSetInt(HInvoke* invoke) {
+  CreateUnsafeCASLocations(allocator_, invoke);
+}
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafeCASInt(HInvoke* invoke) {
   GenUnsafeCas(invoke, DataType::Type::kInt32, codegen_);
 }
-void IntrinsicCodeGeneratorARMVIXL::VisitUnsafeCASObject(HInvoke* invoke) {
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafeCASObject(HInvoke* invoke) {
   GenUnsafeCas(invoke, DataType::Type::kReference, codegen_);
+}
+void IntrinsicCodeGeneratorARMVIXL::VisitJdkUnsafeCompareAndSetInt(HInvoke* invoke) {
+  GenUnsafeCas(invoke, DataType::Type::kInt32, codegen_);
 }
 
 enum class GetAndUpdateOp {
@@ -3927,18 +4142,6 @@ static void GenerateVarHandleInstanceFieldChecks(HInvoke* invoke,
   // We deliberately avoid the read barrier, letting the slow path handle the false negatives.
   GenerateSubTypeObjectCheckNoReadBarrier(
       codegen, slow_path, object, temp, /*object_can_be_null=*/ false);
-}
-
-static DataType::Type GetVarHandleExpectedValueType(HInvoke* invoke,
-                                                    size_t expected_coordinates_count) {
-  DCHECK_EQ(expected_coordinates_count, GetExpectedVarHandleCoordinatesCount(invoke));
-  uint32_t number_of_arguments = invoke->GetNumberOfArguments();
-  DCHECK_GE(number_of_arguments, /* VarHandle object */ 1u + expected_coordinates_count);
-  if (number_of_arguments == /* VarHandle object */ 1u + expected_coordinates_count) {
-    return invoke->GetType();
-  } else {
-    return GetDataTypeFromShorty(invoke, number_of_arguments - 1u);
-  }
 }
 
 static void GenerateVarHandleArrayChecks(HInvoke* invoke,
@@ -5213,6 +5416,7 @@ void VarHandleSlowPathARMVIXL::EmitByteArrayViewCode(CodeGenerator* codegen_in) 
     // the class of the actual coordinate argument but it does not match the value type.
     // Check if the `varhandle` references a ByteArrayViewVarHandle instance.
     __ Ldr(temp, MemOperand(varhandle, class_offset.Int32Value()));
+    codegen->GetAssembler()->MaybeUnpoisonHeapReference(temp);
     codegen->LoadClassRootForIntrinsic(temp2, ClassRoot::kJavaLangInvokeByteArrayViewVarHandle);
     __ Cmp(temp, temp2);
     __ B(ne, GetEntryLabel());
@@ -5296,6 +5500,9 @@ UNIMPLEMENTED_INTRINSIC(ARMVIXL, FP16Greater)
 UNIMPLEMENTED_INTRINSIC(ARMVIXL, FP16GreaterEquals)
 UNIMPLEMENTED_INTRINSIC(ARMVIXL, FP16Less)
 UNIMPLEMENTED_INTRINSIC(ARMVIXL, FP16LessEquals)
+UNIMPLEMENTED_INTRINSIC(ARMVIXL, FP16Compare)
+UNIMPLEMENTED_INTRINSIC(ARMVIXL, FP16Min)
+UNIMPLEMENTED_INTRINSIC(ARMVIXL, FP16Max)
 UNIMPLEMENTED_INTRINSIC(ARMVIXL, MathMultiplyHigh)
 
 UNIMPLEMENTED_INTRINSIC(ARMVIXL, StringStringIndexOf);
@@ -5325,6 +5532,16 @@ UNIMPLEMENTED_INTRINSIC(ARMVIXL, UnsafeGetAndSetObject)
 
 UNIMPLEMENTED_INTRINSIC(ARMVIXL, MethodHandleInvokeExact)
 UNIMPLEMENTED_INTRINSIC(ARMVIXL, MethodHandleInvoke)
+
+// OpenJDK 11
+UNIMPLEMENTED_INTRINSIC(ARMVIXL, JdkUnsafeCASLong)      // High register pressure.
+UNIMPLEMENTED_INTRINSIC(ARMVIXL, JdkUnsafeGetAndAddInt)
+UNIMPLEMENTED_INTRINSIC(ARMVIXL, JdkUnsafeGetAndAddLong)
+UNIMPLEMENTED_INTRINSIC(ARMVIXL, JdkUnsafeGetAndSetInt)
+UNIMPLEMENTED_INTRINSIC(ARMVIXL, JdkUnsafeGetAndSetLong)
+UNIMPLEMENTED_INTRINSIC(ARMVIXL, JdkUnsafeGetAndSetObject)
+UNIMPLEMENTED_INTRINSIC(ARMVIXL, JdkUnsafeCompareAndSetLong)
+UNIMPLEMENTED_INTRINSIC(ARMVIXL, JdkUnsafeCompareAndSetObject)
 
 UNREACHABLE_INTRINSICS(ARMVIXL)
 
