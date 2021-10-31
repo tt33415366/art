@@ -1344,16 +1344,16 @@ void InstructionSimplifierVisitor::VisitTypeConversion(HTypeConversion* instruct
       HAnd* and_op = shr_left->AsAnd();
       HConstant* and_right = and_op->GetConstantRight();
       HInstruction* and_left = and_op->GetLeastConstantLeft();
-      DataType::Type and_left_type = and_left->GetType();
-      if (!DataType::IsUnsignedType(and_left_type) &&
+      if (and_right != nullptr &&
+          !DataType::IsUnsignedType(and_left->GetType()) &&
           !DataType::IsUnsignedType(result_type) &&
           !DataType::IsUnsignedType(and_right->GetType()) &&
-          (DataType::Size(and_left_type) < 8) &&
+          (DataType::Size(and_left->GetType()) < 8) &&
           (DataType::Size(result_type) == 1)) {
         // TODO: Support Unsigned Types.
         // TODO: Support Long Types.
         // TODO: Support result types other than byte.
-        if (and_right != nullptr && and_op->HasOnlyOneNonEnvironmentUse() &&
+        if (and_op->HasOnlyOneNonEnvironmentUse() &&
             CanRemoveRedundantAnd(and_right, shr_right, result_type)) {
           and_op->ReplaceWith(and_left);
           and_op->GetBlock()->RemoveInstruction(and_op);
