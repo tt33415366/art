@@ -1956,6 +1956,9 @@ bool ClassLinker::AddImageSpace(
         const dex::CodeItem* code_item = method.GetDexFile()->GetCodeItem(
             reinterpret_cast32<uint32_t>(method.GetDataPtrSize(image_pointer_size_)));
         method.SetCodeItem(code_item);
+        // The hotness counter may have changed since we compiled the image, so
+        // reset it with the runtime value.
+        method.ResetCounter();
       }
       // Set image methods' entry point that point to the interpreter bridge to the
       // nterp entry point.
@@ -3834,12 +3837,13 @@ void ClassLinker::LoadMethod(const DexFile& dex_file,
   }
 
   // Set optimization flags related to the shorty.
-  const char* shorty = dst->GetShorty();
+  uint32_t shorty_length;
+  const char* shorty = dst->GetShorty(&shorty_length);
   bool all_parameters_are_reference = true;
   bool all_parameters_are_reference_or_int = true;
   bool return_type_is_fp = (shorty[0] == 'F' || shorty[0] == 'D');
 
-  for (size_t i = 1, e = strlen(shorty); i < e; ++i) {
+  for (size_t i = 1; i < shorty_length; ++i) {
     if (shorty[i] != 'L') {
       all_parameters_are_reference = false;
       if (shorty[i] == 'F' || shorty[i] == 'D' || shorty[i] == 'J') {
@@ -4113,6 +4117,26 @@ ObjPtr<mirror::DexCache> ClassLinker::FindDexCache(Thread* self, const DexFile& 
   UNREACHABLE();
 }
 
+ObjPtr<mirror::DexCache> ClassLinker::FindDexCache(Thread* self,
+                                                   const OatDexFile* const oat_dex_file) {
+  ReaderMutexLock mu(self, *Locks::dex_lock_);
+  const DexCacheData* dex_cache_data = FindDexCacheDataLocked(oat_dex_file);
+  ObjPtr<mirror::DexCache> dex_cache = DecodeDexCacheLocked(self, dex_cache_data);
+  if (dex_cache != nullptr) {
+    return dex_cache;
+  }
+  // Failure, dump diagnostic and abort.
+  for (const auto& entry : dex_caches_) {
+    const DexCacheData& data = entry.second;
+    if (DecodeDexCacheLocked(self, &data) != nullptr) {
+      LOG(FATAL_WITHOUT_ABORT) << "Registered dex file " << entry.first->GetLocation();
+    }
+  }
+  LOG(FATAL) << "Failed to find DexCache for OatDexFile " << oat_dex_file->GetDexFileLocation()
+             << " " << &oat_dex_file;
+  UNREACHABLE();
+}
+
 ClassTable* ClassLinker::FindClassTable(Thread* self, ObjPtr<mirror::DexCache> dex_cache) {
   const DexFile* dex_file = dex_cache->GetDexFile();
   DCHECK(dex_file != nullptr);
@@ -4127,6 +4151,17 @@ ClassTable* ClassLinker::FindClassTable(Thread* self, ObjPtr<mirror::DexCache> d
     }
   }
   return nullptr;
+}
+
+const ClassLinker::DexCacheData* ClassLinker::FindDexCacheDataLocked(
+    const OatDexFile* const oat_dex_file) {
+  // DexFiles are not guaranteed to have an non-null OatDexFile*. If we pass a nullptr as parameter,
+  // we might not get back the DexCacheData we are expecting.
+  DCHECK_NE(oat_dex_file, nullptr);
+  auto it = std::find_if(dex_caches_.begin(), dex_caches_.end(), [oat_dex_file](const auto& entry) {
+    return entry.first->GetOatDexFile() == oat_dex_file;
+  });
+  return it != dex_caches_.end() ? &it->second : nullptr;
 }
 
 const ClassLinker::DexCacheData* ClassLinker::FindDexCacheDataLocked(const DexFile& dex_file) {
