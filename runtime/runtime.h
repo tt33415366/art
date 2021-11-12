@@ -27,6 +27,7 @@
 #include <utility>
 #include <vector>
 
+#include "app_info.h"
 #include "base/locks.h"
 #include "base/macros.h"
 #include "base/mem_map.h"
@@ -221,7 +222,13 @@ class Runtime {
 
   bool IsShuttingDown(Thread* self);
   bool IsShuttingDownLocked() const REQUIRES(Locks::runtime_shutdown_lock_) {
-    return shutting_down_;
+    return shutting_down_.load(std::memory_order_relaxed);
+  }
+  bool IsShuttingDownUnsafe() const {
+    return shutting_down_.load(std::memory_order_relaxed);
+  }
+  void SetShuttingDown() REQUIRES(Locks::runtime_shutdown_lock_) {
+    shutting_down_.store(true, std::memory_order_relaxed);
   }
 
   size_t NumberOfThreadsBeingBorn() const REQUIRES(Locks::runtime_shutdown_lock_) {
@@ -284,6 +291,12 @@ class Runtime {
     DCHECK(boot_class_path_locations_.empty() ||
            boot_class_path_locations_.size() == boot_class_path_.size());
     return boot_class_path_locations_.empty() ? boot_class_path_ : boot_class_path_locations_;
+  }
+
+  // Returns the checksums for the boot image, extensions and extra boot class path dex files,
+  // based on the image spaces and boot class path dex files loaded in memory.
+  const std::string& GetBootClassPathChecksums() const {
+    return boot_class_path_checksums_;
   }
 
   const std::string& GetClassPathString() const {
@@ -524,9 +537,11 @@ class Runtime {
     return &instrumentation_;
   }
 
-  void RegisterAppInfo(const std::vector<std::string>& code_paths,
+  void RegisterAppInfo(const std::string& package_name,
+                       const std::vector<std::string>& code_paths,
                        const std::string& profile_output_filename,
-                       const std::string& ref_profile_filename);
+                       const std::string& ref_profile_filename,
+                       int32_t code_type);
 
   // Transaction support.
   bool IsActiveTransaction() const;
@@ -887,6 +902,10 @@ class Runtime {
     return result;
   }
 
+  bool DenyArtApexDataFiles() const {
+    return deny_art_apex_data_files_;
+  }
+
   // Whether or not we use MADV_RANDOM on files that are thought to have random access patterns.
   // This is beneficial for low RAM devices since it reduces page cache thrashing.
   bool MAdviseRandomAccess() const {
@@ -967,11 +986,19 @@ class Runtime {
   // first call.
   void NotifyStartupCompleted();
 
+  // Notify the runtime that the application finished loading some dex/odex files. This is
+  // called everytime we load a set of dex files in a class loader.
+  void NotifyDexFileLoaded();
+
   // Return true if startup is already completed.
   bool GetStartupCompleted() const;
 
   bool IsVerifierMissingKThrowFatal() const {
     return verifier_missing_kthrow_fatal_;
+  }
+
+  bool IsJavaZygoteForkLoopRequired() const {
+    return force_java_zygote_fork_loop_;
   }
 
   bool IsPerfettoHprofEnabled() const {
@@ -993,6 +1020,8 @@ class Runtime {
   bool GetOatFilesExecutable() const;
 
   metrics::ArtMetrics* GetMetrics() { return &metrics_; }
+
+  AppInfo* GetAppInfo() { return &app_info_; }
 
   void RequestMetricsReport(bool synchronous = true);
 
@@ -1105,6 +1134,7 @@ class Runtime {
 
   std::vector<std::string> boot_class_path_;
   std::vector<std::string> boot_class_path_locations_;
+  std::string boot_class_path_checksums_;
   std::string class_path_string_;
   std::vector<std::string> properties_;
 
@@ -1166,8 +1196,10 @@ class Runtime {
   // Waited upon until no threads are being born.
   std::unique_ptr<ConditionVariable> shutdown_cond_ GUARDED_BY(Locks::runtime_shutdown_lock_);
 
-  // Set when runtime shutdown is past the point that new threads may attach.
-  bool shutting_down_ GUARDED_BY(Locks::runtime_shutdown_lock_);
+  // Set when runtime shutdown is past the point that new threads may attach.  Usually
+  // GUARDED_BY(Locks::runtime_shutdown_lock_). But we need to check it in Abort without the
+  // lock, because we may already own it.
+  std::atomic<bool> shutting_down_;
 
   // The runtime is starting to shutdown but is blocked waiting on shutdown_cond_.
   bool shutting_down_started_ GUARDED_BY(Locks::runtime_shutdown_lock_);
@@ -1358,6 +1390,9 @@ class Runtime {
   // indirection is changed. This is intended only for testing JNI id swapping.
   bool automatically_set_jni_ids_indirection_;
 
+  // True if files in /data/misc/apexdata/com.android.art are considered untrustworthy.
+  bool deny_art_apex_data_files_;
+
   // Saved environment.
   class EnvSnapshot {
    public:
@@ -1390,6 +1425,7 @@ class Runtime {
   std::atomic<bool> startup_completed_ = false;
 
   bool verifier_missing_kthrow_fatal_;
+  bool force_java_zygote_fork_loop_;
   bool perfetto_hprof_enabled_;
   bool perfetto_javaheapprof_enabled_;
 
@@ -1403,6 +1439,9 @@ class Runtime {
   // When the apex is the factory version, we don't encode it (for example in
   // the third entry in the example above).
   std::string apex_versions_;
+
+  // The info about the application code paths.
+  AppInfo app_info_;
 
   // Note: See comments on GetFaultMessage.
   friend std::string GetFaultMessageForAbortLogging();
