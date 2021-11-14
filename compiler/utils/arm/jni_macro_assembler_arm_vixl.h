@@ -94,7 +94,9 @@ class ArmVIXLJNIMacroAssembler final
   void LoadRawPtrFromThread(ManagedRegister dest, ThreadOffset32 offs) override;
 
   // Copying routines.
-  void MoveArguments(ArrayRef<ArgumentLocation> dests, ArrayRef<ArgumentLocation> srcs) override;
+  void MoveArguments(ArrayRef<ArgumentLocation> dests,
+                     ArrayRef<ArgumentLocation> srcs,
+                     ArrayRef<FrameOffset> refs) override;
 
   void Move(ManagedRegister dest, ManagedRegister src, size_t size) override;
 
@@ -197,6 +199,8 @@ class ArmVIXLJNIMacroAssembler final
   void Jump(JNIMacroLabel* label) override;
   // Emit a conditional jump to the label by applying a unary condition test to the GC marking flag.
   void TestGcMarking(JNIMacroLabel* label, JNIMacroUnaryCondition cond) override;
+  // Emit a conditional jump to the label by applying a unary condition test to object's mark bit.
+  void TestMarkBit(ManagedRegister ref, JNIMacroLabel* label, JNIMacroUnaryCondition cond) override;
   // Code at this offset will serve as the target for the Jump call.
   void Bind(JNIMacroLabel* label) override;
 

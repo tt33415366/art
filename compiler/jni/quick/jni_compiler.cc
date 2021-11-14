@@ -224,8 +224,10 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   jni_asm->cfi().SetEnabled(compiler_options.GenerateAnyDebugInfo());
   jni_asm->SetEmitRunTimeChecksInDebugMode(compiler_options.EmitRunTimeChecksInDebugMode());
 
-  // 1. Build the frame saving all callee saves, Method*, and PC return address.
-  //    For @CriticalNative, this includes space for out args, otherwise just the managed frame.
+  // 1. Build and register the native method frame.
+
+  // 1.1. Build the frame saving all callee saves, Method*, and PC return address.
+  //      For @CriticalNative, this includes space for out args, otherwise just the managed frame.
   const size_t managed_frame_size = main_jni_conv->FrameSize();
   const size_t main_out_arg_size = main_jni_conv->OutFrameSize();
   size_t current_frame_size = is_critical_native ? main_out_arg_size : managed_frame_size;
@@ -235,42 +237,12 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   __ BuildFrame(current_frame_size, method_register, callee_save_regs);
   DCHECK_EQ(jni_asm->cfi().GetCurrentCFAOffset(), static_cast<int>(current_frame_size));
 
-  if (LIKELY(!is_critical_native)) {
-    // Spill all register arguments.
-    // TODO: Pass these in a single call to let the assembler use multi-register stores.
-    // TODO: Spill native stack args straight to their stack locations (adjust SP earlier).
-    // TODO: For @FastNative, move args in registers, spill only references.
-    mr_conv->ResetIterator(FrameOffset(current_frame_size));
-    for (; mr_conv->HasNext(); mr_conv->Next()) {
-      if (mr_conv->IsCurrentParamInRegister()) {
-        size_t size = mr_conv->IsCurrentParamALongOrDouble() ? 8u : 4u;
-        __ Store(mr_conv->CurrentParamStackOffset(), mr_conv->CurrentParamRegister(), size);
-      }
-    }
-
-    // 2. Write out the end of the quick frames.
-    __ StoreStackPointerToThread(Thread::TopOfManagedStackOffset<kPointerSize>());
-
-    // NOTE: @CriticalNative does not need to store the stack pointer to the thread
-    //       because garbage collections are disabled within the execution of a
-    //       @CriticalNative method.
-  }  // if (!is_critical_native)
-
-  // 3. Move frame down to allow space for out going args.
-  size_t current_out_arg_size = main_out_arg_size;
-  if (UNLIKELY(is_critical_native)) {
-    DCHECK_EQ(main_out_arg_size, current_frame_size);
-  } else {
-    __ IncreaseFrameSize(main_out_arg_size);
-    current_frame_size += main_out_arg_size;
-  }
-
-  // 4. Check if we need to go to the slow path to emit the read barrier for the declaring class
-  //    in the method for a static call.
-  //    Skip this for @CriticalNative because we're not passing a `jclass` to the native method.
+  // 1.2. Check if we need to go to the slow path to emit the read barrier
+  //      for the declaring class in the method for a static call.
+  //      Skip this for @CriticalNative because we're not passing a `jclass` to the native method.
   std::unique_ptr<JNIMacroLabel> jclass_read_barrier_slow_path;
   std::unique_ptr<JNIMacroLabel> jclass_read_barrier_return;
-  if (kUseReadBarrier && is_static && !is_critical_native) {
+  if (kUseReadBarrier && is_static && LIKELY(!is_critical_native)) {
     jclass_read_barrier_slow_path = __ CreateLabel();
     jclass_read_barrier_return = __ CreateLabel();
 
@@ -281,9 +253,42 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     __ Bind(jclass_read_barrier_return.get());
   }
 
-  // 5. Call into appropriate JniMethodStart passing Thread* so that transition out of Runnable
-  //    can occur. We abuse the JNI calling convention here, that is guaranteed to support passing
-  //    two pointer arguments.
+  // 1.3. Write out the end of the quick frames.
+  // NOTE: @CriticalNative does not need to store the stack pointer to the thread
+  //       because garbage collections are disabled within the execution of a
+  //       @CriticalNative method.
+  if (LIKELY(!is_critical_native)) {
+    __ StoreStackPointerToThread(Thread::TopOfManagedStackOffset<kPointerSize>());
+  }
+
+  // 2. Call into appropriate JniMethodStart to transition out of Runnable for normal native.
+
+  // 2.1. Spill all register arguments to preserve them across the JniMethodStart call.
+  if (LIKELY(!is_critical_native && !is_fast_native)) {
+    // TODO: Pass these in a single call to let the assembler use multi-register stores.
+    // TODO: Spill native stack args straight to their stack locations (adjust SP earlier).
+    mr_conv->ResetIterator(FrameOffset(current_frame_size));
+    for (; mr_conv->HasNext(); mr_conv->Next()) {
+      if (mr_conv->IsCurrentParamInRegister()) {
+        size_t size = mr_conv->IsCurrentParamALongOrDouble() ? 8u : 4u;
+        __ Store(mr_conv->CurrentParamStackOffset(), mr_conv->CurrentParamRegister(), size);
+      }
+    }
+  }  // if (!is_critical_native)
+
+  // 2.2. Move frame down to allow space for out going args.
+  //      This prepares for both the JniMethodStart call as well as the main native call.
+  size_t current_out_arg_size = main_out_arg_size;
+  if (UNLIKELY(is_critical_native)) {
+    DCHECK_EQ(main_out_arg_size, current_frame_size);
+  } else {
+    __ IncreaseFrameSize(main_out_arg_size);
+    current_frame_size += main_out_arg_size;
+  }
+
+  // 2.3. Call into appropriate JniMethodStart passing Thread* so that transition out of Runnable
+  //      can occur. We abuse the JNI calling convention here, that is guaranteed to support
+  //      passing two pointer arguments.
   std::unique_ptr<JNIMacroLabel> monitor_enter_exception_slow_path =
       UNLIKELY(is_synchronized) ? __ CreateLabel() : nullptr;
   if (LIKELY(!is_critical_native && !is_fast_native)) {
@@ -329,7 +334,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     }
   }
 
-  // 6. Push local reference frame.
+  // 3. Push local reference frame.
   // Skip this for @CriticalNative methods, they cannot use any references.
   ManagedRegister jni_env_reg = ManagedRegister::NoRegister();
   ManagedRegister saved_cookie_reg = ManagedRegister::NoRegister();
@@ -353,49 +358,73 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
         jni_asm.get(), jni_env_reg, saved_cookie_reg, callee_save_temp);
   }
 
-  // 7. Fill arguments.
-  if (UNLIKELY(is_critical_native)) {
+  // 4. Make the main native call.
+
+  // 4.1. Fill arguments.
+  if (UNLIKELY(is_critical_native || is_fast_native)) {
     ArenaVector<ArgumentLocation> src_args(allocator.Adapter());
     ArenaVector<ArgumentLocation> dest_args(allocator.Adapter());
-    // Move the method pointer to the hidden argument register.
-    dest_args.push_back(ArgumentLocation(main_jni_conv->HiddenArgumentRegister(), kRawPointerSize));
-    src_args.push_back(ArgumentLocation(mr_conv->MethodRegister(), kRawPointerSize));
-    // Move normal arguments to their locations.
+    ArenaVector<FrameOffset> refs(allocator.Adapter());
     mr_conv->ResetIterator(FrameOffset(current_frame_size));
     main_jni_conv->ResetIterator(FrameOffset(main_out_arg_size));
-    for (; mr_conv->HasNext(); mr_conv->Next(), main_jni_conv->Next()) {
-      DCHECK(main_jni_conv->HasNext());
-      size_t size = mr_conv->IsCurrentParamALongOrDouble() ? 8u : 4u;
-      src_args.push_back(mr_conv->IsCurrentParamInRegister()
-          ? ArgumentLocation(mr_conv->CurrentParamRegister(), size)
-          : ArgumentLocation(mr_conv->CurrentParamStackOffset(), size));
-      dest_args.push_back(main_jni_conv->IsCurrentParamInRegister()
-          ? ArgumentLocation(main_jni_conv->CurrentParamRegister(), size)
-          : ArgumentLocation(main_jni_conv->CurrentParamStackOffset(), size));
-    }
-    DCHECK(!main_jni_conv->HasNext());
-    __ MoveArguments(ArrayRef<ArgumentLocation>(dest_args), ArrayRef<ArgumentLocation>(src_args));
-  } else {
-    if (UNLIKELY(!method_register.IsNoRegister())) {
+    constexpr FrameOffset kInvalidReferenceOffset =
+        JNIMacroAssembler<kPointerSize>::kInvalidReferenceOffset;
+    if (is_critical_native) {
+      // Move the method pointer to the hidden argument register.
+      // TODO: Pass this as the last argument, not first. Change ARM assembler
+      // not to expect all register destinations at the beginning.
+      src_args.emplace_back(mr_conv->MethodRegister(), kRawPointerSize);
+      dest_args.emplace_back(main_jni_conv->HiddenArgumentRegister(), kRawPointerSize);
+      refs.push_back(kInvalidReferenceOffset);
+    } else {
       DCHECK(is_fast_native);
-      // In general, we do not know if the method register shall be clobbered by initializing
-      // some argument below. However, for most supported architectures (arm, arm64, x86_64),
-      // the `method_register` is the same as the `JNIEnv*` argument register which is
-      // initialized last, so we can quickly check that case and use the original method
-      // register to initialize the `jclass` for static methods. Otherwise, move the method
-      // to the `callee_save_temp` as we shall need it for the call.
-      main_jni_conv->ResetIterator(FrameOffset(main_out_arg_size));
-      if (main_jni_conv->IsCurrentParamInRegister() &&
-          main_jni_conv->CurrentParamRegister().Equals(method_register) &&
-          is_static) {
-        // Keep the current `method_register`.
-      } else {
+      DCHECK(!method_register.IsNoRegister());
+      main_jni_conv->Next();    // Skip JNIEnv*.
+      if (!is_static || !main_jni_conv->IsCurrentParamInRegister()) {
+        // The old method register can be clobbered by argument moves.
+        // Preserve the method in `callee_save_temp`.
         ManagedRegister new_method_reg = __ CoreRegisterWithSize(callee_save_temp, kRawPointerSize);
         __ Move(new_method_reg, method_register, kRawPointerSize);
         method_register = new_method_reg;
       }
+      if (is_static) {
+        // For static methods, move the method to the `jclass` argument.
+        DCHECK_EQ(ArtMethod::DeclaringClassOffset().SizeValue(), 0u);
+        src_args.emplace_back(method_register, kRawPointerSize);
+        if (main_jni_conv->IsCurrentParamInRegister()) {
+          // The `jclass` argument becomes the new method register needed for the call.
+          method_register = main_jni_conv->CurrentParamRegister();
+          dest_args.emplace_back(method_register, kRawPointerSize);
+        } else {
+          dest_args.emplace_back(main_jni_conv->CurrentParamStackOffset(), kRawPointerSize);
+        }
+        refs.push_back(kInvalidReferenceOffset);
+        main_jni_conv->Next();
+      }
     }
-
+    // Move normal arguments to their locations.
+    // Note that the `this` argument for @FastNative instance methods is passed first,
+    // so that `MoveArguments()` treats it as non-null.
+    for (; mr_conv->HasNext(); mr_conv->Next(), main_jni_conv->Next()) {
+      DCHECK(main_jni_conv->HasNext());
+      static_assert(kObjectReferenceSize == 4u);
+      bool is_reference = mr_conv->IsCurrentParamAReference();
+      size_t src_size = (!is_reference && mr_conv->IsCurrentParamALongOrDouble()) ? 8u : 4u;
+      size_t dest_size = is_reference ? kRawPointerSize : src_size;
+      src_args.push_back(mr_conv->IsCurrentParamInRegister()
+          ? ArgumentLocation(mr_conv->CurrentParamRegister(), src_size)
+          : ArgumentLocation(mr_conv->CurrentParamStackOffset(), src_size));
+      dest_args.push_back(main_jni_conv->IsCurrentParamInRegister()
+          ? ArgumentLocation(main_jni_conv->CurrentParamRegister(), dest_size)
+          : ArgumentLocation(main_jni_conv->CurrentParamStackOffset(), dest_size));
+      refs.emplace_back(
+          is_reference ? mr_conv->CurrentParamStackOffset() : kInvalidReferenceOffset);
+    }
+    DCHECK(!main_jni_conv->HasNext());
+    __ MoveArguments(ArrayRef<ArgumentLocation>(dest_args),
+                     ArrayRef<ArgumentLocation>(src_args),
+                     ArrayRef<FrameOffset>(refs));
+  } else {
     // Iterate over arguments placing values from managed calling convention in
     // to the convention required for a native call (shuffling). For references
     // place an index/pointer to the reference after checking whether it is
@@ -432,24 +461,22 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
       CopyParameter(jni_asm.get(), mr_conv.get(), main_jni_conv.get());
     }
 
-    // 8. For static method, create jclass argument as a pointer to the method's declaring class.
-    //    Make sure the method is in a register even for non-static methods.
+    // 4.2. For static method, create jclass argument as a pointer to the method's declaring class.
+    //      Make sure the method is in a register even for non-static methods.
     DCHECK_EQ(ArtMethod::DeclaringClassOffset().SizeValue(), 0u);
     FrameOffset method_offset =
         FrameOffset(current_out_arg_size + mr_conv->MethodStackOffset().SizeValue());
+    DCHECK(method_register.IsNoRegister());
     if (is_static) {
       main_jni_conv->ResetIterator(FrameOffset(main_out_arg_size));
       main_jni_conv->Next();  // Skip JNIEnv*
-      // Load reference to the method's declaring class. For normal native, the method register
-      // has been clobbered by the above call, so we need to load the method from the stack.
-      if (method_register.IsNoRegister()) {
-        // Use the `callee_save_temp` if the parameter goes on the stack.
-        method_register = main_jni_conv->IsCurrentParamOnStack()
-            ? __ CoreRegisterWithSize(callee_save_temp, kRawPointerSize)
-            : main_jni_conv->CurrentParamRegister();
-        __ Load(method_register, method_offset, kRawPointerSize);
-      }
-      DCHECK(!method_register.IsNoRegister());
+      // Load reference to the method's declaring class. The method register has been
+      // clobbered by the above call, so we need to load the method from the stack.
+      // Use the `callee_save_temp` if the parameter goes on the stack.
+      method_register = main_jni_conv->IsCurrentParamOnStack()
+          ? __ CoreRegisterWithSize(callee_save_temp, kRawPointerSize)
+          : main_jni_conv->CurrentParamRegister();
+      __ Load(method_register, method_offset, kRawPointerSize);
       if (main_jni_conv->IsCurrentParamOnStack()) {
         // Store the method argument.
         FrameOffset out_off = main_jni_conv->CurrentParamStackOffset();
@@ -459,16 +486,16 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
         __ Move(out_reg, method_register, kRawPointerSize);  // No-op if equal.
         method_register = out_reg;
       }
-    } else if (LIKELY(method_register.IsNoRegister())) {
+    } else {
       // Load the method for non-static methods to `callee_save_temp` as we need it for the call.
       method_register = __ CoreRegisterWithSize(callee_save_temp, kRawPointerSize);
       __ Load(method_register, method_offset, kRawPointerSize);
     }
+  }
 
-    // Set the iterator back to the incoming Method*.
+  // 4.3. Create 1st argument, the JNI environment ptr.
+  if (LIKELY(!is_critical_native)) {
     main_jni_conv->ResetIterator(FrameOffset(main_out_arg_size));
-
-    // 9. Create 1st argument, the JNI environment ptr.
     if (main_jni_conv->IsCurrentParamInRegister()) {
       ManagedRegister jni_env_arg = main_jni_conv->CurrentParamRegister();
       __ Move(jni_env_arg, jni_env_reg, kRawPointerSize);
@@ -478,7 +505,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     }
   }
 
-  // 10. Plant call to native code associated with method.
+  // 4.4. Plant call to native code associated with method.
   MemberOffset jni_entrypoint_offset =
       ArtMethod::EntryPointFromJniOffset(InstructionSetPointerSize(instruction_set));
   if (UNLIKELY(is_critical_native)) {
@@ -495,7 +522,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     method_register = ManagedRegister::NoRegister();
   }
 
-  // 11. Fix differences in result widths.
+  // 4.5. Fix differences in result widths.
   if (main_jni_conv->RequiresSmallResultTypeExtension()) {
     DCHECK(main_jni_conv->HasSmallReturnType());
     CHECK(!is_critical_native || !main_jni_conv->UseTailCall());
@@ -511,7 +538,10 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     }
   }
 
-  // 12. Process return value
+  // 5. Call into appropriate JniMethodEnd to transition out of Runnable for normal native.
+
+  // 5.1. Spill or move the return value if needed.
+  // TODO: Use `callee_save_temp` instead of stack slot when possible.
   bool spill_return_value = main_jni_conv->SpillsReturnValue();
   FrameOffset return_save_location =
       spill_return_value ? main_jni_conv->ReturnValueSaveLocation() : FrameOffset(0);
@@ -546,16 +576,16 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     }
   }
 
-  // 13. For @FastNative that returns a reference, do an early exception check so that the
-  //     `JniDecodeReferenceResult()` in the main path does not need to check for exceptions.
+  // 5.2. For @FastNative that returns a reference, do an early exception check so that the
+  //      `JniDecodeReferenceResult()` in the main path does not need to check for exceptions.
   std::unique_ptr<JNIMacroLabel> exception_slow_path =
       LIKELY(!is_critical_native) ? __ CreateLabel() : nullptr;
   if (UNLIKELY(is_fast_native) && reference_return) {
     __ ExceptionPoll(exception_slow_path.get());
   }
 
-  // 14. For @FastNative that returns a reference, do an early suspend check so that we
-  //     do not need to encode the decoded reference in a stack map.
+  // 5.3. For @FastNative that returns a reference, do an early suspend check so that we
+  //      do not need to encode the decoded reference in a stack map.
   std::unique_ptr<JNIMacroLabel> suspend_check_slow_path =
       UNLIKELY(is_fast_native) ? __ CreateLabel() : nullptr;
   std::unique_ptr<JNIMacroLabel> suspend_check_resume =
@@ -566,7 +596,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   }
 
   if (LIKELY(!is_critical_native)) {
-    // Increase frame size for out args if needed by the end_jni_conv.
+    // 5.4. Increase frame size for out args if needed by the end_jni_conv.
     const size_t end_out_arg_size = end_jni_conv->OutFrameSize();
     if (end_out_arg_size > current_out_arg_size) {
       DCHECK(!is_fast_native);
@@ -578,8 +608,8 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     }
     end_jni_conv->ResetIterator(FrameOffset(end_out_arg_size));
 
-    // 15. Call JniMethodEnd for normal native.
-    //     For @FastNative with reference return, decode the `jobject`.
+    // 5.5. Call JniMethodEnd for normal native.
+    //      For @FastNative with reference return, decode the `jobject`.
     if (LIKELY(!is_fast_native) || reference_return) {
       ThreadOffset<kPointerSize> jni_end = is_fast_native
           ? QUICK_ENTRYPOINT_OFFSET(kPointerSize, pJniDecodeReferenceResult)
@@ -631,42 +661,44 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
       }
     }
 
-    // 16. Reload return value
+    // 5.6. Reload return value if it was spilled.
     if (spill_return_value) {
       __ Load(mr_conv->ReturnRegister(), return_save_location, mr_conv->SizeOfReturnValue());
     }
   }  // if (!is_critical_native)
 
-  // 17. Pop local reference frame.
+  // 6. Pop local reference frame.
   if (LIKELY(!is_critical_native)) {
     PopLocalReferenceFrame<kPointerSize>(
         jni_asm.get(), jni_env_reg, saved_cookie_reg, callee_save_temp);
   }
 
-  // 18. Move frame up now we're done with the out arg space.
-  //     @CriticalNative remove out args together with the frame in RemoveFrame().
+  // 7. Return from the JNI stub.
+
+  // 7.1. Move frame up now we're done with the out arg space.
+  //      @CriticalNative remove out args together with the frame in RemoveFrame().
   if (LIKELY(!is_critical_native)) {
     __ DecreaseFrameSize(current_out_arg_size);
     current_frame_size -= current_out_arg_size;
   }
 
-  // 19. Process pending exceptions from JNI call or monitor exit.
-  //     @CriticalNative methods do not need exception poll in the stub.
-  //     @FastNative methods with reference return emit the exception poll earlier.
+  // 7.2. Process pending exceptions from JNI call or monitor exit.
+  //      @CriticalNative methods do not need exception poll in the stub.
+  //      @FastNative methods with reference return emit the exception poll earlier.
   if (LIKELY(!is_critical_native) && (LIKELY(!is_fast_native) || !reference_return)) {
     __ ExceptionPoll(exception_slow_path.get());
   }
 
-  // 20. For @FastNative, we never transitioned out of runnable, so there is no transition back.
-  //     Perform a suspend check if there is a flag raised, unless we have done that above
-  //     for reference return.
+  // 7.3. For @FastNative, we never transitioned out of runnable, so there is no transition back.
+  //      Perform a suspend check if there is a flag raised, unless we have done that above
+  //      for reference return.
   if (UNLIKELY(is_fast_native) && !reference_return) {
     __ SuspendCheck(suspend_check_slow_path.get());
     __ Bind(suspend_check_resume.get());
   }
 
-  // 21. Remove activation - need to restore callee save registers since the GC may have changed
-  //     them.
+  // 7.4. Remove activation - need to restore callee save registers since the GC
+  //      may have changed them.
   DCHECK_EQ(jni_asm->cfi().GetCurrentCFAOffset(), static_cast<int>(current_frame_size));
   if (LIKELY(!is_critical_native) || !main_jni_conv->UseTailCall()) {
     // We expect the compiled method to possibly be suspended during its
@@ -676,63 +708,44 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     DCHECK_EQ(jni_asm->cfi().GetCurrentCFAOffset(), static_cast<int>(current_frame_size));
   }
 
-  // 22. Read barrier slow path for the declaring class in the method for a static call.
-  //     Skip this for @CriticalNative because we're not passing a `jclass` to the native method.
+  // 8. Emit slow paths.
+
+  // 8.1. Read barrier slow path for the declaring class in the method for a static call.
+  //      Skip this for @CriticalNative because we're not passing a `jclass` to the native method.
   if (kUseReadBarrier && is_static && !is_critical_native) {
     __ Bind(jclass_read_barrier_slow_path.get());
 
-    // We do the marking check after adjusting for outgoing arguments. That ensures that
-    // we have space available for at least two params in case we need to pass the read
-    // barrier parameters on stack (only x86). But that means we must adjust the CFI
-    // offset accordingly as it does not include the outgoing args after `RemoveFrame().
-    if (main_out_arg_size != 0) {
-      // Note: The DW_CFA_def_cfa_offset emitted by `RemoveFrame()` above
-      // is useless when it is immediatelly overridden here but avoiding
-      // it adds a lot of code complexity for minimal gain.
-      jni_asm->cfi().AdjustCFAOffset(main_out_arg_size);
-    }
-
-    // We enter the slow path with the method register unclobbered.
-    method_register = mr_conv->MethodRegister();
-
     // Construct slow path for read barrier:
     //
-    // Call into the runtime's ReadBarrierJni and have it fix up
-    // the object address if it was moved.
+    // For baker read barrier, do a fast check whether the class is already marked.
+    //
+    // Call into the runtime's `art_read_barrier_jni` and have it fix up
+    // the class address if it was moved.
+    //
+    // The entrypoint preserves the method register and argument registers.
+
+    if (kUseBakerReadBarrier) {
+      // We enter the slow path with the method register unclobbered and callee-save
+      // registers already spilled, so we can use callee-save scratch registers.
+      method_register = mr_conv->MethodRegister();
+      ManagedRegister temp = __ CoreRegisterWithSize(
+          main_jni_conv->CalleeSaveScratchRegisters()[0], kObjectReferenceSize);
+      // Load the declaring class reference.
+      DCHECK_EQ(ArtMethod::DeclaringClassOffset().SizeValue(), 0u);
+      __ Load(temp, method_register, MemberOffset(0u), kObjectReferenceSize);
+      // Return to main path if the class object is marked.
+      __ TestMarkBit(temp, jclass_read_barrier_return.get(), JNIMacroUnaryCondition::kNotZero);
+    }
 
     ThreadOffset<kPointerSize> read_barrier = QUICK_ENTRYPOINT_OFFSET(kPointerSize,
                                                                       pReadBarrierJni);
-    main_jni_conv->ResetIterator(FrameOffset(main_out_arg_size));
-    // Pass the pointer to the method's declaring class as the first argument.
-    DCHECK_EQ(ArtMethod::DeclaringClassOffset().SizeValue(), 0u);
-    SetNativeParameter(jni_asm.get(), main_jni_conv.get(), method_register);
-    main_jni_conv->Next();
-    // Pass the current thread as the second argument and call.
-    if (main_jni_conv->IsCurrentParamInRegister()) {
-      __ GetCurrentThread(main_jni_conv->CurrentParamRegister());
-      __ Call(main_jni_conv->CurrentParamRegister(), Offset(read_barrier));
-    } else {
-      __ GetCurrentThread(main_jni_conv->CurrentParamStackOffset());
-      __ CallFromThread(read_barrier);
-    }
-    if (UNLIKELY(is_synchronized || is_fast_native)) {
-      // Reload the method pointer in the slow path because it is needed
-      // as an argument for the `JniMethodStartSynchronized`, or for @FastNative.
-      __ Load(method_register,
-              FrameOffset(main_out_arg_size + mr_conv->MethodStackOffset().SizeValue()),
-              kRawPointerSize);
-    }
+    __ CallFromThread(read_barrier);
 
     // Return to main path.
     __ Jump(jclass_read_barrier_return.get());
-
-    // Undo the CFI offset adjustment at the start of the slow path.
-    if (main_out_arg_size != 0) {
-      jni_asm->cfi().AdjustCFAOffset(-main_out_arg_size);
-    }
   }
 
-  // 23. Emit suspend check slow path.
+  // 8.2. Suspend check slow path.
   if (UNLIKELY(is_fast_native)) {
     __ Bind(suspend_check_slow_path.get());
     if (reference_return && main_out_arg_size != 0) {
@@ -752,7 +765,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     __ Jump(suspend_check_resume.get());
   }
 
-  // 24. Emit exception poll slow paths.
+  // 8.3. Exception poll slow path(s).
   if (LIKELY(!is_critical_native)) {
     if (UNLIKELY(is_synchronized)) {
       DCHECK(!is_fast_native);
@@ -776,7 +789,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     __ DeliverPendingException();
   }
 
-  // 21. Finalize code generation
+  // 9. Finalize code generation.
   __ FinalizeCode();
   size_t cs = __ CodeSize();
   std::vector<uint8_t> managed_code(cs);
@@ -831,7 +844,6 @@ static void CopyParameter(JNIMacroAssembler<kPointerSize>* jni_asm,
                           ManagedRuntimeCallingConvention* mr_conv,
                           JniCallingConvention* jni_conv) {
   // We spilled all registers, so use stack locations.
-  // TODO: Move args in registers for @CriticalNative.
   bool input_in_reg = false;  // mr_conv->IsCurrentParamInRegister();
   bool output_in_reg = jni_conv->IsCurrentParamInRegister();
   FrameOffset spilled_reference_offset(0);
