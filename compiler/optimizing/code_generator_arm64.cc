@@ -281,7 +281,8 @@ class LoadClassSlowPathARM64 : public SlowPathCodeARM64 {
 
     InvokeRuntimeCallingConvention calling_convention;
     if (must_resolve_type) {
-      DCHECK(IsSameDexFile(cls_->GetDexFile(), arm64_codegen->GetGraph()->GetDexFile()));
+      DCHECK(IsSameDexFile(cls_->GetDexFile(), arm64_codegen->GetGraph()->GetDexFile()) ||
+             arm64_codegen->GetCompilerOptions().WithinOatFile(&cls_->GetDexFile()));
       dex::TypeIndex type_index = cls_->GetTypeIndex();
       __ Mov(calling_convention.GetRegisterAt(0).W(), type_index.index_);
       if (cls_->NeedsAccessCheck()) {
@@ -1158,7 +1159,7 @@ void InstructionCodeGeneratorARM64::GenerateMethodEntryExitHook(HInstruction* in
   uint64_t address = reinterpret_cast64<uint64_t>(Runtime::Current()->GetInstrumentation());
   int offset = instrumentation::Instrumentation::NeedsEntryExitHooksOffset().Int32Value();
   __ Mov(temp, address + offset);
-  __ Ldrh(value, MemOperand(temp, 0));
+  __ Ldrb(value, MemOperand(temp, 0));
   __ Cbnz(value, slow_path->GetEntryLabel());
   __ Bind(slow_path->GetExitLabel());
 }

@@ -529,7 +529,8 @@ class LoadClassSlowPathARMVIXL : public SlowPathCodeARMVIXL {
 
     InvokeRuntimeCallingConventionARMVIXL calling_convention;
     if (must_resolve_type) {
-      DCHECK(IsSameDexFile(cls_->GetDexFile(), arm_codegen->GetGraph()->GetDexFile()));
+      DCHECK(IsSameDexFile(cls_->GetDexFile(), arm_codegen->GetGraph()->GetDexFile()) ||
+             arm_codegen->GetCompilerOptions().WithinOatFile(&cls_->GetDexFile()));
       dex::TypeIndex type_index = cls_->GetTypeIndex();
       __ Mov(calling_convention.GetRegisterAt(0), type_index.index_);
       if (cls_->NeedsAccessCheck()) {
@@ -2153,7 +2154,7 @@ void InstructionCodeGeneratorARMVIXL::GenerateMethodEntryExitHook(HInstruction* 
   int offset = instrumentation::Instrumentation::NeedsEntryExitHooksOffset().Int32Value();
   uint32_t address = reinterpret_cast32<uint32_t>(Runtime::Current()->GetInstrumentation());
   __ Mov(temp, address + offset);
-  __ Ldrh(temp, MemOperand(temp, 0));
+  __ Ldrb(temp, MemOperand(temp, 0));
   __ CompareAndBranchIfNonZero(temp, slow_path->GetEntryLabel());
   __ Bind(slow_path->GetExitLabel());
 }

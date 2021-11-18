@@ -1173,7 +1173,7 @@ const void* Instrumentation::GetCodeForInvoke(ArtMethod* method) const {
   if (method->IsNative()) {
     // TODO We could have JIT compiled native entrypoints. It might be worth it to find these.
     return class_linker->GetQuickOatCodeFor(method);
-  } else if (!NeedDebugVersionFor(method) || !InterpreterStubsInstalled()) {
+  } else if (!NeedDebugVersionFor(method) && !InterpreterStubsInstalled()) {
     return class_linker->GetQuickOatCodeFor(method);
   } else {
     return GetQuickToInterpreterBridge();

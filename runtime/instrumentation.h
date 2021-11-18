@@ -207,6 +207,11 @@ class Instrumentation {
   Instrumentation();
 
   static constexpr MemberOffset NeedsEntryExitHooksOffset() {
+    // Assert that instrumentation_stubs_installed_ is 8bits wide. If the size changes
+    // update the compare instructions in the code generator when generating checks for
+    // MethodEntryExitHooks.
+    static_assert(sizeof(instrumentation_stubs_installed_) == 1,
+                  "instrumentation_stubs_installed_ isn't expected size");
     return MemberOffset(OFFSETOF_MEMBER(Instrumentation, instrumentation_stubs_installed_));
   }
 
