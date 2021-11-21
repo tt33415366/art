@@ -184,53 +184,12 @@ static void CreateIntToIntLocations(ArenaAllocator* allocator, HInvoke* invoke) 
   locations->SetOut(Location::SameAsFirstInput());
 }
 
-static void GenReverseBytes(Location out,
-                            DataType::Type type,
-                            X86_64Assembler* assembler,
-                            CpuRegister temp = CpuRegister(kNoRegister)) {
-  switch (type) {
-    case DataType::Type::kInt16:
-      // TODO: Can be done with an xchg of 8b registers. This is straight from Quick.
-      __ bswapl(out.AsRegister<CpuRegister>());
-      __ sarl(out.AsRegister<CpuRegister>(), Immediate(16));
-      break;
-    case DataType::Type::kUint16:
-      // TODO: Can be done with an xchg of 8b registers. This is straight from Quick.
-      __ bswapl(out.AsRegister<CpuRegister>());
-      __ shrl(out.AsRegister<CpuRegister>(), Immediate(16));
-      break;
-    case DataType::Type::kInt32:
-    case DataType::Type::kUint32:
-      __ bswapl(out.AsRegister<CpuRegister>());
-      break;
-    case DataType::Type::kInt64:
-    case DataType::Type::kUint64:
-      __ bswapq(out.AsRegister<CpuRegister>());
-      break;
-    case DataType::Type::kFloat32:
-      DCHECK_NE(temp.AsRegister(), kNoRegister);
-      __ movd(temp, out.AsFpuRegister<XmmRegister>(), /*is64bit=*/ false);
-      __ bswapl(temp);
-      __ movd(out.AsFpuRegister<XmmRegister>(), temp, /*is64bit=*/ false);
-      break;
-    case DataType::Type::kFloat64:
-      DCHECK_NE(temp.AsRegister(), kNoRegister);
-      __ movd(temp, out.AsFpuRegister<XmmRegister>(), /*is64bit=*/ true);
-      __ bswapq(temp);
-      __ movd(out.AsFpuRegister<XmmRegister>(), temp, /*is64bit=*/ true);
-      break;
-    default:
-      LOG(FATAL) << "Unexpected type for reverse-bytes: " << type;
-      UNREACHABLE();
-  }
-}
-
 void IntrinsicLocationsBuilderX86_64::VisitIntegerReverseBytes(HInvoke* invoke) {
   CreateIntToIntLocations(allocator_, invoke);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitIntegerReverseBytes(HInvoke* invoke) {
-  GenReverseBytes(invoke->GetLocations()->Out(), DataType::Type::kInt32, GetAssembler());
+  codegen_->GetInstructionCodegen()->Bswap(invoke->GetLocations()->Out(), DataType::Type::kInt32);
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitLongReverseBytes(HInvoke* invoke) {
@@ -238,7 +197,7 @@ void IntrinsicLocationsBuilderX86_64::VisitLongReverseBytes(HInvoke* invoke) {
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitLongReverseBytes(HInvoke* invoke) {
-  GenReverseBytes(invoke->GetLocations()->Out(), DataType::Type::kInt64, GetAssembler());
+  codegen_->GetInstructionCodegen()->Bswap(invoke->GetLocations()->Out(), DataType::Type::kInt64);
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitShortReverseBytes(HInvoke* invoke) {
@@ -246,7 +205,7 @@ void IntrinsicLocationsBuilderX86_64::VisitShortReverseBytes(HInvoke* invoke) {
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitShortReverseBytes(HInvoke* invoke) {
-  GenReverseBytes(invoke->GetLocations()->Out(), DataType::Type::kInt16, GetAssembler());
+  codegen_->GetInstructionCodegen()->Bswap(invoke->GetLocations()->Out(), DataType::Type::kInt16);
 }
 
 static void CreateFPToFPLocations(ArenaAllocator* allocator, HInvoke* invoke) {
@@ -2256,8 +2215,15 @@ static void GenCompareAndSetOrExchangeInt(CodeGeneratorX86_64* codegen,
                                           DataType::Type type,
                                           Address field_addr,
                                           Location value,
-                                          bool is_cmpxchg) {
+                                          bool is_cmpxchg,
+                                          bool byte_swap) {
   X86_64Assembler* assembler = down_cast<X86_64Assembler*>(codegen->GetAssembler());
+  InstructionCodeGeneratorX86_64* instr_codegen = codegen->GetInstructionCodegen();
+
+  if (byte_swap) {
+    instr_codegen->Bswap(Location::RegisterLocation(RAX), type);
+    instr_codegen->Bswap(value, type);
+  }
 
   switch (type) {
     case DataType::Type::kBool:
@@ -2281,8 +2247,16 @@ static void GenCompareAndSetOrExchangeInt(CodeGeneratorX86_64* codegen,
   }
   // LOCK CMPXCHG has full barrier semantics, so we don't need barriers here.
 
+  if (byte_swap) {
+    // Restore byte order for value.
+    instr_codegen->Bswap(value, type);
+  }
+
   CpuRegister rax(RAX);
   if (is_cmpxchg) {
+    if (byte_swap) {
+      instr_codegen->Bswap(Location::RegisterLocation(RAX), type);
+    }
     // Sign-extend or zero-extend the result as necessary.
     switch (type) {
       case DataType::Type::kBool:
@@ -2312,15 +2286,27 @@ static void GenCompareAndSetOrExchangeFP(CodeGeneratorX86_64* codegen,
                                          Location expected,
                                          Location out,
                                          bool is64bit,
-                                         bool is_cmpxchg) {
+                                         bool is_cmpxchg,
+                                         bool byte_swap) {
   X86_64Assembler* assembler = down_cast<X86_64Assembler*>(codegen->GetAssembler());
+  InstructionCodeGeneratorX86_64* instr_codegen = codegen->GetInstructionCodegen();
+
+  Location rax_loc = Location::RegisterLocation(RAX);
+  Location temp_loc = Location::RegisterLocation(temp.AsRegister());
+
+  DataType::Type type = is64bit ? DataType::Type::kUint64 : DataType::Type::kUint32;
 
   // Copy `expected` to RAX (required by the CMPXCHG instruction).
-  codegen->Move(Location::RegisterLocation(RAX), expected);
+  codegen->Move(rax_loc, expected);
 
   // Copy value to some other register (ensure it's not RAX).
   DCHECK_NE(temp.AsRegister(), RAX);
-  codegen->Move(Location::RegisterLocation(temp.AsRegister()), value);
+  codegen->Move(temp_loc, value);
+
+  if (byte_swap) {
+    instr_codegen->Bswap(rax_loc, type);
+    instr_codegen->Bswap(temp_loc, type);
+  }
 
   if (is64bit) {
     __ LockCmpxchgq(field_addr, temp);
@@ -2328,8 +2314,12 @@ static void GenCompareAndSetOrExchangeFP(CodeGeneratorX86_64* codegen,
     __ LockCmpxchgl(field_addr, temp);
   }
   // LOCK CMPXCHG has full barrier semantics, so we don't need barriers here.
+  // No need to restore byte order for temporary register.
 
   if (is_cmpxchg) {
+    if (byte_swap) {
+      instr_codegen->Bswap(rax_loc, type);
+    }
     __ movd(out.AsFpuRegister<XmmRegister>(), CpuRegister(RAX), is64bit);
   } else {
     GenZFlagToResult(assembler, out.AsRegister<CpuRegister>());
@@ -2444,7 +2434,8 @@ static void GenCompareAndSetOrExchange(CodeGeneratorX86_64* codegen,
                                        Location new_value,
                                        Location expected,
                                        Location out,
-                                       bool is_cmpxchg) {
+                                       bool is_cmpxchg,
+                                       bool byte_swap) {
   LocationSummary* locations = invoke->GetLocations();
   Address field_address(base, offset, TIMES_1, 0);
 
@@ -2454,7 +2445,7 @@ static void GenCompareAndSetOrExchange(CodeGeneratorX86_64* codegen,
     DCHECK(RegsAreAllDifferent({base, offset, temp, CpuRegister(RAX)}));
 
     GenCompareAndSetOrExchangeFP(
-        codegen, field_address, temp, new_value, expected, out, is64bit, is_cmpxchg);
+        codegen, field_address, temp, new_value, expected, out, is64bit, is_cmpxchg, byte_swap);
   } else {
     // Both the expected value for CMPXCHG and the output are in RAX.
     DCHECK_EQ(RAX, expected.AsRegister<Register>());
@@ -2469,10 +2460,11 @@ static void GenCompareAndSetOrExchange(CodeGeneratorX86_64* codegen,
           : CpuRegister(kNoRegister);
       DCHECK(RegsAreAllDifferent({base, offset, temp1, temp2, temp3}));
 
+      DCHECK(!byte_swap);
       GenCompareAndSetOrExchangeRef(
           codegen, invoke, base, offset, new_value_reg, temp1, temp2, temp3, is_cmpxchg);
     } else {
-      GenCompareAndSetOrExchangeInt(codegen, type, field_address, new_value, is_cmpxchg);
+      GenCompareAndSetOrExchangeInt(codegen, type, field_address, new_value, is_cmpxchg, byte_swap);
     }
   }
 }
@@ -2490,7 +2482,8 @@ static void GenCAS(DataType::Type type, HInvoke* invoke, CodeGeneratorX86_64* co
                              /*new_value=*/ locations->InAt(4),
                              /*expected=*/ locations->InAt(3),
                              locations->Out(),
-                             /*is_cmpxchg=*/ false);
+                             /*is_cmpxchg=*/ false,
+                             /*byte_swap=*/ false);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitUnsafeCASInt(HInvoke* invoke) {
@@ -3233,10 +3226,16 @@ void IntrinsicCodeGeneratorX86_64::VisitMathMultiplyHigh(HInvoke* invoke) {
 
 class VarHandleSlowPathX86_64 : public IntrinsicSlowPathX86_64 {
  public:
-  VarHandleSlowPathX86_64(HInvoke* invoke, bool is_atomic, bool is_volatile)
-      : IntrinsicSlowPathX86_64(invoke),
-        is_volatile_(is_volatile),
-        is_atomic_(is_atomic) {
+  explicit VarHandleSlowPathX86_64(HInvoke* invoke)
+      : IntrinsicSlowPathX86_64(invoke) {
+  }
+
+  void SetVolatile(bool is_volatile) {
+    is_volatile_ = is_volatile;
+  }
+
+  void SetAtomic(bool is_atomic) {
+    is_atomic_ = is_atomic;
   }
 
   Label* GetByteArrayViewCheckLabel() {
@@ -3555,11 +3554,9 @@ static void GenerateVarHandleCoordinateChecks(HInvoke* invoke,
 
 static VarHandleSlowPathX86_64* GenerateVarHandleChecks(HInvoke* invoke,
                                                         CodeGeneratorX86_64* codegen,
-                                                        DataType::Type type,
-                                                        bool is_volatile = false,
-                                                        bool is_atomic = false) {
+                                                        DataType::Type type) {
   VarHandleSlowPathX86_64* slow_path =
-      new (codegen->GetScopedAllocator()) VarHandleSlowPathX86_64(invoke, is_volatile, is_atomic);
+      new (codegen->GetScopedAllocator()) VarHandleSlowPathX86_64(invoke);
   codegen->AddSlowPath(slow_path);
 
   GenerateVarHandleAccessModeAndVarTypeChecks(invoke, codegen, slow_path, type);
@@ -3610,8 +3607,7 @@ static void GenerateVarHandleTarget(HInvoke* invoke,
     __ movq(method, Address(varhandle, art_field_offset));
     __ movl(CpuRegister(target.offset), Address(method, offset_offset));
     if (expected_coordinates_count == 0u) {
-      InstructionCodeGeneratorX86_64* instr_codegen =
-          down_cast<InstructionCodeGeneratorX86_64*>(codegen->GetInstructionVisitor());
+      InstructionCodeGeneratorX86_64* instr_codegen = codegen->GetInstructionCodegen();
       instr_codegen->GenerateGcRootFieldLoad(invoke,
                                              Location::RegisterLocation(target.object),
                                              Address(method, ArtField::DeclaringClassOffset()),
@@ -3649,6 +3645,8 @@ static bool HasVarHandleIntrinsicImplementation(HInvoke* invoke) {
     switch (mirror::VarHandle::GetAccessModeTemplateByIntrinsic(invoke->GetIntrinsic())) {
       case mirror::VarHandle::AccessModeTemplate::kGet:
       case mirror::VarHandle::AccessModeTemplate::kSet:
+      case mirror::VarHandle::AccessModeTemplate::kCompareAndSet:
+      case mirror::VarHandle::AccessModeTemplate::kCompareAndExchange:
         break;
       default:
         // TODO: Add support for all intrinsics.
@@ -3742,7 +3740,7 @@ static void GenerateVarHandleGet(HInvoke* invoke,
     codegen->LoadFromMemoryNoReference(type, out, src);
     if (byte_swap) {
       CpuRegister temp = locations->GetTemp(0).AsRegister<CpuRegister>();
-      GenReverseBytes(out, type, assembler, temp);
+      codegen->GetInstructionCodegen()->Bswap(out, type, &temp);
     }
   }
 
@@ -3792,16 +3790,7 @@ static void CreateVarHandleSetLocations(HInvoke* invoke) {
   }
 
   LocationSummary* locations = CreateVarHandleCommonLocations(invoke);
-  if (GetExpectedVarHandleCoordinatesCount(invoke) > 1) {
-    // Ensure that the value is in register: for byte array views we may need to swap byte order
-    // inplace (and then swap it back).
-    uint32_t value_index = invoke->GetNumberOfArguments() - 1;
-    if (DataType::IsFloatingPointType(GetDataTypeFromShorty(invoke, value_index))) {
-      locations->SetInAt(value_index, Location::RequiresFpuRegister());
-    } else {
-      locations->SetInAt(value_index, Location::RequiresRegister());
-    }
-  }
+
   // Extra temporary is used for card in MarkGCCard and to move 64-bit constants to memory.
   locations->AddTemp(Location::RequiresRegister());
 }
@@ -3815,7 +3804,6 @@ static void GenerateVarHandleSet(HInvoke* invoke,
 
   LocationSummary* locations = invoke->GetLocations();
   const uint32_t last_temp_index = locations->GetTempCount() - 1;
-  CpuRegister temp = locations->GetTemp(last_temp_index).AsRegister<CpuRegister>();
 
   uint32_t value_index = invoke->GetNumberOfArguments() - 1;
   DataType::Type value_type = GetDataTypeFromShorty(invoke, value_index);
@@ -3823,12 +3811,11 @@ static void GenerateVarHandleSet(HInvoke* invoke,
   VarHandleTarget target = GetVarHandleTarget(invoke);
   VarHandleSlowPathX86_64* slow_path = nullptr;
   if (!byte_swap) {
-    slow_path = GenerateVarHandleChecks(invoke, codegen, value_type, is_volatile, is_atomic);
+    slow_path = GenerateVarHandleChecks(invoke, codegen, value_type);
+    slow_path->SetVolatile(is_volatile);
+    slow_path->SetAtomic(is_atomic);
     GenerateVarHandleTarget(invoke, target, codegen);
     __ Bind(slow_path->GetNativeByteOrderLabel());
-  } else {
-    // Swap bytes inplace in the input register (later we will restore it).
-    GenReverseBytes(locations->InAt(value_index), value_type, assembler, temp);
   }
 
   switch (invoke->GetIntrinsic()) {
@@ -3846,25 +3833,21 @@ static void GenerateVarHandleSet(HInvoke* invoke,
   Address dst(CpuRegister(target.object), CpuRegister(target.offset), TIMES_1, 0);
 
   // Store the value to the field.
-  InstructionCodeGeneratorX86_64* instr_codegen =
-        down_cast<InstructionCodeGeneratorX86_64*>(codegen->GetInstructionVisitor());
-  instr_codegen->HandleFieldSet(invoke,
-                                value_index,
-                                last_temp_index,
-                                value_type,
-                                dst,
-                                CpuRegister(target.object),
-                                is_volatile,
-                                is_atomic,
-                                /*value_can_be_null=*/ true);
+  codegen->GetInstructionCodegen()->HandleFieldSet(invoke,
+                                                   value_index,
+                                                   last_temp_index,
+                                                   value_type,
+                                                   dst,
+                                                   CpuRegister(target.object),
+                                                   is_volatile,
+                                                   is_atomic,
+                                                   /*value_can_be_null=*/ true,
+                                                   byte_swap);
 
   // setVolatile needs kAnyAny barrier, but HandleFieldSet takes care of that.
 
   if (!byte_swap) {
     __ Bind(slow_path->GetExitLabel());
-  } else {
-    // Restore byte order in the input register.
-    GenReverseBytes(locations->InAt(value_index), value_type, assembler, temp);
   }
 }
 
@@ -3947,7 +3930,8 @@ static void CreateVarHandleCompareAndSetOrExchangeLocations(HInvoke* invoke) {
 
 static void GenerateVarHandleCompareAndSetOrExchange(HInvoke* invoke,
                                                      CodeGeneratorX86_64* codegen,
-                                                     bool is_cmpxchg) {
+                                                     bool is_cmpxchg,
+                                                     bool byte_swap = false) {
   DCHECK(!kEmitCompilerReadBarrier || kUseBakerReadBarrier);
 
   X86_64Assembler* assembler = codegen->GetAssembler();
@@ -3958,9 +3942,13 @@ static void GenerateVarHandleCompareAndSetOrExchange(HInvoke* invoke,
   uint32_t new_value_index = number_of_arguments - 1;
   DataType::Type type = GetDataTypeFromShorty(invoke, expected_value_index);
 
-  VarHandleSlowPathX86_64* slow_path = GenerateVarHandleChecks(invoke, codegen, type);
+  VarHandleSlowPathX86_64* slow_path = nullptr;
   VarHandleTarget target = GetVarHandleTarget(invoke);
-  GenerateVarHandleTarget(invoke, target, codegen);
+  if (!byte_swap) {
+    slow_path = GenerateVarHandleChecks(invoke, codegen, type);
+    GenerateVarHandleTarget(invoke, target, codegen);
+    __ Bind(slow_path->GetNativeByteOrderLabel());
+  }
 
   uint32_t temp_count = locations->GetTempCount();
   GenCompareAndSetOrExchange(codegen,
@@ -3974,12 +3962,15 @@ static void GenerateVarHandleCompareAndSetOrExchange(HInvoke* invoke,
                              locations->InAt(new_value_index),
                              locations->InAt(expected_value_index),
                              locations->Out(),
-                             is_cmpxchg);
+                             is_cmpxchg,
+                             byte_swap);
 
   // We are using LOCK CMPXCHG in all cases because there is no CAS equivalent that has weak
   // failure semantics. LOCK CMPXCHG has full barrier semantics, so we don't need barriers.
 
-  __ Bind(slow_path->GetExitLabel());
+  if (!byte_swap) {
+    __ Bind(slow_path->GetExitLabel());
+  }
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleCompareAndSet(HInvoke* invoke) {
@@ -4716,6 +4707,14 @@ void VarHandleSlowPathX86_64::EmitByteArrayViewCode(CodeGeneratorX86_64* codegen
       break;
     case mirror::VarHandle::AccessModeTemplate::kSet:
       GenerateVarHandleSet(invoke, codegen, is_volatile_, is_atomic_, /*byte_swap=*/ true);
+      break;
+    case mirror::VarHandle::AccessModeTemplate::kCompareAndSet:
+      GenerateVarHandleCompareAndSetOrExchange(
+          invoke, codegen, /*is_cmpxchg=*/ false, /*byte_swap=*/ true);
+      break;
+    case mirror::VarHandle::AccessModeTemplate::kCompareAndExchange:
+      GenerateVarHandleCompareAndSetOrExchange(
+          invoke, codegen, /*is_cmpxchg=*/ true, /*byte_swap=*/ true);
       break;
     default:
       DCHECK(false);
