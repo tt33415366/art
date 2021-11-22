@@ -249,7 +249,10 @@ class InstructionCodeGeneratorX86_64 : public InstructionCodeGenerator {
                       CpuRegister base,
                       bool is_volatile,
                       bool is_atomic,
-                      bool value_can_be_null);
+                      bool value_can_be_null,
+                      bool byte_swap = false);
+
+  void Bswap(Location value, DataType::Type type, CpuRegister* temp = nullptr);
 
  private:
   // Generate code for the given suspend check. If not null, `successor`
@@ -276,6 +279,7 @@ class InstructionCodeGeneratorX86_64 : public InstructionCodeGenerator {
   void GenerateMinMaxInt(LocationSummary* locations, bool is_min, DataType::Type type);
   void GenerateMinMaxFP(LocationSummary* locations, bool is_min, DataType::Type type);
   void GenerateMinMax(HBinaryOperation* minmax, bool is_min);
+  void GenerateMethodEntryExitHook(HInstruction* instruction);
 
   // Generate a heap reference load using one register `out`:
   //
@@ -418,6 +422,10 @@ class CodeGeneratorX86_64 : public CodeGenerator {
 
   InstructionSet GetInstructionSet() const override {
     return InstructionSet::kX86_64;
+  }
+
+  InstructionCodeGeneratorX86_64* GetInstructionCodegen() {
+    return down_cast<InstructionCodeGeneratorX86_64*>(GetInstructionVisitor());
   }
 
   const X86_64InstructionSetFeatures& GetInstructionSetFeatures() const;
@@ -648,7 +656,6 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   void GenerateImplicitNullCheck(HNullCheck* instruction) override;
   void GenerateExplicitNullCheck(HNullCheck* instruction) override;
   void MaybeGenerateInlineCacheCheck(HInstruction* instruction, CpuRegister cls);
-
 
   void MaybeIncrementHotness(bool is_frame_entry);
 

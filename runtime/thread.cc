@@ -2297,6 +2297,8 @@ Thread::Thread(bool daemon)
       is_runtime_thread_(false) {
   wait_mutex_ = new Mutex("a thread wait mutex", LockLevel::kThreadWaitLock);
   wait_cond_ = new ConditionVariable("a thread wait condition variable", *wait_mutex_);
+  tlsPtr_.mutator_lock = Locks::mutator_lock_;
+  DCHECK(tlsPtr_.mutator_lock != nullptr);
   tlsPtr_.instrumentation_stack =
       new std::map<uintptr_t, instrumentation::InstrumentationStackFrame>;
   tlsPtr_.name = new std::string(kThreadNameDuringStartup);
@@ -3473,12 +3475,11 @@ void Thread::DumpThreadOffset(std::ostream& os, uint32_t offset) {
   QUICK_ENTRY_POINT_INFO(pGetObjStatic)
   QUICK_ENTRY_POINT_INFO(pAputObject)
   QUICK_ENTRY_POINT_INFO(pJniMethodStart)
-  QUICK_ENTRY_POINT_INFO(pJniMethodStartSynchronized)
   QUICK_ENTRY_POINT_INFO(pJniMethodEnd)
-  QUICK_ENTRY_POINT_INFO(pJniMethodEndSynchronized)
   QUICK_ENTRY_POINT_INFO(pJniMethodEndWithReference)
-  QUICK_ENTRY_POINT_INFO(pJniMethodEndWithReferenceSynchronized)
   QUICK_ENTRY_POINT_INFO(pJniDecodeReferenceResult)
+  QUICK_ENTRY_POINT_INFO(pJniLockObject)
+  QUICK_ENTRY_POINT_INFO(pJniUnlockObject)
   QUICK_ENTRY_POINT_INFO(pQuickGenericJniTrampoline)
   QUICK_ENTRY_POINT_INFO(pLockObject)
   QUICK_ENTRY_POINT_INFO(pUnlockObject)

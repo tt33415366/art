@@ -18,6 +18,7 @@
 
 #include "base/casts.h"
 #include "entrypoints/quick/quick_entrypoints.h"
+#include "lock_word.h"
 #include "thread.h"
 #include "utils/assembler.h"
 
@@ -316,35 +317,60 @@ void X86JNIMacroAssembler::ZeroExtend(ManagedRegister mreg, size_t size) {
 }
 
 void X86JNIMacroAssembler::MoveArguments(ArrayRef<ArgumentLocation> dests,
-                                         ArrayRef<ArgumentLocation> srcs) {
-  DCHECK_EQ(dests.size(), srcs.size());
+                                         ArrayRef<ArgumentLocation> srcs,
+                                         ArrayRef<FrameOffset> refs) {
+  size_t arg_count = dests.size();
+  DCHECK_EQ(arg_count, srcs.size());
+  DCHECK_EQ(arg_count, refs.size());
+
+  // Store register args to stack slots. Convert processed references to `jobject`.
   bool found_hidden_arg = false;
-  for (size_t i = 0, arg_count = srcs.size(); i != arg_count; ++i) {
+  for (size_t i = 0; i != arg_count; ++i) {
     const ArgumentLocation& src = srcs[i];
     const ArgumentLocation& dest = dests[i];
-    DCHECK_EQ(src.GetSize(), dest.GetSize());
+    const FrameOffset ref = refs[i];
+    DCHECK_EQ(src.GetSize(), dest.GetSize());  // Even for references.
     if (src.IsRegister()) {
       if (UNLIKELY(dest.IsRegister())) {
+        if (dest.GetRegister().Equals(src.GetRegister())) {
+          // JNI compiler sometimes adds a no-op move.
+          continue;
+        }
         // Native ABI has only stack arguments but we may pass one "hidden arg" in register.
         CHECK(!found_hidden_arg);
         found_hidden_arg = true;
+        DCHECK_EQ(ref, kInvalidReferenceOffset);
         DCHECK(
             !dest.GetRegister().Equals(X86ManagedRegister::FromCpuRegister(GetScratchRegister())));
         Move(dest.GetRegister(), src.GetRegister(), dest.GetSize());
       } else {
+        if (ref != kInvalidReferenceOffset) {
+          // Note: We can clobber `src` here as the register cannot hold more than one argument.
+          //       This overload of `CreateJObject()` currently does not use the scratch
+          //       register ECX, so this shall not clobber another argument.
+          CreateJObject(src.GetRegister(), ref, src.GetRegister(), /*null_allowed=*/ i != 0u);
+        }
         Store(dest.GetFrameOffset(), src.GetRegister(), dest.GetSize());
       }
     } else {
       // Delay copying until we have spilled all registers, including the scratch register ECX.
     }
   }
-  for (size_t i = 0, arg_count = srcs.size(); i != arg_count; ++i) {
+
+  // Copy incoming stack args. Convert processed references to `jobject`.
+  for (size_t i = 0; i != arg_count; ++i) {
     const ArgumentLocation& src = srcs[i];
     const ArgumentLocation& dest = dests[i];
-    DCHECK_EQ(src.GetSize(), dest.GetSize());
+    const FrameOffset ref = refs[i];
+    DCHECK_EQ(src.GetSize(), dest.GetSize());  // Even for references.
     if (!src.IsRegister()) {
       DCHECK(!dest.IsRegister());
-      Copy(dest.GetFrameOffset(), src.GetFrameOffset(), dest.GetSize());
+      if (ref != kInvalidReferenceOffset) {
+        DCHECK_EQ(srcs[i].GetFrameOffset(), refs[i]);
+        CreateJObject(dest.GetFrameOffset(), ref, /*null_allowed=*/ i != 0u);
+      } else {
+        Copy(dest.GetFrameOffset(), src.GetFrameOffset(), dest.GetSize());
+      }
     }
   }
 }
@@ -590,27 +616,37 @@ void X86JNIMacroAssembler::Jump(JNIMacroLabel* label) {
   __ jmp(X86JNIMacroLabel::Cast(label)->AsX86());
 }
 
-void X86JNIMacroAssembler::TestGcMarking(JNIMacroLabel* label, JNIMacroUnaryCondition cond) {
-  CHECK(label != nullptr);
-
-  art::x86::Condition x86_cond;
+static Condition UnaryConditionToX86Condition(JNIMacroUnaryCondition cond) {
   switch (cond) {
     case JNIMacroUnaryCondition::kZero:
-      x86_cond = art::x86::kZero;
-      break;
+      return kZero;
     case JNIMacroUnaryCondition::kNotZero:
-      x86_cond = art::x86::kNotZero;
-      break;
+      return kNotZero;
     default:
       LOG(FATAL) << "Not implemented condition: " << static_cast<int>(cond);
       UNREACHABLE();
   }
+}
+
+void X86JNIMacroAssembler::TestGcMarking(JNIMacroLabel* label, JNIMacroUnaryCondition cond) {
+  CHECK(label != nullptr);
 
   // CMP self->tls32_.is_gc_marking, 0
   // Jcc <Offset>
   DCHECK_EQ(Thread::IsGcMarkingSize(), 4u);
   __ fs()->cmpl(Address::Absolute(Thread::IsGcMarkingOffset<kX86PointerSize>()), Immediate(0));
-  __ j(x86_cond, X86JNIMacroLabel::Cast(label)->AsX86());
+  __ j(UnaryConditionToX86Condition(cond), X86JNIMacroLabel::Cast(label)->AsX86());
+}
+
+void X86JNIMacroAssembler::TestMarkBit(ManagedRegister mref,
+                                       JNIMacroLabel* label,
+                                       JNIMacroUnaryCondition cond) {
+  DCHECK(kUseBakerReadBarrier);
+  Register ref = mref.AsX86().AsCpuRegister();
+  static_assert(LockWord::kMarkBitStateSize == 1u);
+  __ testl(Address(ref, mirror::Object::MonitorOffset().SizeValue()),
+           Immediate(LockWord::kMarkBitStateMaskShifted));
+  __ j(UnaryConditionToX86Condition(cond), X86JNIMacroLabel::Cast(label)->AsX86());
 }
 
 void X86JNIMacroAssembler::Bind(JNIMacroLabel* label) {
