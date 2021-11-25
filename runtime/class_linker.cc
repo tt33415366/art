@@ -1949,6 +1949,7 @@ bool ClassLinker::AddImageSpace(
   if (!runtime->IsAotCompiler()) {
     ScopedTrace trace("AppImage:UpdateCodeItemAndNterp");
     bool can_use_nterp = interpreter::CanRuntimeUseNterp();
+    uint16_t hotness_threshold = runtime->GetJITOptions()->GetWarmupThreshold();
     header.VisitPackedArtMethods([&](ArtMethod& method) REQUIRES_SHARED(Locks::mutator_lock_) {
       // In the image, the `data` pointer field of the ArtMethod contains the code
       // item offset. Change this to the actual pointer to the code item.
@@ -1958,7 +1959,7 @@ bool ClassLinker::AddImageSpace(
         method.SetCodeItem(code_item);
         // The hotness counter may have changed since we compiled the image, so
         // reset it with the runtime value.
-        method.ResetCounter();
+        method.ResetCounter(hotness_threshold);
       }
       // Set image methods' entry point that point to the interpreter bridge to the
       // nterp entry point.
@@ -3687,6 +3688,7 @@ void ClassLinker::LoadClass(Thread* self,
     uint32_t last_dex_method_index = dex::kDexNoIndex;
     size_t last_class_def_method_index = 0;
 
+    uint16_t hotness_threshold = runtime->GetJITOptions()->GetWarmupThreshold();
     // Use the visitor since the ranged based loops are bit slower from seeking. Seeking to the
     // methods needs to decode all of the fields.
     accessor.VisitFieldsAndMethods([&](
@@ -3720,11 +3722,13 @@ void ClassLinker::LoadClass(Thread* self,
             last_dex_method_index = it_method_index;
             last_class_def_method_index = class_def_method_index;
           }
+          art_method->ResetCounter(hotness_threshold);
           ++class_def_method_index;
         }, [&](const ClassAccessor::Method& method) REQUIRES_SHARED(Locks::mutator_lock_) {
           ArtMethod* art_method = klass->GetVirtualMethodUnchecked(
               class_def_method_index - accessor.NumDirectMethods(),
               image_pointer_size_);
+          art_method->ResetCounter(hotness_threshold);
           LoadMethod(dex_file, method, klass, art_method);
           LinkCode(this, art_method, oat_class_ptr, class_def_method_index);
           ++class_def_method_index;
@@ -4117,8 +4121,7 @@ ObjPtr<mirror::DexCache> ClassLinker::FindDexCache(Thread* self, const DexFile& 
   UNREACHABLE();
 }
 
-ObjPtr<mirror::DexCache> ClassLinker::FindDexCache(Thread* self,
-                                                   const OatDexFile* const oat_dex_file) {
+ObjPtr<mirror::DexCache> ClassLinker::FindDexCache(Thread* self, const OatDexFile& oat_dex_file) {
   ReaderMutexLock mu(self, *Locks::dex_lock_);
   const DexCacheData* dex_cache_data = FindDexCacheDataLocked(oat_dex_file);
   ObjPtr<mirror::DexCache> dex_cache = DecodeDexCacheLocked(self, dex_cache_data);
@@ -4132,7 +4135,7 @@ ObjPtr<mirror::DexCache> ClassLinker::FindDexCache(Thread* self,
       LOG(FATAL_WITHOUT_ABORT) << "Registered dex file " << entry.first->GetLocation();
     }
   }
-  LOG(FATAL) << "Failed to find DexCache for OatDexFile " << oat_dex_file->GetDexFileLocation()
+  LOG(FATAL) << "Failed to find DexCache for OatDexFile " << oat_dex_file.GetDexFileLocation()
              << " " << &oat_dex_file;
   UNREACHABLE();
 }
@@ -4154,12 +4157,9 @@ ClassTable* ClassLinker::FindClassTable(Thread* self, ObjPtr<mirror::DexCache> d
 }
 
 const ClassLinker::DexCacheData* ClassLinker::FindDexCacheDataLocked(
-    const OatDexFile* const oat_dex_file) {
-  // DexFiles are not guaranteed to have an non-null OatDexFile*. If we pass a nullptr as parameter,
-  // we might not get back the DexCacheData we are expecting.
-  DCHECK_NE(oat_dex_file, nullptr);
-  auto it = std::find_if(dex_caches_.begin(), dex_caches_.end(), [oat_dex_file](const auto& entry) {
-    return entry.first->GetOatDexFile() == oat_dex_file;
+    const OatDexFile& oat_dex_file) {
+  auto it = std::find_if(dex_caches_.begin(), dex_caches_.end(), [&](const auto& entry) {
+    return entry.first->GetOatDexFile() == &oat_dex_file;
   });
   return it != dex_caches_.end() ? &it->second : nullptr;
 }
