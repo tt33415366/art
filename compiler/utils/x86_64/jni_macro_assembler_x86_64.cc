@@ -388,7 +388,6 @@ void X86_64JNIMacroAssembler::MoveArguments(ArrayRef<ArgumentLocation> dests,
       DCHECK_EQ(src.GetSize(), dest.GetSize());
     }
     if (src.IsRegister() && ref != kInvalidReferenceOffset) {
-      Store(ref, src.GetRegister(), kObjectReferenceSize);
       // Note: We can clobber `src` here as the register cannot hold more than one argument.
       //       This overload of `CreateJObject()` is currently implemented as "test and branch";
       //       if it was using a conditional move, it would be better to do this at move time.
@@ -673,7 +672,8 @@ void X86_64JNIMacroAssembler::GetCurrentThread(FrameOffset offset) {
 }
 
 void X86_64JNIMacroAssembler::SuspendCheck(JNIMacroLabel* label) {
-  __ gs()->cmpw(Address::Absolute(Thread::ThreadFlagsOffset<kX86_64PointerSize>(), true),
+  static_assert(static_cast<std::underlying_type_t<ThreadState>>(ThreadState::kRunnable) == 0u);
+  __ gs()->cmpl(Address::Absolute(Thread::ThreadFlagsOffset<kX86_64PointerSize>(), true),
                 Immediate(0));
   __ j(kNotEqual, X86_64JNIMacroLabel::Cast(label)->AsX86_64());
 }
