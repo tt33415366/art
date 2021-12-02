@@ -605,16 +605,17 @@ public class Main {
   /// CHECK:     subs
   /// CHECK:     add
   /// CHECK:     adds
-  /// CHECK:     ldrh
-  /// CHECK:     cmp
+  /// CHECK:     ldr
+  /// CHECK:     tst
   /// CHECK:     beq
 
   /// CHECK-START-ARM64: void Main.testCrossItersDependencies() disassembly (after)
   /// CHECK:     sub
   /// CHECK:     add
   /// CHECK:     add
-  /// CHECK:     ldrh
-  /// CHECK:     cbz
+  /// CHECK:     ldr
+  /// CHECK:     tst
+  /// CHECK:     b.eq
   private static void testCrossItersDependencies() {
     int[] data = {1, 2, 3, 0};
     int sub = 0;

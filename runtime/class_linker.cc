@@ -223,7 +223,7 @@ static void UpdateClassAfterVerification(Handle<mirror::Class> klass,
     REQUIRES_SHARED(Locks::mutator_lock_) {
   Runtime* runtime = Runtime::Current();
   ClassLinker* class_linker = runtime->GetClassLinker();
-  if (failure_kind == verifier::FailureKind::kNoFailure) {
+  if (klass->IsVerified() && (failure_kind == verifier::FailureKind::kNoFailure)) {
     klass->SetSkipAccessChecksFlagOnAllMethods(pointer_size);
   }
 
@@ -2550,7 +2550,7 @@ ObjPtr<mirror::Class> ClassLinker::EnsureResolved(Thread* self,
     }
     {
       // Handle wrapper deals with klass moving.
-      ScopedThreadSuspension sts(self, kSuspended);
+      ScopedThreadSuspension sts(self, ThreadState::kSuspended);
       if (index < kNumYieldIterations) {
         sched_yield();
       } else {
@@ -2935,7 +2935,7 @@ ObjPtr<mirror::Class> ClassLinker::FindClass(Thread* self,
             soa.Env(), soa.AddLocalReference<jobject>(class_loader.Get()));
         ScopedLocalRef<jobject> result(soa.Env(), nullptr);
         {
-          ScopedThreadStateChange tsc(self, kNative);
+          ScopedThreadStateChange tsc(self, ThreadState::kNative);
           ScopedLocalRef<jobject> class_name_object(
               soa.Env(), soa.Env()->NewStringUTF(class_name_string.c_str()));
           if (class_name_object.get() == nullptr) {
@@ -3228,7 +3228,7 @@ ObjPtr<mirror::Class> ClassLinker::DefineClass(Thread* self,
     // We must be in the kRunnable state to prevent instrumentation from
     // suspending all threads to update entrypoints while we are doing it
     // for this class.
-    DCHECK_EQ(self->GetState(), kRunnable);
+    DCHECK_EQ(self->GetState(), ThreadState::kRunnable);
     Runtime::Current()->GetInstrumentation()->InstallStubsForClass(h_new_class.Get());
   }
 
@@ -4720,7 +4720,6 @@ verifier::FailureKind ClassLinker::VerifyClass(Thread* self,
       // Regardless of our own verification result, we need to verify the class
       // at runtime if the super class is not verified. This is required in case
       // we generate an app/boot image.
-      verifier_failure = verifier::FailureKind::kSoftFailure;
       mirror::Class::SetStatus(klass, ClassStatus::kRetryVerificationAtRuntime, self);
     } else if (verifier_failure == verifier::FailureKind::kNoFailure) {
       mirror::Class::SetStatus(klass, ClassStatus::kVerified, self);
@@ -7439,7 +7438,7 @@ class ClassLinker::LinkMethodsHelper {
       if (methods != old_methods && old_methods != nullptr) {
         // Need to make sure the GC is not running since it could be scanning the methods we are
         // about to overwrite.
-        ScopedThreadStateChange tsc(self_, kSuspended);
+        ScopedThreadStateChange tsc(self_, ThreadState::kSuspended);
         gc::ScopedGCCriticalSection gcs(self_,
                                         gc::kGcCauseClassLinker,
                                         gc::kCollectorTypeClassLinker);

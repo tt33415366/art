@@ -590,8 +590,9 @@ void X86JNIMacroAssembler::GetCurrentThread(FrameOffset offset) {
 }
 
 void X86JNIMacroAssembler::SuspendCheck(JNIMacroLabel* label) {
-  __ fs()->cmpw(Address::Absolute(Thread::ThreadFlagsOffset<kX86PointerSize>()), Immediate(0));
-  __ j(kNotEqual, X86JNIMacroLabel::Cast(label)->AsX86());
+  __ fs()->testl(Address::Absolute(Thread::ThreadFlagsOffset<kX86PointerSize>()),
+                 Immediate(Thread::SuspendOrCheckpointRequestFlags()));
+  __ j(kNotZero, X86JNIMacroLabel::Cast(label)->AsX86());
 }
 
 void X86JNIMacroAssembler::ExceptionPoll(JNIMacroLabel* label) {

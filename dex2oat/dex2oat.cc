@@ -1189,6 +1189,13 @@ class Dex2Oat final {
       Usage(error_msg.c_str());
     }
 
+    if (!compiler_options_->GetDumpCfgFileName().empty() && thread_count_ != 1) {
+      LOG(INFO) << "Since we are dumping the CFG to " << compiler_options_->GetDumpCfgFileName()
+                << ", we override thread number to 1 to have determinism. It was " << thread_count_
+                << ".";
+      thread_count_ = 1;
+    }
+
     ProcessOptions(parser_options.get());
   }
 
@@ -2680,7 +2687,7 @@ class Dex2Oat final {
 
     // Runtime::Create acquired the mutator_lock_ that is normally given away when we
     // Runtime::Start, give it away now so that we don't starve GC.
-    self->TransitionFromRunnableToSuspended(kNative);
+    self->TransitionFromRunnableToSuspended(ThreadState::kNative);
 
     WatchDog::SetRuntime(runtime_.get());
 
