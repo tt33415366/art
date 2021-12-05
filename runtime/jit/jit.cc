@@ -129,13 +129,6 @@ JitOptions* JitOptions::CreateFromRuntimeArguments(const RuntimeArgumentMap& opt
   }
   DCHECK_LE(jit_options->warmup_threshold_, kJitMaxThreshold);
 
-  if (options.Exists(RuntimeArgumentMap::JITOsrThreshold)) {
-    jit_options->osr_threshold_ = *options.Get(RuntimeArgumentMap::JITOsrThreshold);
-  } else {
-    jit_options->osr_threshold_ = jit_options->warmup_threshold_;
-  }
-  DCHECK_LE(jit_options->osr_threshold_, kJitMaxThreshold);
-
   if (options.Exists(RuntimeArgumentMap::JITPriorityThreadWeight)) {
     jit_options->priority_thread_weight_ =
         *options.Get(RuntimeArgumentMap::JITPriorityThreadWeight);
@@ -272,6 +265,19 @@ bool Jit::CompileMethod(ArtMethod* method,
                         bool prejit) {
   DCHECK(Runtime::Current()->UseJitCompilation());
   DCHECK(!method->IsRuntimeMethod());
+
+  // If the baseline flag was explicitly passed in the compiler options, change the compilation kind
+  // from optimized to baseline.
+  if (jit_compiler_->IsBaselineCompiler() && compilation_kind == CompilationKind::kOptimized) {
+    compilation_kind = CompilationKind::kBaseline;
+  }
+
+  // If we're asked to compile baseline, but we cannot allocate profiling infos,
+  // change the compilation kind to optimized.
+  if ((compilation_kind == CompilationKind::kBaseline) &&
+      !GetCodeCache()->CanAllocateProfilingInfo()) {
+    compilation_kind = CompilationKind::kOptimized;
+  }
 
   RuntimeCallbacks* cb = Runtime::Current()->GetRuntimeCallbacks();
   // Don't compile the method if it has breakpoints.
@@ -1467,6 +1473,10 @@ bool Jit::IgnoreSamplesForMethod(ArtMethod* method) REQUIRES_SHARED(Locks::mutat
 }
 
 void Jit::EnqueueOptimizedCompilation(ArtMethod* method, Thread* self) {
+  // Reset the hotness counter so the baseline compiled code doesn't call this
+  // method repeatedly.
+  GetCodeCache()->ResetHotnessCounter(method, self);
+
   if (thread_pool_ == nullptr) {
     return;
   }
