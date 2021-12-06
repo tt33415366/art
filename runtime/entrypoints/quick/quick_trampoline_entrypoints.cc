@@ -60,6 +60,9 @@
 
 namespace art {
 
+extern "C" NO_RETURN void artDeoptimizeFromCompiledCode(DeoptimizationKind kind, Thread* self);
+extern "C" NO_RETURN void artDeoptimize(Thread* self);
+
 // Visits the arguments as saved to the stack by a CalleeSaveType::kRefAndArgs callee save frame.
 class QuickArgumentVisitor {
   // Number of bytes for each out register in the caller method's frame.
@@ -641,7 +644,7 @@ static void HandleDeoptimization(JValue* result,
                                               deopt_frame,
                                               result,
                                               from_code,
-                                              DeoptimizationMethodType::kDefault);
+                                              method_type);
 }
 
 extern "C" uint64_t artQuickToInterpreterBridge(ArtMethod* method, Thread* self, ArtMethod** sp)
@@ -874,9 +877,7 @@ extern "C" uint64_t artQuickProxyInvokeHandler(
     }
   } else if (instr->HasMethodExitListeners()) {
     instr->MethodExitEvent(self,
-                           soa.Decode<mirror::Object>(rcvr_jobj),
                            proxy_method,
-                           0,
                            {},
                            result);
   }
@@ -1947,7 +1948,7 @@ class BuildGenericJniFrameVisitor final : public QuickArgumentVisitor {
         auto* declaring_class = reinterpret_cast<mirror::CompressedReference<mirror::Class>*>(
             method->GetDeclaringClassAddressWithoutBarrier());
         if (kUseReadBarrier) {
-          ReadBarrierJni(declaring_class, self);
+          artJniReadBarrier(method);
         }
         sm_.AdvancePointer(declaring_class);
       }  // else "this" reference is already handled by QuickArgumentVisitor.
@@ -2061,11 +2062,14 @@ void BuildGenericJniFrameVisitor::Visit() {
  * needed and return to the stub.
  *
  * The return value is the pointer to the native code, null on failure.
+ *
+ * NO_THREAD_SAFETY_ANALYSIS: Depending on the use case, the trampoline may
+ * or may not lock a synchronization object and transition out of Runnable.
  */
 extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
                                                     ArtMethod** managed_sp,
                                                     uintptr_t* reserved_area)
-    REQUIRES_SHARED(Locks::mutator_lock_) {
+    REQUIRES_SHARED(Locks::mutator_lock_) NO_THREAD_SAFETY_ANALYSIS {
   // Note: We cannot walk the stack properly until fixed up below.
   ArtMethod* called = *managed_sp;
   DCHECK(called->IsNative()) << called->PrettyMethod(true);
@@ -2116,25 +2120,25 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
     }
   }
 
-  // Skip calling JniMethodStart for @CriticalNative.
-  if (LIKELY(!critical_native)) {
+  // Skip calling JniMethodStart for @CriticalNative and @FastNative.
+  if (LIKELY(normal_native)) {
     // Start JNI.
     if (called->IsSynchronized()) {
-      DCHECK(normal_native) << " @FastNative and synchronize is not supported";
-      jobject lock = GetGenericJniSynchronizationObject(self, called);
-      JniMethodStartSynchronized(lock, self);
+      ObjPtr<mirror::Object> lock = GetGenericJniSynchronizationObject(self, called);
+      DCHECK(lock != nullptr);
+      lock->MonitorEnter(self);
       if (self->IsExceptionPending()) {
         return nullptr;  // Report error.
       }
-    } else {
-      if (fast_native) {
-        JniMethodFastStart(self);
-      } else {
-        DCHECK(normal_native);
-        JniMethodStart(self);
-      }
     }
+    JniMethodStart(self);
+  } else {
+    DCHECK(!called->IsSynchronized())
+        << "@FastNative/@CriticalNative and synchronize is not supported";
+  }
 
+  // Skip pushing IRT frame for @CriticalNative.
+  if (LIKELY(!critical_native)) {
     // Push local reference frame.
     JNIEnvExt* env = self->GetJniEnv();
     DCHECK(env != nullptr);
@@ -2586,6 +2590,79 @@ extern "C" uint64_t artInvokeCustom(uint32_t call_site_idx, Thread* self, ArtMet
   self->PopManagedStackFragment(fragment);
 
   return result.GetJ();
+}
+
+extern "C" void artMethodEntryHook(ArtMethod* method, Thread* self, ArtMethod** sp ATTRIBUTE_UNUSED)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  instrumentation::Instrumentation* instr = Runtime::Current()->GetInstrumentation();
+  instr->MethodEnterEvent(self, method);
+  if (instr->IsDeoptimized(method)) {
+    // Instrumentation can request deoptimizing only a particular method (for
+    // ex: when there are break points on the method). In such cases deoptimize
+    // only this method. FullFrame deoptimizations are handled on method exits.
+    artDeoptimizeFromCompiledCode(DeoptimizationKind::kDebugging, self);
+  }
+}
+
+extern "C" int artMethodExitHook(Thread* self,
+                                 ArtMethod* method,
+                                 uint64_t* gpr_result,
+                                 uint64_t* fpr_result)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  DCHECK_EQ(reinterpret_cast<uintptr_t>(self), reinterpret_cast<uintptr_t>(Thread::Current()));
+  CHECK(gpr_result != nullptr);
+  CHECK(fpr_result != nullptr);
+  // Instrumentation exit stub must not be entered with a pending exception.
+  CHECK(!self->IsExceptionPending())
+      << "Enter instrumentation exit stub with pending exception " << self->GetException()->Dump();
+
+  instrumentation::Instrumentation* instr = Runtime::Current()->GetInstrumentation();
+  DCHECK(instr->AreExitStubsInstalled());
+  bool is_ref;
+  JValue return_value = instr->GetReturnValue(self, method, &is_ref, gpr_result, fpr_result);
+  bool deoptimize = false;
+  {
+    StackHandleScope<1> hs(self);
+    MutableHandle<mirror::Object> res(hs.NewHandle<mirror::Object>(nullptr));
+    if (is_ref) {
+      // Take a handle to the return value so we won't lose it if we suspend.
+      res.Assign(return_value.GetL());
+    }
+    DCHECK(!method->IsRuntimeMethod());
+
+    // Deoptimize if the caller needs to continue execution in the interpreter. Do nothing if we get
+    // back to an upcall.
+    NthCallerVisitor visitor(self, 1, true);
+    visitor.WalkStack(true);
+    deoptimize = instr->ShouldDeoptimizeMethod(self, visitor);
+
+    // If we need a deoptimization MethodExitEvent will be called by the interpreter when it
+    // re-executes the return instruction.
+    if (!deoptimize) {
+      instr->MethodExitEvent(self,
+                             method,
+                             /* frame= */ {},
+                             return_value);
+    }
+
+    if (is_ref) {
+      // Restore the return value if it's a reference since it might have moved.
+      *reinterpret_cast<mirror::Object**>(gpr_result) = res.Get();
+    }
+  }
+
+  if (self->IsExceptionPending() || self->ObserveAsyncException()) {
+    return 1;
+  }
+
+  if (deoptimize) {
+    DeoptimizationMethodType deopt_method_type = instr->GetDeoptimizationMethodType(method);
+    self->PushDeoptimizationContext(return_value, is_ref, nullptr, false, deopt_method_type);
+    artDeoptimize(self);
+    UNREACHABLE();
+  }
+
+  return 0;
 }
 
 }  // namespace art

@@ -288,7 +288,8 @@ class LoadClassSlowPathX86 : public SlowPathCode {
 
     InvokeRuntimeCallingConvention calling_convention;
     if (must_resolve_type) {
-      DCHECK(IsSameDexFile(cls_->GetDexFile(), x86_codegen->GetGraph()->GetDexFile()));
+      DCHECK(IsSameDexFile(cls_->GetDexFile(), x86_codegen->GetGraph()->GetDexFile()) ||
+             x86_codegen->GetCompilerOptions().WithinOatFile(&cls_->GetDexFile()));
       dex::TypeIndex type_index = cls_->GetTypeIndex();
       __ movl(calling_convention.GetRegisterAt(0), Immediate(type_index.index_));
       if (cls_->NeedsAccessCheck()) {
@@ -942,6 +943,50 @@ class ReadBarrierForRootSlowPathX86 : public SlowPathCode {
   DISALLOW_COPY_AND_ASSIGN(ReadBarrierForRootSlowPathX86);
 };
 
+class MethodEntryExitHooksSlowPathX86 : public SlowPathCode {
+ public:
+  explicit MethodEntryExitHooksSlowPathX86(HInstruction* instruction) : SlowPathCode(instruction) {}
+
+  void EmitNativeCode(CodeGenerator* codegen) override {
+    CodeGeneratorX86* x86_codegen = down_cast<CodeGeneratorX86*>(codegen);
+    LocationSummary* locations = instruction_->GetLocations();
+    QuickEntrypointEnum entry_point =
+        (instruction_->IsMethodEntryHook()) ? kQuickMethodEntryHook : kQuickMethodExitHook;
+    __ Bind(GetEntryLabel());
+    SaveLiveRegisters(codegen, locations);
+    x86_codegen->InvokeRuntime(entry_point, instruction_, instruction_->GetDexPc(), this);
+    RestoreLiveRegisters(codegen, locations);
+    __ jmp(GetExitLabel());
+  }
+
+  const char* GetDescription() const override {
+    return "MethodEntryExitHooksSlowPath";
+  }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(MethodEntryExitHooksSlowPathX86);
+};
+
+class CompileOptimizedSlowPathX86 : public SlowPathCode {
+ public:
+  CompileOptimizedSlowPathX86() : SlowPathCode(/* instruction= */ nullptr) {}
+
+  void EmitNativeCode(CodeGenerator* codegen) override {
+    CodeGeneratorX86* x86_codegen = down_cast<CodeGeneratorX86*>(codegen);
+    __ Bind(GetEntryLabel());
+    x86_codegen->GenerateInvokeRuntime(
+        GetThreadOffset<kX86PointerSize>(kQuickCompileOptimized).Int32Value());
+    __ jmp(GetExitLabel());
+  }
+
+  const char* GetDescription() const override {
+    return "CompileOptimizedSlowPath";
+  }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(CompileOptimizedSlowPathX86);
+};
+
 #undef __
 // NOLINT on __ macro to suppress wrong warning/fix (misc-macro-parentheses) from clang-tidy.
 #define __ down_cast<X86Assembler*>(GetAssembler())->  // NOLINT
@@ -1062,7 +1107,8 @@ CodeGeneratorX86::CodeGeneratorX86(HGraph* graph,
       location_builder_(graph, this),
       instruction_visitor_(graph, this),
       move_resolver_(graph->GetAllocator(), this),
-      assembler_(graph->GetAllocator()),
+      assembler_(graph->GetAllocator(),
+                 compiler_options.GetInstructionSetFeatures()->AsX86InstructionSetFeatures()),
       boot_image_method_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       method_bss_entry_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       boot_image_type_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
@@ -1097,6 +1143,70 @@ static dwarf::Reg DWARFReg(Register reg) {
   return dwarf::Reg::X86Core(static_cast<int>(reg));
 }
 
+void SetInForReturnValue(HInstruction* ret, LocationSummary* locations) {
+  switch (ret->InputAt(0)->GetType()) {
+    case DataType::Type::kReference:
+    case DataType::Type::kBool:
+    case DataType::Type::kUint8:
+    case DataType::Type::kInt8:
+    case DataType::Type::kUint16:
+    case DataType::Type::kInt16:
+    case DataType::Type::kInt32:
+      locations->SetInAt(0, Location::RegisterLocation(EAX));
+      break;
+
+    case DataType::Type::kInt64:
+      locations->SetInAt(0, Location::RegisterPairLocation(EAX, EDX));
+      break;
+
+    case DataType::Type::kFloat32:
+    case DataType::Type::kFloat64:
+      locations->SetInAt(0, Location::FpuRegisterLocation(XMM0));
+      break;
+
+    case DataType::Type::kVoid:
+      locations->SetInAt(0, Location::NoLocation());
+      break;
+
+    default:
+      LOG(FATAL) << "Unknown return type " << ret->InputAt(0)->GetType();
+  }
+}
+
+void LocationsBuilderX86::VisitMethodExitHook(HMethodExitHook* method_hook) {
+  LocationSummary* locations = new (GetGraph()->GetAllocator())
+      LocationSummary(method_hook, LocationSummary::kCallOnSlowPath);
+  SetInForReturnValue(method_hook, locations);
+}
+
+void InstructionCodeGeneratorX86::GenerateMethodEntryExitHook(HInstruction* instruction) {
+  SlowPathCode* slow_path =
+      new (codegen_->GetScopedAllocator()) MethodEntryExitHooksSlowPathX86(instruction);
+  codegen_->AddSlowPath(slow_path);
+
+  uint64_t address = reinterpret_cast64<uint64_t>(Runtime::Current()->GetInstrumentation());
+  int offset = instrumentation::Instrumentation::NeedsEntryExitHooksOffset().Int32Value();
+  __ cmpb(Address::Absolute(address + offset), Immediate(0));
+  __ j(kNotEqual, slow_path->GetEntryLabel());
+  __ Bind(slow_path->GetExitLabel());
+}
+
+void InstructionCodeGeneratorX86::VisitMethodExitHook(HMethodExitHook* instruction) {
+  DCHECK(codegen_->GetCompilerOptions().IsJitCompiler() && GetGraph()->IsDebuggable());
+  DCHECK(codegen_->RequiresCurrentMethod());
+  GenerateMethodEntryExitHook(instruction);
+}
+
+void LocationsBuilderX86::VisitMethodEntryHook(HMethodEntryHook* method_hook) {
+  new (GetGraph()->GetAllocator()) LocationSummary(method_hook, LocationSummary::kCallOnSlowPath);
+}
+
+void InstructionCodeGeneratorX86::VisitMethodEntryHook(HMethodEntryHook* instruction) {
+  DCHECK(codegen_->GetCompilerOptions().IsJitCompiler() && GetGraph()->IsDebuggable());
+  DCHECK(codegen_->RequiresCurrentMethod());
+  GenerateMethodEntryExitHook(instruction);
+}
+
 void CodeGeneratorX86::MaybeIncrementHotness(bool is_frame_entry) {
   if (GetCompilerOptions().CountHotnessInCompiledCode()) {
     Register reg = EAX;
@@ -1109,10 +1219,9 @@ void CodeGeneratorX86::MaybeIncrementHotness(bool is_frame_entry) {
     }
     NearLabel overflow;
     __ cmpw(Address(reg, ArtMethod::HotnessCountOffset().Int32Value()),
-            Immediate(ArtMethod::MaxCounter()));
+            Immediate(interpreter::kNterpHotnessValue));
     __ j(kEqual, &overflow);
-    __ addw(Address(reg, ArtMethod::HotnessCountOffset().Int32Value()),
-            Immediate(1));
+    __ addw(Address(reg, ArtMethod::HotnessCountOffset().Int32Value()), Immediate(-1));
     __ Bind(&overflow);
     if (!is_frame_entry) {
       __ popl(EAX);
@@ -1121,52 +1230,19 @@ void CodeGeneratorX86::MaybeIncrementHotness(bool is_frame_entry) {
   }
 
   if (GetGraph()->IsCompilingBaseline() && !Runtime::Current()->IsAotCompiler()) {
-    ScopedProfilingInfoUse spiu(
-        Runtime::Current()->GetJit(), GetGraph()->GetArtMethod(), Thread::Current());
-    ProfilingInfo* info = spiu.GetProfilingInfo();
-    if (info != nullptr) {
-      uint32_t address = reinterpret_cast32<uint32_t>(info);
-      NearLabel done;
-      if (HasEmptyFrame()) {
-        CHECK(is_frame_entry);
-        // Alignment
-        IncreaseFrame(8);
-        // We need a temporary. The stub also expects the method at bottom of stack.
-        __ pushl(EAX);
-        __ cfi().AdjustCFAOffset(4);
-        __ movl(EAX, Immediate(address));
-        __ addw(Address(EAX, ProfilingInfo::BaselineHotnessCountOffset().Int32Value()),
-                Immediate(1));
-        __ andw(Address(EAX, ProfilingInfo::BaselineHotnessCountOffset().Int32Value()),
-                Immediate(interpreter::kTieredHotnessMask));
-        __ j(kNotZero, &done);
-        GenerateInvokeRuntime(
-            GetThreadOffset<kX86PointerSize>(kQuickCompileOptimized).Int32Value());
-        __ Bind(&done);
-        // We don't strictly require to restore EAX, but this makes the generated
-        // code easier to reason about.
-        __ popl(EAX);
-        __ cfi().AdjustCFAOffset(-4);
-        DecreaseFrame(8);
-      } else {
-        if (!RequiresCurrentMethod()) {
-          CHECK(is_frame_entry);
-          __ movl(Address(ESP, kCurrentMethodStackOffset), kMethodRegisterArgument);
-        }
-        // We need a temporary.
-        __ pushl(EAX);
-        __ cfi().AdjustCFAOffset(4);
-        __ movl(EAX, Immediate(address));
-        __ addw(Address(EAX, ProfilingInfo::BaselineHotnessCountOffset().Int32Value()),
-                Immediate(1));
-        __ popl(EAX);  // Put stack as expected before exiting or calling stub.
-        __ cfi().AdjustCFAOffset(-4);
-        __ j(kCarryClear, &done);
-        GenerateInvokeRuntime(
-            GetThreadOffset<kX86PointerSize>(kQuickCompileOptimized).Int32Value());
-        __ Bind(&done);
-      }
-    }
+    SlowPathCode* slow_path = new (GetScopedAllocator()) CompileOptimizedSlowPathX86();
+    AddSlowPath(slow_path);
+    ProfilingInfo* info = GetGraph()->GetProfilingInfo();
+    DCHECK(info != nullptr);
+    uint32_t address = reinterpret_cast32<uint32_t>(info) +
+        ProfilingInfo::BaselineHotnessCountOffset().Int32Value();
+    DCHECK(!HasEmptyFrame());
+    // With multiple threads, this can overflow. This is OK, we will eventually get to see
+    // it reaching 0. Also, at this point we have no register available to look
+    // at the counter directly.
+    __ addw(Address::Absolute(address), Immediate(-1));
+    __ j(kEqual, slow_path->GetEntryLabel());
+    __ Bind(slow_path->GetExitLabel());
   }
 }
 
@@ -2408,31 +2484,7 @@ void InstructionCodeGeneratorX86::VisitReturnVoid(HReturnVoid* ret ATTRIBUTE_UNU
 void LocationsBuilderX86::VisitReturn(HReturn* ret) {
   LocationSummary* locations =
       new (GetGraph()->GetAllocator()) LocationSummary(ret, LocationSummary::kNoCall);
-  switch (ret->InputAt(0)->GetType()) {
-    case DataType::Type::kReference:
-    case DataType::Type::kBool:
-    case DataType::Type::kUint8:
-    case DataType::Type::kInt8:
-    case DataType::Type::kUint16:
-    case DataType::Type::kInt16:
-    case DataType::Type::kInt32:
-      locations->SetInAt(0, Location::RegisterLocation(EAX));
-      break;
-
-    case DataType::Type::kInt64:
-      locations->SetInAt(
-          0, Location::RegisterPairLocation(EAX, EDX));
-      break;
-
-    case DataType::Type::kFloat32:
-    case DataType::Type::kFloat64:
-      locations->SetInAt(
-          0, Location::FpuRegisterLocation(XMM0));
-      break;
-
-    default:
-      LOG(FATAL) << "Unknown return type " << ret->InputAt(0)->GetType();
-  }
+  SetInForReturnValue(ret, locations);
 }
 
 void InstructionCodeGeneratorX86::VisitReturn(HReturn* ret) {
@@ -2604,25 +2656,22 @@ void CodeGeneratorX86::MaybeGenerateInlineCacheCheck(HInstruction* instruction, 
       GetGraph()->IsCompilingBaseline() &&
       !Runtime::Current()->IsAotCompiler()) {
     DCHECK(!instruction->GetEnvironment()->IsFromInlinedInvoke());
-    ScopedProfilingInfoUse spiu(
-        Runtime::Current()->GetJit(), GetGraph()->GetArtMethod(), Thread::Current());
-    ProfilingInfo* info = spiu.GetProfilingInfo();
-    if (info != nullptr) {
-      InlineCache* cache = info->GetInlineCache(instruction->GetDexPc());
-      uint32_t address = reinterpret_cast32<uint32_t>(cache);
-      if (kIsDebugBuild) {
-        uint32_t temp_index = instruction->GetLocations()->GetTempCount() - 1u;
-        CHECK_EQ(EBP, instruction->GetLocations()->GetTemp(temp_index).AsRegister<Register>());
-      }
-      Register temp = EBP;
-      NearLabel done;
-      __ movl(temp, Immediate(address));
-      // Fast path for a monomorphic cache.
-      __ cmpl(klass, Address(temp, InlineCache::ClassesOffset().Int32Value()));
-      __ j(kEqual, &done);
-      GenerateInvokeRuntime(GetThreadOffset<kX86PointerSize>(kQuickUpdateInlineCache).Int32Value());
-      __ Bind(&done);
+    ProfilingInfo* info = GetGraph()->GetProfilingInfo();
+    DCHECK(info != nullptr);
+    InlineCache* cache = info->GetInlineCache(instruction->GetDexPc());
+    uint32_t address = reinterpret_cast32<uint32_t>(cache);
+    if (kIsDebugBuild) {
+      uint32_t temp_index = instruction->GetLocations()->GetTempCount() - 1u;
+      CHECK_EQ(EBP, instruction->GetLocations()->GetTemp(temp_index).AsRegister<Register>());
     }
+    Register temp = EBP;
+    NearLabel done;
+    __ movl(temp, Immediate(address));
+    // Fast path for a monomorphic cache.
+    __ cmpl(klass, Address(temp, InlineCache::ClassesOffset().Int32Value()));
+    __ j(kEqual, &done);
+    GenerateInvokeRuntime(GetThreadOffset<kX86PointerSize>(kQuickUpdateInlineCache).Int32Value());
+    __ Bind(&done);
   }
 }
 
@@ -5434,7 +5483,8 @@ void CodeGeneratorX86::RecordMethodBssEntryPatch(HInvoke* invoke) {
   size_t index = invoke->IsInvokeInterface()
       ? invoke->AsInvokeInterface()->GetSpecialInputIndex()
       : invoke->AsInvokeStaticOrDirect()->GetSpecialInputIndex();
-  DCHECK(IsSameDexFile(GetGraph()->GetDexFile(), *invoke->GetMethodReference().dex_file));
+  DCHECK(IsSameDexFile(GetGraph()->GetDexFile(), *invoke->GetMethodReference().dex_file) ||
+         GetCompilerOptions().WithinOatFile(invoke->GetMethodReference().dex_file));
   HX86ComputeBaseMethodAddress* method_address =
       invoke->InputAt(index)->AsX86ComputeBaseMethodAddress();
   // Add the patch entry and bind its label at the end of the instruction.
@@ -6633,13 +6683,13 @@ void InstructionCodeGeneratorX86::GenerateSuspendCheck(HSuspendCheck* instructio
     DCHECK_EQ(slow_path->GetSuccessor(), successor);
   }
 
-  __ fs()->cmpw(Address::Absolute(Thread::ThreadFlagsOffset<kX86PointerSize>().Int32Value()),
-                Immediate(0));
+  __ fs()->testl(Address::Absolute(Thread::ThreadFlagsOffset<kX86PointerSize>().Int32Value()),
+                 Immediate(Thread::SuspendOrCheckpointRequestFlags()));
   if (successor == nullptr) {
-    __ j(kNotEqual, slow_path->GetEntryLabel());
+    __ j(kNotZero, slow_path->GetEntryLabel());
     __ Bind(slow_path->GetReturnLabel());
   } else {
-    __ j(kEqual, codegen_->GetLabelOf(successor));
+    __ j(kZero, codegen_->GetLabelOf(successor));
     __ jmp(slow_path->GetEntryLabel());
   }
 }

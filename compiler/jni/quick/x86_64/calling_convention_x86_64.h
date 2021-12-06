@@ -48,6 +48,7 @@ class X86_64JniCallingConvention final : public JniCallingConvention {
  public:
   X86_64JniCallingConvention(bool is_static,
                              bool is_synchronized,
+                             bool is_fast_native,
                              bool is_critical_native,
                              const char* shorty);
   ~X86_64JniCallingConvention() override {}
@@ -70,6 +71,10 @@ class X86_64JniCallingConvention final : public JniCallingConvention {
   bool RequiresSmallResultTypeExtension() const override {
     return HasSmallReturnType();
   }
+
+  // Locking argument register, used to pass the synchronization object for calls
+  // to `JniLockObject()` and `JniUnlockObject()`.
+  ManagedRegister LockingArgumentRegister() const override;
 
   // Hidden argument register, used to pass the method pointer for @CriticalNative call.
   ManagedRegister HiddenArgumentRegister() const override;

@@ -1058,7 +1058,6 @@
           "954-invoke-polymorphic-verifier",
           "955-methodhandles-smali",
           "956-methodhandles",
-          "957-methodhandle-transforms",
           "958-methodhandle-stackframe",
           "972-default-imt-collision",
           "972-iface-super-multidex",
@@ -1459,5 +1458,21 @@
                         "and no longer takes effect"],
         "bug": "b/203171409",
         "variant": "target | host"
+    },
+    {
+        "tests": ["004-ReferenceMap"],
+        "variant": "redefine-stress & jit",
+        "description": ["Test expects specific dex pcs which breaks with redefine-stress"]
+    },
+    {
+        "tests": ["597-deopt-invoke-stub"],
+        "variant": "redefine-stress & jit | jvmti-stress & jit",
+        "description": ["Test expects few methods to be interpreted but jvmti enables",
+		        "jit-on-first-use which breaks this expectation"]
+    },
+    {
+        "tests": ["667-jit-jni-stub"],
+        "variant": "jit-on-first-use | redefine-stress",
+        "description": ["jit-on-first-use disables jit GC but this test requires jit GC"]
     }
 ]

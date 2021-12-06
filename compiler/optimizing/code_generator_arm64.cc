@@ -281,7 +281,8 @@ class LoadClassSlowPathARM64 : public SlowPathCodeARM64 {
 
     InvokeRuntimeCallingConvention calling_convention;
     if (must_resolve_type) {
-      DCHECK(IsSameDexFile(cls_->GetDexFile(), arm64_codegen->GetGraph()->GetDexFile()));
+      DCHECK(IsSameDexFile(cls_->GetDexFile(), arm64_codegen->GetGraph()->GetDexFile()) ||
+             arm64_codegen->GetCompilerOptions().WithinOatFile(&cls_->GetDexFile()));
       dex::TypeIndex type_index = cls_->GetTypeIndex();
       __ Mov(calling_convention.GetRegisterAt(0).W(), type_index.index_);
       if (cls_->NeedsAccessCheck()) {
@@ -822,6 +823,54 @@ class ReadBarrierForRootSlowPathARM64 : public SlowPathCodeARM64 {
   DISALLOW_COPY_AND_ASSIGN(ReadBarrierForRootSlowPathARM64);
 };
 
+class MethodEntryExitHooksSlowPathARM64 : public SlowPathCodeARM64 {
+ public:
+  explicit MethodEntryExitHooksSlowPathARM64(HInstruction* instruction)
+      : SlowPathCodeARM64(instruction) {}
+
+  void EmitNativeCode(CodeGenerator* codegen) override {
+    LocationSummary* locations = instruction_->GetLocations();
+    QuickEntrypointEnum entry_point =
+        (instruction_->IsMethodEntryHook()) ? kQuickMethodEntryHook : kQuickMethodExitHook;
+    CodeGeneratorARM64* arm64_codegen = down_cast<CodeGeneratorARM64*>(codegen);
+    __ Bind(GetEntryLabel());
+    SaveLiveRegisters(codegen, locations);
+    arm64_codegen->InvokeRuntime(entry_point, instruction_, instruction_->GetDexPc(), this);
+    RestoreLiveRegisters(codegen, locations);
+    __ B(GetExitLabel());
+  }
+
+  const char* GetDescription() const override {
+    return "MethodEntryExitHooksSlowPath";
+  }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(MethodEntryExitHooksSlowPathARM64);
+};
+
+class CompileOptimizedSlowPathARM64 : public SlowPathCodeARM64 {
+ public:
+  CompileOptimizedSlowPathARM64() : SlowPathCodeARM64(/* instruction= */ nullptr) {}
+
+  void EmitNativeCode(CodeGenerator* codegen) override {
+    uint32_t entrypoint_offset =
+        GetThreadOffset<kArm64PointerSize>(kQuickCompileOptimized).Int32Value();
+    __ Bind(GetEntryLabel());
+    __ Ldr(lr, MemOperand(tr, entrypoint_offset));
+    // Note: we don't record the call here (and therefore don't generate a stack
+    // map), as the entrypoint should never be suspended.
+    __ Blr(lr);
+    __ B(GetExitLabel());
+  }
+
+  const char* GetDescription() const override {
+    return "CompileOptimizedSlowPath";
+  }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(CompileOptimizedSlowPathARM64);
+};
+
 #undef __
 
 Location InvokeDexCallingConventionVisitorARM64::GetNextLocation(DataType::Type type) {
@@ -1113,6 +1162,47 @@ void ParallelMoveResolverARM64::EmitMove(size_t index) {
   codegen_->MoveLocation(move->GetDestination(), move->GetSource(), DataType::Type::kVoid);
 }
 
+void LocationsBuilderARM64::VisitMethodExitHook(HMethodExitHook* method_hook) {
+  LocationSummary* locations = new (GetGraph()->GetAllocator())
+      LocationSummary(method_hook, LocationSummary::kCallOnSlowPath);
+  DataType::Type return_type = method_hook->InputAt(0)->GetType();
+  locations->SetInAt(0, ARM64ReturnLocation(return_type));
+}
+
+void InstructionCodeGeneratorARM64::GenerateMethodEntryExitHook(HInstruction* instruction) {
+  MacroAssembler* masm = GetVIXLAssembler();
+  UseScratchRegisterScope temps(masm);
+  Register temp = temps.AcquireX();
+  Register value = temps.AcquireW();
+
+  SlowPathCodeARM64* slow_path =
+      new (codegen_->GetScopedAllocator()) MethodEntryExitHooksSlowPathARM64(instruction);
+  codegen_->AddSlowPath(slow_path);
+
+  uint64_t address = reinterpret_cast64<uint64_t>(Runtime::Current()->GetInstrumentation());
+  int offset = instrumentation::Instrumentation::NeedsEntryExitHooksOffset().Int32Value();
+  __ Mov(temp, address + offset);
+  __ Ldrb(value, MemOperand(temp, 0));
+  __ Cbnz(value, slow_path->GetEntryLabel());
+  __ Bind(slow_path->GetExitLabel());
+}
+
+void InstructionCodeGeneratorARM64::VisitMethodExitHook(HMethodExitHook* instruction) {
+  DCHECK(codegen_->GetCompilerOptions().IsJitCompiler() && GetGraph()->IsDebuggable());
+  DCHECK(codegen_->RequiresCurrentMethod());
+  GenerateMethodEntryExitHook(instruction);
+}
+
+void LocationsBuilderARM64::VisitMethodEntryHook(HMethodEntryHook* method_hook) {
+  new (GetGraph()->GetAllocator()) LocationSummary(method_hook, LocationSummary::kCallOnSlowPath);
+}
+
+void InstructionCodeGeneratorARM64::VisitMethodEntryHook(HMethodEntryHook* instruction) {
+  DCHECK(codegen_->GetCompilerOptions().IsJitCompiler() && GetGraph()->IsDebuggable());
+  DCHECK(codegen_->RequiresCurrentMethod());
+  GenerateMethodEntryExitHook(instruction);
+}
+
 void CodeGeneratorARM64::MaybeIncrementHotness(bool is_frame_entry) {
   MacroAssembler* masm = GetVIXLAssembler();
   if (GetCompilerOptions().CountHotnessInCompiledCode()) {
@@ -1123,53 +1213,31 @@ void CodeGeneratorARM64::MaybeIncrementHotness(bool is_frame_entry) {
       __ Ldr(method, MemOperand(sp, 0));
     }
     __ Ldrh(counter, MemOperand(method, ArtMethod::HotnessCountOffset().Int32Value()));
-    __ Add(counter, counter, 1);
-    // Subtract one if the counter would overflow.
-    __ Sub(counter, counter, Operand(counter, LSR, 16));
+    vixl::aarch64::Label done;
+    DCHECK_EQ(0u, interpreter::kNterpHotnessValue);
+    __ Cbz(counter, &done);
+    __ Add(counter, counter, -1);
     __ Strh(counter, MemOperand(method, ArtMethod::HotnessCountOffset().Int32Value()));
+    __ Bind(&done);
   }
 
   if (GetGraph()->IsCompilingBaseline() && !Runtime::Current()->IsAotCompiler()) {
-    ScopedProfilingInfoUse spiu(
-        Runtime::Current()->GetJit(), GetGraph()->GetArtMethod(), Thread::Current());
-    ProfilingInfo* info = spiu.GetProfilingInfo();
-    if (info != nullptr) {
-      uint64_t address = reinterpret_cast64<uint64_t>(info);
-      vixl::aarch64::Label done;
-      UseScratchRegisterScope temps(masm);
-      Register temp = temps.AcquireX();
-      Register counter = temps.AcquireW();
-      __ Mov(temp, address);
-      __ Ldrh(counter, MemOperand(temp, ProfilingInfo::BaselineHotnessCountOffset().Int32Value()));
-      __ Add(counter, counter, 1);
-      __ And(counter, counter, interpreter::kTieredHotnessMask);
-      __ Strh(counter, MemOperand(temp, ProfilingInfo::BaselineHotnessCountOffset().Int32Value()));
-      __ Cbnz(counter, &done);
-      if (is_frame_entry) {
-        if (HasEmptyFrame()) {
-          // The entrypoint expects the method at the bottom of the stack. We
-          // claim stack space necessary for alignment.
-          IncreaseFrame(kStackAlignment);
-          __ Stp(kArtMethodRegister, lr, MemOperand(sp, 0));
-        } else if (!RequiresCurrentMethod()) {
-          __ Str(kArtMethodRegister, MemOperand(sp, 0));
-        }
-      } else {
-        CHECK(RequiresCurrentMethod());
-      }
-      uint32_t entrypoint_offset =
-          GetThreadOffset<kArm64PointerSize>(kQuickCompileOptimized).Int32Value();
-      __ Ldr(lr, MemOperand(tr, entrypoint_offset));
-      // Note: we don't record the call here (and therefore don't generate a stack
-      // map), as the entrypoint should never be suspended.
-      __ Blr(lr);
-      if (HasEmptyFrame()) {
-        CHECK(is_frame_entry);
-        __ Ldr(lr, MemOperand(sp, 8));
-        DecreaseFrame(kStackAlignment);
-      }
-      __ Bind(&done);
-    }
+    SlowPathCodeARM64* slow_path = new (GetScopedAllocator()) CompileOptimizedSlowPathARM64();
+    AddSlowPath(slow_path);
+    ProfilingInfo* info = GetGraph()->GetProfilingInfo();
+    DCHECK(info != nullptr);
+    DCHECK(!HasEmptyFrame());
+    uint64_t address = reinterpret_cast64<uint64_t>(info);
+    vixl::aarch64::Label done;
+    UseScratchRegisterScope temps(masm);
+    Register temp = temps.AcquireX();
+    Register counter = temps.AcquireW();
+    __ Ldr(temp, DeduplicateUint64Literal(address));
+    __ Ldrh(counter, MemOperand(temp, ProfilingInfo::BaselineHotnessCountOffset().Int32Value()));
+    __ Cbz(counter, slow_path->GetEntryLabel());
+    __ Add(counter, counter, -1);
+    __ Strh(counter, MemOperand(temp, ProfilingInfo::BaselineHotnessCountOffset().Int32Value()));
+    __ Bind(slow_path->GetExitLabel());
   }
 }
 
@@ -1906,8 +1974,22 @@ void CodeGeneratorARM64::GenerateMemoryBarrier(MemBarrierKind kind) {
   __ Dmb(InnerShareable, type);
 }
 
+bool CodeGeneratorARM64::CanUseImplicitSuspendCheck() const {
+  // Use implicit suspend checks if requested in compiler options unless there are SIMD
+  // instructions in the graph. The implicit suspend check saves all FP registers as
+  // 64-bit (in line with the calling convention) but SIMD instructions can use 128-bit
+  // registers, so they need to be saved in an explicit slow path.
+  return GetCompilerOptions().GetImplicitSuspendChecks() && !GetGraph()->HasSIMD();
+}
+
 void InstructionCodeGeneratorARM64::GenerateSuspendCheck(HSuspendCheck* instruction,
                                                          HBasicBlock* successor) {
+  if (codegen_->CanUseImplicitSuspendCheck()) {
+    __ Ldr(kImplicitSuspendCheckRegister, MemOperand(kImplicitSuspendCheckRegister));
+    codegen_->RecordPcInfo(instruction, instruction->GetDexPc());
+    return;
+  }
+
   SuspendCheckSlowPathARM64* slow_path =
       down_cast<SuspendCheckSlowPathARM64*>(instruction->GetSlowPath());
   if (slow_path == nullptr) {
@@ -1925,12 +2007,13 @@ void InstructionCodeGeneratorARM64::GenerateSuspendCheck(HSuspendCheck* instruct
   UseScratchRegisterScope temps(codegen_->GetVIXLAssembler());
   Register temp = temps.AcquireW();
 
-  __ Ldrh(temp, MemOperand(tr, Thread::ThreadFlagsOffset<kArm64PointerSize>().SizeValue()));
+  __ Ldr(temp, MemOperand(tr, Thread::ThreadFlagsOffset<kArm64PointerSize>().SizeValue()));
+  __ Tst(temp, Thread::SuspendOrCheckpointRequestFlags());
   if (successor == nullptr) {
-    __ Cbnz(temp, slow_path->GetEntryLabel());
+    __ B(ne, slow_path->GetEntryLabel());
     __ Bind(slow_path->GetReturnLabel());
   } else {
-    __ Cbz(temp, codegen_->GetLabelOf(successor));
+    __ B(eq, codegen_->GetLabelOf(successor));
     __ B(slow_path->GetEntryLabel());
     // slow_path will return to GetLabelOf(successor).
   }
@@ -3500,7 +3583,9 @@ void InstructionCodeGeneratorARM64::HandleGoto(HInstruction* got, HBasicBlock* s
   if (info != nullptr && info->IsBackEdge(*block) && info->HasSuspendCheck()) {
     codegen_->MaybeIncrementHotness(/* is_frame_entry= */ false);
     GenerateSuspendCheck(info->GetSuspendCheck(), successor);
-    return;
+    if (!codegen_->CanUseImplicitSuspendCheck()) {
+      return;  // `GenerateSuspendCheck()` emitted the jump.
+    }
   }
   if (block->IsEntryBlock() && (previous != nullptr) && previous->IsSuspendCheck()) {
     GenerateSuspendCheck(previous->AsSuspendCheck(), nullptr);
@@ -4388,21 +4473,18 @@ void CodeGeneratorARM64::MaybeGenerateInlineCacheCheck(HInstruction* instruction
       GetGraph()->IsCompilingBaseline() &&
       !Runtime::Current()->IsAotCompiler()) {
     DCHECK(!instruction->GetEnvironment()->IsFromInlinedInvoke());
-    ScopedProfilingInfoUse spiu(
-        Runtime::Current()->GetJit(), GetGraph()->GetArtMethod(), Thread::Current());
-    ProfilingInfo* info = spiu.GetProfilingInfo();
-    if (info != nullptr) {
-      InlineCache* cache = info->GetInlineCache(instruction->GetDexPc());
-      uint64_t address = reinterpret_cast64<uint64_t>(cache);
-      vixl::aarch64::Label done;
-      __ Mov(x8, address);
-      __ Ldr(x9, MemOperand(x8, InlineCache::ClassesOffset().Int32Value()));
-      // Fast path for a monomorphic cache.
-      __ Cmp(klass, x9);
-      __ B(eq, &done);
-      InvokeRuntime(kQuickUpdateInlineCache, instruction, instruction->GetDexPc());
-      __ Bind(&done);
-    }
+    ProfilingInfo* info = GetGraph()->GetProfilingInfo();
+    DCHECK(info != nullptr);
+    InlineCache* cache = info->GetInlineCache(instruction->GetDexPc());
+    uint64_t address = reinterpret_cast64<uint64_t>(cache);
+    vixl::aarch64::Label done;
+    __ Mov(x8, address);
+    __ Ldr(x9, MemOperand(x8, InlineCache::ClassesOffset().Int32Value()));
+    // Fast path for a monomorphic cache.
+    __ Cmp(klass, x9);
+    __ B(eq, &done);
+    InvokeRuntime(kQuickUpdateInlineCache, instruction, instruction->GetDexPc());
+    __ Bind(&done);
   }
 }
 

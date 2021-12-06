@@ -33,6 +33,7 @@
 #include "gc_root-inl.h"
 #include "imtable-inl.h"
 #include "intrinsics_enum.h"
+#include "jit/jit.h"
 #include "jit/profiling_info.h"
 #include "mirror/class-inl.h"
 #include "mirror/dex_cache-inl.h"
@@ -291,7 +292,9 @@ inline const dex::ClassDef& ArtMethod::GetClassDef() {
 
 inline size_t ArtMethod::GetNumberOfParameters() {
   constexpr size_t return_type_count = 1u;
-  return strlen(GetShorty()) - return_type_count;
+  uint32_t shorty_length;
+  GetShorty(&shorty_length);
+  return shorty_length - return_type_count;
 }
 
 inline const char* ArtMethod::GetReturnTypeDescriptor() {
@@ -421,9 +424,53 @@ inline CodeItemDebugInfoAccessor ArtMethod::DexInstructionDebugInfo() {
   return CodeItemDebugInfoAccessor(*GetDexFile(), GetCodeItem(), GetDexMethodIndex());
 }
 
-inline void ArtMethod::SetCounter(uint16_t hotness_count) {
+inline bool ArtMethod::CounterHasChanged(uint16_t threshold) {
   DCHECK(!IsAbstract());
-  hotness_count_ = hotness_count;
+  DCHECK_EQ(threshold, Runtime::Current()->GetJITOptions()->GetWarmupThreshold());
+  return hotness_count_ != threshold;
+}
+
+inline void ArtMethod::ResetCounter(uint16_t new_value) {
+  if (IsAbstract()) {
+    return;
+  }
+  DCHECK_EQ(new_value, Runtime::Current()->GetJITOptions()->GetWarmupThreshold());
+  // Avoid dirtying the value if possible.
+  if (hotness_count_ != new_value) {
+    hotness_count_ = new_value;
+  }
+}
+
+inline void ArtMethod::SetHotCounter() {
+  DCHECK(!IsAbstract());
+  // Avoid dirtying the value if possible.
+  if (hotness_count_ != 0) {
+    hotness_count_ = 0;
+  }
+}
+
+inline void ArtMethod::UpdateCounter(int32_t new_samples) {
+  DCHECK(!IsAbstract());
+  DCHECK_GT(new_samples, 0);
+  DCHECK_LE(new_samples, std::numeric_limits<uint16_t>::max());
+  uint16_t old_hotness_count = hotness_count_;
+  uint16_t new_count = (old_hotness_count <= new_samples) ? 0u : old_hotness_count - new_samples;
+  // Avoid dirtying the value if possible.
+  if (old_hotness_count != new_count) {
+    hotness_count_ = new_count;
+  }
+}
+
+inline bool ArtMethod::CounterIsHot() {
+  DCHECK(!IsAbstract());
+  return hotness_count_ == 0;
+}
+
+inline bool ArtMethod::CounterHasReached(uint16_t samples, uint16_t threshold) {
+  DCHECK(!IsAbstract());
+  DCHECK_EQ(threshold, Runtime::Current()->GetJITOptions()->GetWarmupThreshold());
+  DCHECK_LE(samples, threshold);
+  return hotness_count_ <= (threshold - samples);
 }
 
 inline uint16_t ArtMethod::GetCounter() {

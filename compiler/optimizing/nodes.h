@@ -21,6 +21,7 @@
 #include <array>
 #include <type_traits>
 
+#include "art_method.h"
 #include "base/arena_allocator.h"
 #include "base/arena_bit_vector.h"
 #include "base/arena_containers.h"
@@ -32,7 +33,6 @@
 #include "base/quasi_atomic.h"
 #include "base/stl_util.h"
 #include "base/transform_array_ref.h"
-#include "art_method.h"
 #include "block_namer.h"
 #include "class_root.h"
 #include "compilation_kind.h"
@@ -75,6 +75,7 @@ class HTryBoundary;
 class FieldInfo;
 class LiveInterval;
 class LocationSummary;
+class ProfilingInfo;
 class SlowPathCode;
 class SsaBuilder;
 
@@ -680,7 +681,7 @@ class HGraph : public ArenaObject<kArenaAllocGraph> {
   }
 
   bool HasShouldDeoptimizeFlag() const {
-    return number_of_cha_guards_ != 0;
+    return number_of_cha_guards_ != 0 || debuggable_;
   }
 
   bool HasTryCatch() const { return has_try_catch_; }
@@ -703,6 +704,9 @@ class HGraph : public ArenaObject<kArenaAllocGraph> {
 
   ArtMethod* GetArtMethod() const { return art_method_; }
   void SetArtMethod(ArtMethod* method) { art_method_ = method; }
+
+  void SetProfilingInfo(ProfilingInfo* info) { profiling_info_ = info; }
+  ProfilingInfo* GetProfilingInfo() const { return profiling_info_; }
 
   // Returns an instruction with the opposite Boolean value from 'cond'.
   // The instruction has been inserted into the graph, either as a constant, or
@@ -869,6 +873,9 @@ class HGraph : public ArenaObject<kArenaAllocGraph> {
   // for example for methods whose declaring class could not be resolved
   // (such as when the superclass could not be found).
   ArtMethod* art_method_;
+
+  // The `ProfilingInfo` associated with the method being compiled.
+  ProfilingInfo* profiling_info_;
 
   // How we are compiling the graph: either optimized, osr, or baseline.
   // For osr, we will make all loops seen as irreducible and emit special
@@ -1530,6 +1537,8 @@ class HLoopInformationOutwardIterator : public ValueObject {
   M(LongConstant, Constant)                                             \
   M(Max, Instruction)                                                   \
   M(MemoryBarrier, Instruction)                                         \
+  M(MethodEntryHook, Instruction)                                       \
+  M(MethodExitHook, Instruction)                                        \
   M(Min, BinaryOperation)                                               \
   M(MonitorOperation, Instruction)                                      \
   M(Mul, BinaryOperation)                                               \
@@ -2992,6 +3001,42 @@ class HExpression<0> : public HInstruction {
 
  private:
   friend class SsaBuilder;
+};
+
+class HMethodEntryHook : public HExpression<0> {
+ public:
+  explicit HMethodEntryHook(uint32_t dex_pc)
+      : HExpression(kMethodEntryHook, SideEffects::All(), dex_pc) {}
+
+  bool NeedsEnvironment() const override {
+    return true;
+  }
+
+  bool CanThrow() const override { return true; }
+
+  DECLARE_INSTRUCTION(MethodEntryHook);
+
+ protected:
+  DEFAULT_COPY_CONSTRUCTOR(MethodEntryHook);
+};
+
+class HMethodExitHook : public HExpression<1> {
+ public:
+  HMethodExitHook(HInstruction* value, uint32_t dex_pc)
+      : HExpression(kMethodExitHook, SideEffects::All(), dex_pc) {
+    SetRawInputAt(0, value);
+  }
+
+  bool NeedsEnvironment() const override {
+    return true;
+  }
+
+  bool CanThrow() const override { return true; }
+
+  DECLARE_INSTRUCTION(MethodExitHook);
+
+ protected:
+  DEFAULT_COPY_CONSTRUCTOR(MethodExitHook);
 };
 
 // Represents dex's RETURN_VOID opcode. A HReturnVoid is a control flow

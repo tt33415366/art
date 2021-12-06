@@ -621,9 +621,7 @@ HInliner::InlineCacheType HInliner::GetInlineCacheJIT(
   ArtMethod* caller = graph_->GetArtMethod();
   // Under JIT, we should always know the caller.
   DCHECK(caller != nullptr);
-  ScopedProfilingInfoUse spiu(Runtime::Current()->GetJit(), caller, Thread::Current());
-  ProfilingInfo* profiling_info = spiu.GetProfilingInfo();
-
+  ProfilingInfo* profiling_info = graph_->GetProfilingInfo();
   if (profiling_info == nullptr) {
     return kInlineCacheNoData;
   }
@@ -755,7 +753,7 @@ bool HInliner::TryInlineMonomorphicCall(
   dex::TypeIndex class_index = FindClassIndexIn(
       GetMonomorphicType(classes), caller_compilation_unit_);
   if (!class_index.IsValid()) {
-    LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedDexCache)
+    LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedDexCacheInaccessibleToCaller)
         << "Call to " << ArtMethod::PrettyMethod(invoke_instruction->GetResolvedMethod())
         << " from inline cache is not inlined because its class is not"
         << " accessible to the caller";
@@ -812,6 +810,11 @@ void HInliner::AddCHAGuard(HInstruction* invoke_instruction,
                            HBasicBlock* bb_cursor) {
   HShouldDeoptimizeFlag* deopt_flag = new (graph_->GetAllocator())
       HShouldDeoptimizeFlag(graph_->GetAllocator(), dex_pc);
+  // ShouldDeoptimizeFlag is used to perform a deoptimization because of a CHA
+  // invalidation or for debugging reasons. It is OK to just check for non-zero
+  // value here instead of the specific CHA value. When a debugging deopt is
+  // requested we deoptimize before we execute any code and hence we shouldn't
+  // see that case here.
   HInstruction* compare = new (graph_->GetAllocator()) HNotEqual(
       deopt_flag, graph_->GetIntConstant(0, dex_pc));
   HInstruction* deopt = new (graph_->GetAllocator()) HDeoptimize(
@@ -1337,7 +1340,7 @@ bool HInliner::IsInliningAllowed(ArtMethod* method, const CodeItemDataAccessor& 
   }
 
   if (!method->IsCompilable()) {
-    LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedNotVerified)
+    LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedNotCompilable)
         << "Method " << method->PrettyMethod()
         << " has soft failures un-handled by the compiler, so it cannot be inlined";
     return false;
@@ -1369,7 +1372,7 @@ bool HInliner::IsInliningSupported(const HInvoke* invoke_instruction,
   }
 
   if (accessor.TriesSize() != 0) {
-    LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedTryCatch)
+    LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedTryCatchCallee)
         << "Method " << method->PrettyMethod() << " is not inlined because of try block";
     return false;
   }
@@ -1378,7 +1381,7 @@ bool HInliner::IsInliningSupported(const HInvoke* invoke_instruction,
       invoke_instruction->AsInvokeStaticOrDirect()->IsStaticWithImplicitClinitCheck()) {
     // Case of a static method that cannot be inlined because it implicitly
     // requires an initialization check of its declaring class.
-    LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedDexCache)
+    LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedDexCacheClinitCheck)
         << "Method " << method->PrettyMethod()
         << " is not inlined because it is static and requires a clinit"
         << " check that cannot be emitted due to Dex cache limitations";
@@ -1698,24 +1701,37 @@ static inline Handle<T> NewHandleIfDifferent(ObjPtr<T> object, Handle<T> hint, H
 
 static bool CanEncodeInlinedMethodInStackMap(const DexFile& outer_dex_file,
                                              ArtMethod* callee,
+                                             const CodeGenerator* codegen,
                                              bool* out_needs_bss_check)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   if (!Runtime::Current()->IsAotCompiler()) {
     // JIT can always encode methods in stack maps.
     return true;
   }
-  if (IsSameDexFile(outer_dex_file, *callee->GetDexFile())) {
+
+  const DexFile* dex_file = callee->GetDexFile();
+  if (IsSameDexFile(outer_dex_file, *dex_file)) {
     return true;
   }
 
-  // Inline across dexfiles if the callee's DexFile is in the bootclasspath.
+  // Inline across dexfiles if the callee's DexFile is:
+  // 1) in the bootclasspath, or
   if (callee->GetDeclaringClass()->GetClassLoader() == nullptr) {
+    // There are cases in which the BCP DexFiles are within the OatFile as far as the compiler
+    // options are concerned, but they have their own OatWriter (and therefore not in the same
+    // OatFile). Then, we request the BSS check for all BCP DexFiles.
+    // TODO(solanes): Add .bss support for BCP.
     *out_needs_bss_check = true;
     return true;
   }
 
-  // TODO(ngeoffray): Support more AOT cases for inlining:
-  // - methods in multidex
+  // 2) is a non-BCP dexfile with the OatFile we are compiling.
+  if (codegen->GetCompilerOptions().WithinOatFile(dex_file)) {
+    return true;
+  }
+
+  // TODO(solanes): Support more AOT cases for inlining:
+  // - methods in class loader context's DexFiles
   return false;
 }
 
@@ -1793,7 +1809,7 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
     if (predecessor->GetLastInstruction()->IsThrow()) {
       if (target_block->IsTryBlock()) {
         // TODO(ngeoffray): Support adding HTryBoundary in Hgraph::InlineInto.
-        LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedTryCatch)
+        LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedTryCatchCaller)
             << "Method " << resolved_method->PrettyMethod()
             << " could not be inlined because one branch always throws and"
             << " caller is in a try/catch block";
@@ -1829,7 +1845,7 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
       total_number_of_dex_registers_ > kMaximumNumberOfCumulatedDexRegisters;
   bool needs_bss_check = false;
   const bool can_encode_in_stack_map = CanEncodeInlinedMethodInStackMap(
-      *outer_compilation_unit_.GetDexFile(), resolved_method, &needs_bss_check);
+      *outer_compilation_unit_.GetDexFile(), resolved_method, codegen_, &needs_bss_check);
   size_t number_of_instructions = 0;
   // Skip the entry block, it does not contain instructions that prevent inlining.
   for (HBasicBlock* block : callee_graph->GetReversePostOrderSkipEntryBlock()) {
@@ -1976,6 +1992,11 @@ bool HInliner::TryBuildAndInlineHelper(HInvoke* invoke_instruction,
       graph_->GetCompilationKind(),
       /* start_instruction_id= */ caller_instruction_counter);
   callee_graph->SetArtMethod(resolved_method);
+
+  ScopedProfilingInfoUse spiu(Runtime::Current()->GetJit(), resolved_method, Thread::Current());
+  if (Runtime::Current()->GetJit() != nullptr) {
+    callee_graph->SetProfilingInfo(spiu.GetProfilingInfo());
+  }
 
   // When they are needed, allocate `inline_stats_` on the Arena instead
   // of on the stack, as Clang might produce a stack frame too large

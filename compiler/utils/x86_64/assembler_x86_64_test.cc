@@ -1866,6 +1866,16 @@ TEST_F(AssemblerX86_64AVXTest, VPmaddwd) {
                       "vpmaddwd %{reg3}, %{reg2}, %{reg1}"), "vpmaddwd");
 }
 
+TEST_F(AssemblerX86_64AVXTest, VFmadd213ss) {
+  DriverStr(RepeatFFF(&x86_64::X86_64Assembler::vfmadd213ss,
+                      "vfmadd213ss %{reg3}, %{reg2}, %{reg1}"), "vfmadd213ss");
+}
+
+TEST_F(AssemblerX86_64AVXTest, VFmadd213sd) {
+  DriverStr(RepeatFFF(&x86_64::X86_64Assembler::vfmadd213sd,
+                      "vfmadd213sd %{reg3}, %{reg2}, %{reg1}"), "vfmadd213sd");
+}
+
 TEST_F(AssemblerX86_64Test, Phaddw) {
   DriverStr(RepeatFF(&x86_64::X86_64Assembler::phaddw, "phaddw %{reg2}, %{reg1}"), "phaddw");
 }
@@ -2399,6 +2409,12 @@ TEST_F(AssemblerX86_64Test, Repecmpsq) {
   GetAssembler()->repe_cmpsq();
   const char* expected = "repe cmpsq\n";
   DriverStr(expected, "Repecmpsq");
+}
+
+TEST_F(AssemblerX86_64Test, Ud2) {
+  GetAssembler()->ud2();
+  const char* expected = "ud2\n";
+  DriverStr(expected, "Ud2");
 }
 
 TEST_F(AssemblerX86_64Test, Cmpb) {

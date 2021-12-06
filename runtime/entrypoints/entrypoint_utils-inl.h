@@ -19,6 +19,8 @@
 
 #include "entrypoint_utils.h"
 
+#include <sstream>
+
 #include "art_field-inl.h"
 #include "art_method-inl.h"
 #include "base/enums.h"
@@ -39,6 +41,7 @@
 #include "mirror/object-inl.h"
 #include "mirror/throwable.h"
 #include "nth_caller_visitor.h"
+#include "oat_file.h"
 #include "reflective_handle_scope-inl.h"
 #include "runtime.h"
 #include "stack_map.h"
@@ -46,6 +49,57 @@
 #include "well_known_classes.h"
 
 namespace art {
+
+inline std::string GetResolvedMethodErrorString(ClassLinker* class_linker,
+                                                ArtMethod* inlined_method,
+                                                ArtMethod* parent_method,
+                                                ArtMethod* outer_method,
+                                                ObjPtr<mirror::DexCache> dex_cache,
+                                                MethodInfo method_info)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  const uint32_t method_index = method_info.GetMethodIndex();
+
+  std::stringstream error_ss;
+  std::string separator = "";
+  error_ss << "BCP vector {";
+  for (const DexFile* df : class_linker->GetBootClassPath()) {
+    error_ss << separator << df << "(" << df->GetLocation() << ")";
+    separator = ", ";
+  }
+  error_ss << "}. oat_dex_files vector: {";
+  separator = "";
+  for (const OatDexFile* odf_value :
+       parent_method->GetDexFile()->GetOatDexFile()->GetOatFile()->GetOatDexFiles()) {
+    error_ss << separator << odf_value << "(" << odf_value->GetDexFileLocation() << ")";
+    separator = ", ";
+  }
+  error_ss << "}. ";
+  if (inlined_method != nullptr) {
+    error_ss << "Inlined method: " << inlined_method->PrettyMethod() << " ("
+             << inlined_method->GetDexFile()->GetLocation() << "/"
+             << static_cast<const void*>(inlined_method->GetDexFile()) << "). ";
+  } else if (dex_cache != nullptr) {
+    error_ss << "Could not find an inlined method from an .oat file, using dex_cache to print the "
+                "inlined method: "
+             << dex_cache->GetDexFile()->PrettyMethod(method_index) << " ("
+             << dex_cache->GetDexFile()->GetLocation() << "/"
+             << static_cast<const void*>(dex_cache->GetDexFile()) << "). ";
+  } else {
+    error_ss << "Both inlined_method and dex_cache are null. This means that we had an OOB access "
+             << "to either bcp_dex_files or oat_dex_files. ";
+  }
+  error_ss << "The outer method is: " << parent_method->PrettyMethod() << " ("
+           << parent_method->GetDexFile()->GetLocation() << "/"
+           << static_cast<const void*>(parent_method->GetDexFile())
+           << "). The outermost method in the chain is: " << outer_method->PrettyMethod() << " ("
+           << outer_method->GetDexFile()->GetLocation() << "/"
+           << static_cast<const void*>(outer_method->GetDexFile())
+           << "). MethodInfo: method_index=" << std::dec << method_index
+           << ", is_in_bootclasspath=" << std::boolalpha
+           << (method_info.GetDexFileIndexKind() == MethodInfo::kKindBCP) << std::noboolalpha
+           << ", dex_file_index=" << std::dec << method_info.GetDexFileIndex() << ".";
+  return error_ss.str();
+}
 
 inline ArtMethod* GetResolvedMethod(ArtMethod* outer_method,
                                     const CodeInfo& code_info,
@@ -82,45 +136,46 @@ inline ArtMethod* GetResolvedMethod(ArtMethod* outer_method,
     DCHECK_NE(inline_info.GetDexPc(), static_cast<uint32_t>(-1));
     MethodInfo method_info = code_info.GetMethodInfoOf(inline_info);
     uint32_t method_index = method_info.GetMethodIndex();
-    ArtMethod* inlined_method;
+    const uint32_t dex_file_index = method_info.GetDexFileIndex();
+    ArtMethod* inlined_method = nullptr;
+    ObjPtr<mirror::DexCache> dex_cache = nullptr;
     if (method_info.HasDexFileIndex()) {
-      const DexFile* dex_file = class_linker->GetBootClassPath()[method_info.GetDexFileIndex()];
-      ObjPtr<mirror::DexCache> dex_cache = class_linker->FindDexCache(Thread::Current(), *dex_file);
-      // The class loader is always nullptr for this case so we can simplify the call.
-      DCHECK_EQ(dex_cache->GetClassLoader(), nullptr);
-      inlined_method = class_linker->LookupResolvedMethod(method_index, dex_cache, nullptr);
+      if (method_info.GetDexFileIndexKind() == MethodInfo::kKindBCP) {
+        ArrayRef<const DexFile* const> bcp_dex_files(class_linker->GetBootClassPath());
+        DCHECK_LT(dex_file_index, bcp_dex_files.size())
+            << "OOB access to bcp_dex_files. Dumping info: "
+            << GetResolvedMethodErrorString(
+                   class_linker, inlined_method, method, outer_method, dex_cache, method_info);
+        const DexFile* dex_file = bcp_dex_files[dex_file_index];
+        DCHECK_NE(dex_file, nullptr);
+        dex_cache = class_linker->FindDexCache(Thread::Current(), *dex_file);
+      } else {
+        ArrayRef<const OatDexFile* const> oat_dex_files(
+            outer_method->GetDexFile()->GetOatDexFile()->GetOatFile()->GetOatDexFiles());
+        DCHECK_LT(dex_file_index, oat_dex_files.size())
+            << "OOB access to oat_dex_files. Dumping info: "
+            << GetResolvedMethodErrorString(
+                   class_linker, inlined_method, method, outer_method, dex_cache, method_info);
+        const OatDexFile* odf = oat_dex_files[dex_file_index];
+        DCHECK_NE(odf, nullptr);
+        dex_cache = class_linker->FindDexCache(Thread::Current(), *odf);
+      }
     } else {
-      inlined_method = class_linker->LookupResolvedMethod(
-          method_index, outer_method->GetDexCache(), outer_method->GetClassLoader());
+      dex_cache = outer_method->GetDexCache();
     }
+    inlined_method =
+        class_linker->LookupResolvedMethod(method_index, dex_cache, dex_cache->GetClassLoader());
 
     if (UNLIKELY(inlined_method == nullptr)) {
-      LOG(FATAL) << "Could not find an inlined method from an .oat file: "
-                 << method->GetDexFile()->PrettyMethod(method_index) << " . "
-                 << "This must be due to duplicate classes or playing wrongly with class loaders";
+      LOG(FATAL) << GetResolvedMethodErrorString(
+          class_linker, inlined_method, method, outer_method, dex_cache, method_info);
       UNREACHABLE();
     }
     DCHECK(!inlined_method->IsRuntimeMethod());
-    if (UNLIKELY(inlined_method->GetDexFile() != method->GetDexFile() &&
-                 !method_info.HasDexFileIndex())) {
-      // TODO: We could permit inlining within a multi-dex oat file and the boot image,
-      // even going back from boot image methods to the same oat file. However, this is
-      // not currently implemented in the compiler. Therefore crossing dex file boundary
-      // indicates that the inlined definition is not the same as the one used at runtime.
-      bool target_sdk_at_least_p =
-          IsSdkVersionSetAndAtLeast(Runtime::Current()->GetTargetSdkVersion(), SdkVersion::kP);
-      LOG(target_sdk_at_least_p ? FATAL : WARNING)
-          << "Inlined method resolution crossed dex file boundary: from " << method->PrettyMethod()
-          << " in " << method->GetDexFile()->GetLocation() << "/"
-          << static_cast<const void*>(method->GetDexFile()) << " to "
-          << inlined_method->PrettyMethod() << " in " << inlined_method->GetDexFile()->GetLocation()
-          << "/" << static_cast<const void*>(inlined_method->GetDexFile()) << ". "
-          << "The outermost method in the chain is: " << outer_method->PrettyMethod() << " in "
-          << outer_method->GetDexFile()->GetLocation() << "/"
-          << static_cast<const void*>(outer_method->GetDexFile())
-          << "This must be due to duplicate classes or playing wrongly with class loaders. "
-          << "The runtime is in an unsafe state.";
-    }
+    DCHECK_EQ(inlined_method->GetDexFile() == outer_method->GetDexFile(),
+              dex_file_index == MethodInfo::kSameDexFile)
+        << GetResolvedMethodErrorString(
+               class_linker, inlined_method, method, outer_method, dex_cache, method_info);
     method = inlined_method;
   }
 
@@ -770,23 +825,27 @@ inline bool NeedsClinitCheckBeforeCall(ArtMethod* method) {
   return method->IsStatic() && !method->IsConstructor();
 }
 
-inline jobject GetGenericJniSynchronizationObject(Thread* self, ArtMethod* called)
+inline ObjPtr<mirror::Object> GetGenericJniSynchronizationObject(Thread* self, ArtMethod* called)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   DCHECK(!called->IsCriticalNative());
   DCHECK(!called->IsFastNative());
   DCHECK(self->GetManagedStack()->GetTopQuickFrame() != nullptr);
   DCHECK_EQ(*self->GetManagedStack()->GetTopQuickFrame(), called);
+  // We do not need read barriers here.
+  // On method entry, all reference arguments are to-space references and we mark the
+  // declaring class of a static native method if needed. When visiting thread roots at
+  // the start of a GC, we visit all these references to ensure they point to the to-space.
   if (called->IsStatic()) {
     // Static methods synchronize on the declaring class object.
-    // The `jclass` is a pointer to the method's declaring class.
-    return reinterpret_cast<jobject>(called->GetDeclaringClassAddressWithoutBarrier());
+    return called->GetDeclaringClass<kWithoutReadBarrier>();
   } else {
     // Instance methods synchronize on the `this` object.
     // The `this` reference is stored in the first out vreg in the caller's frame.
-    // The `jobject` is a pointer to the spill slot.
     uint8_t* sp = reinterpret_cast<uint8_t*>(self->GetManagedStack()->GetTopQuickFrame());
     size_t frame_size = RuntimeCalleeSaveFrame::GetFrameSize(CalleeSaveType::kSaveRefsAndArgs);
-    return reinterpret_cast<jobject>(sp + frame_size + static_cast<size_t>(kRuntimePointerSize));
+    StackReference<mirror::Object>* this_ref = reinterpret_cast<StackReference<mirror::Object>*>(
+        sp + frame_size + static_cast<size_t>(kRuntimePointerSize));
+    return this_ref->AsMirrorPtr();
   }
 }
 

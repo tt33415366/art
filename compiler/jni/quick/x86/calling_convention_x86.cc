@@ -177,10 +177,12 @@ FrameOffset X86ManagedRuntimeCallingConvention::CurrentParamStackOffset() {
 
 X86JniCallingConvention::X86JniCallingConvention(bool is_static,
                                                  bool is_synchronized,
+                                                 bool is_fast_native,
                                                  bool is_critical_native,
                                                  const char* shorty)
     : JniCallingConvention(is_static,
                            is_synchronized,
+                           is_fast_native,
                            is_critical_native,
                            shorty,
                            kX86PointerSize) {
@@ -290,6 +292,15 @@ ManagedRegister X86JniCallingConvention::CurrentParamRegister() {
 FrameOffset X86JniCallingConvention::CurrentParamStackOffset() {
   return
       FrameOffset(displacement_.Int32Value() - OutFrameSize() + (itr_slots_ * kFramePointerSize));
+}
+
+ManagedRegister X86JniCallingConvention::LockingArgumentRegister() const {
+  DCHECK(!IsFastNative());
+  DCHECK(!IsCriticalNative());
+  DCHECK(IsSynchronized());
+  // The callee-save register is EBP is suitable as a locking argument.
+  static_assert(kCalleeSaveRegisters[0].Equals(X86ManagedRegister::FromCpuRegister(EBP)));
+  return X86ManagedRegister::FromCpuRegister(EBP);
 }
 
 ManagedRegister X86JniCallingConvention::HiddenArgumentRegister() const {
