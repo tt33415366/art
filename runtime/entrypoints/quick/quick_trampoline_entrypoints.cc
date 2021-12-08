@@ -2120,7 +2120,7 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
     }
   }
 
-  // Skip calling JniMethodStart for @CriticalNative and @FastNative.
+  // Skip calling `artJniMethodStart()` for @CriticalNative and @FastNative.
   if (LIKELY(normal_native)) {
     // Start JNI.
     if (called->IsSynchronized()) {
@@ -2131,7 +2131,7 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
         return nullptr;  // Report error.
       }
     }
-    JniMethodStart(self);
+    artJniMethodStart(self);
   } else {
     DCHECK(!called->IsSynchronized())
         << "@FastNative/@CriticalNative and synchronize is not supported";
@@ -2629,16 +2629,21 @@ extern "C" int artMethodExitHook(Thread* self,
       res.Assign(return_value.GetL());
     }
     DCHECK(!method->IsRuntimeMethod());
-    instr->MethodExitEvent(self,
-                           method,
-                           /* frame= */ {},
-                           return_value);
 
     // Deoptimize if the caller needs to continue execution in the interpreter. Do nothing if we get
     // back to an upcall.
     NthCallerVisitor visitor(self, 1, true);
     visitor.WalkStack(true);
     deoptimize = instr->ShouldDeoptimizeMethod(self, visitor);
+
+    // If we need a deoptimization MethodExitEvent will be called by the interpreter when it
+    // re-executes the return instruction.
+    if (!deoptimize) {
+      instr->MethodExitEvent(self,
+                             method,
+                             /* frame= */ {},
+                             return_value);
+    }
 
     if (is_ref) {
       // Restore the return value if it's a reference since it might have moved.

@@ -212,6 +212,9 @@
       "name": "art-run-test-095-switch-MAX_INT[com.google.android.art.apex]"
     },
     {
+      "name": "art-run-test-096-array-copy-concurrent-gc[com.google.android.art.apex]"
+    },
+    {
       "name": "art-run-test-099-vmdebug[com.google.android.art.apex]"
     },
     {
@@ -1282,6 +1285,9 @@
       "name": "ComposHostTestCases"
     },
     {
+      "name": "art_standalone_dexpreopt_tests"
+    },
+    {
       "name": "art-run-test-001-HelloWorld"
     },
     {
@@ -1487,6 +1493,9 @@
     },
     {
       "name": "art-run-test-095-switch-MAX_INT"
+    },
+    {
+      "name": "art-run-test-096-array-copy-concurrent-gc"
     },
     {
       "name": "art-run-test-099-vmdebug"
