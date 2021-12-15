@@ -43,6 +43,49 @@
     .cfi_adjust_cfa_offset -(ALL_ARGS_SIZE + \extra_space)
 .endm
 
+.macro JNI_SAVE_MANAGED_ARGS_TRAMPOLINE name, cxx_name, arg1 = "none"
+    .extern \cxx_name
+ENTRY \name
+    // Save args and LR.
+    SAVE_ALL_ARGS_INCREASE_FRAME /*padding*/ 8 + /*LR*/ 8
+    str    lr, [sp, #(ALL_ARGS_SIZE + /*padding*/ 8)]
+    .cfi_rel_offset lr, ALL_ARGS_SIZE + /*padding*/ 8
+    // Call `cxx_name()`.
+    .ifnc \arg1, none
+        mov x0, \arg1                          // Pass arg1.
+    .endif
+    bl     \cxx_name                           // Call cxx_name(...).
+    // Restore LR and args and return.
+    ldr    lr, [sp, #(ALL_ARGS_SIZE + /*padding*/ 8)]
+    .cfi_restore lr
+    RESTORE_ALL_ARGS_DECREASE_FRAME /*padding*/ 8 + /*LR*/ 8
+    ret
+END \name
+.endm
+
+.macro JNI_SAVE_RETURN_VALUE_TRAMPOLINE name, cxx_name, arg1, arg2 = "none"
+    .extern \cxx_name
+ENTRY \name
+    // Save return registers and return address.
+    stp    x0, lr, [sp, #-32]!
+    .cfi_adjust_cfa_offset 32
+    .cfi_rel_offset lr, 8
+    str    d0, [sp, #16]
+    // Call `cxx_name()`.
+    mov    x0, \arg1                           // Pass arg1.
+    .ifnc \arg2, none
+        mov x1, \arg2                          // Pass arg2.
+    .endif
+    bl     \cxx_name                           // Call cxx_name(...).
+    // Restore return registers and return.
+    ldr    d0, [sp, #16]
+    ldp    x0, lr, [sp], #32
+    .cfi_adjust_cfa_offset -32
+    .cfi_restore lr
+    ret
+END \name
+.endm
+
     /*
      * Jni dlsym lookup stub.
      */
@@ -315,22 +358,28 @@ END art_jni_dlsym_lookup_critical_stub
      * Read barrier for the method's declaring class needed by JNI stub for static methods.
      * (We're using a pointer to the declaring class in `ArtMethod` as `jclass`.)
      */
-    .extern artJniReadBarrier
-ENTRY art_jni_read_barrier
-    // Note: Managed callee-save registers have been saved by the JNI stub.
-    // Save args and LR.
-    SAVE_ALL_ARGS_INCREASE_FRAME /*padding*/ 8 + /*LR*/ 8
-    str   lr, [sp, #(ALL_ARGS_SIZE + /*padding*/ 8)]
-    .cfi_rel_offset lr, ALL_ARGS_SIZE + /*padding*/ 8
-    // The method argument is already in x0.
-    bl artJniReadBarrier  // (ArtMethod*)
-    // Restore LR and args.
-    ldr   lr, [sp, #(ALL_ARGS_SIZE + /*padding*/ 8)]
-    .cfi_restore lr
-    RESTORE_ALL_ARGS_DECREASE_FRAME /*padding*/ 8 + /*LR*/ 8
-    // Return.
-    ret
-END art_jni_read_barrier
+// The method argument is already in x0 for call to `artJniReadBarrier(ArtMethod*)`.
+JNI_SAVE_MANAGED_ARGS_TRAMPOLINE art_jni_read_barrier, artJniReadBarrier
+
+    /*
+     * Trampoline to `artJniMethodStart()` that preserves all managed arguments.
+     */
+JNI_SAVE_MANAGED_ARGS_TRAMPOLINE art_jni_method_start, artJniMethodStart, xSELF
+
+    /*
+     * Trampoline to `artJniMonitoredMethodStart()` that preserves all managed arguments.
+     */
+JNI_SAVE_MANAGED_ARGS_TRAMPOLINE art_jni_monitored_method_start, artJniMonitoredMethodStart, xSELF
+
+    /*
+     * Trampoline to `artJniMethodEnd()` that preserves all return registers.
+     */
+JNI_SAVE_RETURN_VALUE_TRAMPOLINE art_jni_method_end, artJniMethodEnd, xSELF
+
+    /*
+     * Trampoline to `artJniMonitoredMethodEnd()` that preserves all return registers.
+     */
+JNI_SAVE_RETURN_VALUE_TRAMPOLINE art_jni_monitored_method_end, artJniMonitoredMethodEnd, xSELF
 
     /*
      * Entry from JNI stub that tries to lock the object in a fast path and
@@ -403,22 +452,5 @@ END art_jni_unlock_object
      *     Callee-save registers have been saved and can be used as temporaries.
      *     Return registers r0 and d0 need to be preserved.
      */
-    .extern artJniUnlockObject
-ENTRY art_jni_unlock_object_no_inline
     // This is also the slow path for art_jni_unlock_object.
-    // Save return registers and return address.
-    stp    x0, lr, [sp, #-32]!
-    .cfi_adjust_cfa_offset 32
-    .cfi_rel_offset lr, 8
-    str    d0, [sp, #16]
-    // Call `artJniUnlockObject()`.
-    mov    x0, x15                    // Pass the object to unlock.
-    mov    x1, xSELF                  // Pass Thread::Current().
-    bl     artJniUnlockObject         // (Object* obj, Thread*)
-    // Restore return registers and return.
-    ldr    d0, [sp, #16]
-    ldp    x0, lr, [sp], #32
-    .cfi_adjust_cfa_offset -32
-    .cfi_restore lr
-    ret
-END art_jni_unlock_object_no_inline
+JNI_SAVE_RETURN_VALUE_TRAMPOLINE art_jni_unlock_object_no_inline, artJniUnlockObject, x15, xSELF

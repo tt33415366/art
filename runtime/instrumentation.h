@@ -322,14 +322,7 @@ class Instrumentation {
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!GetDeoptimizedMethodsLock());
 
   // Return the code that we can execute for an invoke including from the JIT.
-  const void* GetCodeForInvoke(ArtMethod* method) const
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  // Get the quick code for the given method. More efficient than asking the class linker as it
-  // will short-cut to GetCode if instrumentation and static method resolution stubs aren't
-  // installed.
-  const void* GetQuickCodeFor(ArtMethod* method, PointerSize pointer_size) const
-      REQUIRES_SHARED(Locks::mutator_lock_);
+  const void* GetCodeForInvoke(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_);
 
   void ForceInterpretOnly() {
     forced_interpret_only_ = true;
@@ -348,15 +341,11 @@ class Instrumentation {
   bool InterpretOnly() const {
     return forced_interpret_only_ || InterpreterStubsInstalled();
   }
+  bool InterpretOnly(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_);
 
   bool IsForcedInterpretOnly() const {
     return forced_interpret_only_;
   }
-
-  // Code is in boot image oat file which isn't compiled as debuggable.
-  // Need debug version (interpreter or jitted) if that's the case.
-  bool NeedDebugVersionFor(ArtMethod* method) const
-      REQUIRES_SHARED(Locks::mutator_lock_);
 
   bool AreExitStubsInstalled() const {
     return instrumentation_stubs_installed_;
@@ -545,7 +534,7 @@ class Instrumentation {
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!GetDeoptimizedMethodsLock());
 
   // Sets up instrumentation to allow single thread deoptimization using ForceInterpreterCount.
-  void EnableSingleThreadDeopt()
+  void EnableSingleThreadDeopt(const char* key)
       REQUIRES(Locks::mutator_lock_, Roles::uninterruptible_)
       REQUIRES(!Locks::thread_list_lock_,
                !Locks::classlinker_classes_lock_,
@@ -600,11 +589,6 @@ class Instrumentation {
                !Locks::thread_list_lock_,
                !Locks::classlinker_classes_lock_);
   void UpdateStubs() REQUIRES(Locks::mutator_lock_, Roles::uninterruptible_)
-      REQUIRES(!GetDeoptimizedMethodsLock(),
-               !Locks::thread_list_lock_,
-               !Locks::classlinker_classes_lock_);
-  void UpdateInstrumentationLevels(InstrumentationLevel level)
-      REQUIRES(Locks::mutator_lock_, Roles::uninterruptible_)
       REQUIRES(!GetDeoptimizedMethodsLock(),
                !Locks::thread_list_lock_,
                !Locks::classlinker_classes_lock_);
@@ -770,11 +754,6 @@ class Instrumentation {
   // to prevent races with the GC where the GC relies on thread suspension only see
   // alloc_entrypoints_instrumented_ change during suspend points.
   bool alloc_entrypoints_instrumented_;
-
-  // If we can use instrumentation trampolines. After the first time we instrument something with
-  // the interpreter we can no longer use trampolines because it can lead to stack corruption.
-  // TODO Figure out a way to remove the need for this.
-  bool can_use_instrumentation_trampolines_;
 
   friend class InstrumentationTest;  // For GetCurrentInstrumentationLevel and ConfigureStubs.
   friend class InstrumentationStackPopper;  // For popping instrumentation frames.

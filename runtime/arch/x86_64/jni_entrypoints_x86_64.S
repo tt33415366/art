@@ -55,6 +55,42 @@ MACRO0(RESTORE_MANAGED_ARGS_DECREASE_FRAME)
     POP_ARG r9
 END_MACRO
 
+MACRO3(JNI_SAVE_MANAGED_ARGS_TRAMPOLINE, name, cxx_name, arg1)
+DEFINE_FUNCTION \name
+    // Note: Managed callee-save registers have been saved by the JNI stub.
+    // Save register args RDI, RSI, RDX, RCX, R8, R9, mmx0-mmx7 and align stack.
+    SAVE_MANAGED_ARGS_INCREASE_FRAME
+    // Call `cxx_name()`.
+    .ifnc \arg1, none
+        mov REG_VAR(arg1), %rdi     // Pass arg1.
+    .endif
+    call CALLVAR(cxx_name)          // Call cxx_name(...).
+    // Restore register args RDI, RSI, RDX, RCX, R8, R9, mmx0-mmx7 and return.
+    RESTORE_MANAGED_ARGS_DECREASE_FRAME
+    ret
+END_FUNCTION \name
+END_MACRO
+
+MACRO4(JNI_SAVE_RETURN_VALUE_TRAMPOLINE, name, cxx_name, arg1, arg2)
+DEFINE_FUNCTION \name
+    // Save return registers and return address.
+    PUSH_ARG rax
+    INCREASE_FRAME /*mmx0*/ 8 + /*padding*/ 8
+    movsd %xmm0, 0(%rsp)
+    // Call `cxx_name()`.
+    mov REG_VAR(arg1), %rdi         // Pass arg1.
+    .ifnc \arg2, none
+        mov REG_VAR(arg2), %rsi     // Pass arg2.
+    .endif
+    call CALLVAR(cxx_name)          // Call cxx_name(...).
+    // Restore return registers and return.
+    movsd 0(%rsp), %xmm0
+    DECREASE_FRAME /*mmx0*/ 8 + /*padding*/ 8
+    POP_ARG rax
+    ret
+END_FUNCTION \name
+END_MACRO
+
     /*
      * Jni dlsym lookup stub.
      */
@@ -356,16 +392,29 @@ END_FUNCTION art_jni_dlsym_lookup_critical_stub
      * Read barrier for the method's declaring class needed by JNI stub for static methods.
      * (We're using a pointer to the declaring class in `ArtMethod` as `jclass`.)
      */
-DEFINE_FUNCTION art_jni_read_barrier
-    // Note: Managed callee-save registers have been saved by the JNI stub.
-    // Save register args RDI, RSI, RDX, RCX, R8, R9, mmx0-mmx7 and align stack.
-    SAVE_MANAGED_ARGS_INCREASE_FRAME
-    // The method argument is already in RDI.
-    call SYMBOL(artJniReadBarrier)  // (ArtMethod*)
-    // Restore register args RDI, RSI, RDX, RCX, R8, R9, mmx0-mmx7 and return.
-    RESTORE_MANAGED_ARGS_DECREASE_FRAME
-    ret
-END_FUNCTION art_jni_read_barrier
+JNI_SAVE_MANAGED_ARGS_TRAMPOLINE art_jni_read_barrier, artJniReadBarrier, none
+
+    /*
+     * Trampoline to `artJniMethodStart()` that preserves all managed arguments.
+     */
+JNI_SAVE_MANAGED_ARGS_TRAMPOLINE art_jni_method_start, artJniMethodStart, gs:THREAD_SELF_OFFSET
+
+    /*
+     * Trampoline to `artJniMonitoredMethodStart()` that preserves all managed arguments.
+     */
+JNI_SAVE_MANAGED_ARGS_TRAMPOLINE \
+    art_jni_monitored_method_start, artJniMonitoredMethodStart, gs:THREAD_SELF_OFFSET
+
+    /*
+     * Trampoline to `artJniMethodEnd()` that preserves all return registers.
+     */
+JNI_SAVE_RETURN_VALUE_TRAMPOLINE art_jni_method_end, artJniMethodEnd, gs:THREAD_SELF_OFFSET, none
+
+    /*
+     * Trampoline to `artJniMonitoredMethodEnd()` that preserves all return registers.
+     */
+JNI_SAVE_RETURN_VALUE_TRAMPOLINE \
+    art_jni_monitored_method_end, artJniMonitoredMethodEnd, gs:THREAD_SELF_OFFSET, none
 
     /*
      * Entry from JNI stub that tries to lock the object in a fast path and
@@ -437,19 +486,6 @@ END_FUNCTION art_jni_unlock_object
      *     Callee-save registers have been saved and can be used as temporaries (except RBX).
      *     Return registers RAX and mmx0 need to be preserved.
      */
-DEFINE_FUNCTION art_jni_unlock_object_no_inline
     // This is also the slow path for art_jni_unlock_object.
-    // Save return registers and return address.
-    PUSH_ARG rax
-    INCREASE_FRAME /*mmx0*/ 8 + /*padding*/ 8
-    movsd %xmm0, 0(%rsp)
-    // Call `artJniUnlockObject()`.
-    movq %rbx, %rdi                       // Pass the object to unlock.
-    movq %gs:THREAD_SELF_OFFSET, %rsi     // Pass Thread::Current().
-    call SYMBOL(artJniUnlockObject)       // (object, Thread*)
-    // Restore return registers and return.
-    movsd 0(%rsp), %xmm0
-    DECREASE_FRAME /*mmx0*/ 8 + /*padding*/ 8
-    POP_ARG rax
-    ret
-END_FUNCTION art_jni_unlock_object_no_inline
+JNI_SAVE_RETURN_VALUE_TRAMPOLINE \
+    art_jni_unlock_object_no_inline, artJniUnlockObject, rbx, gs:THREAD_SELF_OFFSET

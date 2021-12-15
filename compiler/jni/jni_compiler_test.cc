@@ -27,6 +27,7 @@
 #include "common_compiler_test.h"
 #include "compiler.h"
 #include "dex/dex_file.h"
+#include "entrypoints/entrypoint_utils-inl.h"
 #include "gtest/gtest.h"
 #include "indirect_reference_table.h"
 #include "java_frame_root_info.h"
@@ -337,6 +338,8 @@ class JniCompilerTest : public CommonCompilerTest {
   static jobject jobj_;
   static jobject class_loader_;
 
+  static void AssertCallerObjectLocked(JNIEnv* env);
+
   static LockWord GetLockWord(jobject obj);
 
  protected:
@@ -391,53 +394,17 @@ class JniCompilerTest : public CommonCompilerTest {
   jmethodID jmethod_;
 
  private:
-  // Helper class that overrides original entrypoints with alternative versions
-  // that check that the object (`this` or class) is locked.
-  class ScopedSynchronizedEntryPointOverrides {
-   public:
-    ScopedSynchronizedEntryPointOverrides() {
-      QuickEntryPoints* qpoints = &Thread::Current()->tlsPtr_.quick_entrypoints;
-      jni_method_start_original_ = qpoints->pJniMethodStart;
-      qpoints->pJniMethodStart = JniMethodStartSynchronizedOverride;
-      jni_method_end_original_ = qpoints->pJniMethodEnd;
-      qpoints->pJniMethodEnd = JniMethodEndSynchronizedOverride;
-      jni_method_end_with_reference_original_ = qpoints->pJniMethodEndWithReference;
-      qpoints->pJniMethodEndWithReference = JniMethodEndWithReferenceSynchronizedOverride;
-    }
-
-    ~ScopedSynchronizedEntryPointOverrides() {
-      QuickEntryPoints* qpoints = &Thread::Current()->tlsPtr_.quick_entrypoints;
-      qpoints->pJniMethodStart = jni_method_start_original_;
-      qpoints->pJniMethodEnd = jni_method_end_original_;
-      qpoints->pJniMethodEndWithReference = jni_method_end_with_reference_original_;
-    }
-  };
-
-  static void AssertCallerObjectLocked(Thread* self) REQUIRES_SHARED(Locks::mutator_lock_);
-  static void JniMethodStartSynchronizedOverride(Thread* self);
-  static void JniMethodEndSynchronizedOverride(Thread* self);
-  static mirror::Object* JniMethodEndWithReferenceSynchronizedOverride(
-      jobject result, Thread* self);
-
-  using JniStartType = void (*)(Thread*);
-  using JniEndType = void (*)(Thread*);
-  using JniEndWithReferenceType = mirror::Object* (*)(jobject, Thread*);
-
-  static JniStartType jni_method_start_original_;
-  static JniEndType jni_method_end_original_;
-  static JniEndWithReferenceType jni_method_end_with_reference_original_;
-
   bool check_generic_jni_;
 };
 
 jclass JniCompilerTest::jklass_;
 jobject JniCompilerTest::jobj_;
 jobject JniCompilerTest::class_loader_;
-JniCompilerTest::JniStartType JniCompilerTest::jni_method_start_original_;
-JniCompilerTest::JniEndType JniCompilerTest::jni_method_end_original_;
-JniCompilerTest::JniEndWithReferenceType JniCompilerTest::jni_method_end_with_reference_original_;
 
-void JniCompilerTest::AssertCallerObjectLocked(Thread* self) {
+void JniCompilerTest::AssertCallerObjectLocked(JNIEnv* env) {
+  Thread* self = down_cast<JNIEnvExt*>(env)->GetSelf();
+  CHECK_EQ(self, Thread::Current());
+  ScopedObjectAccess soa(self);
   ArtMethod** caller_frame = self->GetManagedStack()->GetTopQuickFrame();
   CHECK(caller_frame != nullptr);
   ArtMethod* caller = *caller_frame;
@@ -447,7 +414,10 @@ void JniCompilerTest::AssertCallerObjectLocked(Thread* self) {
   CHECK(!caller->IsCriticalNative());
   CHECK(caller->IsSynchronized());
   ObjPtr<mirror::Object> lock;
-  if (caller->IsStatic()) {
+  if (self->GetManagedStack()->GetTopQuickFrameTag()) {
+    // Generic JNI.
+    lock = GetGenericJniSynchronizationObject(self, caller);
+  } else if (caller->IsStatic()) {
     lock = caller->GetDeclaringClass();
   } else {
     uint8_t* sp = reinterpret_cast<uint8_t*>(caller_frame);
@@ -459,23 +429,6 @@ void JniCompilerTest::AssertCallerObjectLocked(Thread* self) {
     lock = this_ref->AsMirrorPtr();
   }
   CHECK_EQ(Monitor::GetLockOwnerThreadId(lock), self->GetThreadId());
-}
-
-void JniCompilerTest::JniMethodStartSynchronizedOverride(Thread* self) NO_THREAD_SAFETY_ANALYSIS {
-  AssertCallerObjectLocked(self);
-  jni_method_start_original_(self);
-}
-
-void JniCompilerTest::JniMethodEndSynchronizedOverride(Thread* self) NO_THREAD_SAFETY_ANALYSIS {
-  jni_method_end_original_(self);
-  AssertCallerObjectLocked(self);
-}
-
-mirror::Object* JniCompilerTest::JniMethodEndWithReferenceSynchronizedOverride(
-    jobject result, Thread* self) NO_THREAD_SAFETY_ANALYSIS {
-  mirror::Object* raw_result = jni_method_end_with_reference_original_(result, self);
-  AssertCallerObjectLocked(self);
-  return raw_result;
 }
 
 LockWord JniCompilerTest::GetLockWord(jobject obj) {
@@ -886,15 +839,19 @@ void JniCompilerTest::CompileAndRunDoubleDoubleMethodImpl() {
 }
 
 int gJava_MyClassNatives_fooJJ_synchronized_calls[kJniKindCount] = {};
-jlong Java_MyClassNatives_fooJJ_synchronized(JNIEnv*, jobject, jlong x, jlong y) {
+jlong Java_MyClassNatives_fooJJ_synchronized(JNIEnv* env, jobject, jlong x, jlong y) {
+  JniCompilerTest::AssertCallerObjectLocked(env);
   gJava_MyClassNatives_fooJJ_synchronized_calls[gCurrentJni]++;
   return x | y;
 }
 
+void InitEntryPoints(JniEntryPoints* jpoints,
+                     QuickEntryPoints* qpoints,
+                     bool monitor_jni_entry_exit);
+
 void JniCompilerTest::CompileAndRun_fooJJ_synchronizedImpl() {
   SetUpForTest(false, "fooJJ_synchronized", "(JJ)J",
                CURRENT_JNI_WRAPPER(Java_MyClassNatives_fooJJ_synchronized));
-  ScopedSynchronizedEntryPointOverrides ssepo;
 
   EXPECT_EQ(0, gJava_MyClassNatives_fooJJ_synchronized_calls[gCurrentJni]);
   jlong a = 0x1000000020000000ULL;
@@ -944,6 +901,22 @@ void JniCompilerTest::CompileAndRun_fooJJ_synchronizedImpl() {
   EXPECT_EQ(4, gJava_MyClassNatives_fooJJ_synchronized_calls[gCurrentJni]);
   lock_word = GetLockWord(jobj_);
   ASSERT_EQ(lock_word.GetState(), LockWord::kFatLocked);
+
+  // Exercise locking/unocking for "fat-locked" through the "no_inline" path.
+  // These entrypoints are selected with verbose "systrace_lock_logging".
+  Thread* self = Thread::Current();
+  ASSERT_FALSE(gLogVerbosity.systrace_lock_logging);
+  gLogVerbosity.systrace_lock_logging = true;
+  InitEntryPoints(&self->tlsPtr_.jni_entrypoints,
+                  &self->tlsPtr_.quick_entrypoints,
+                  self->ReadFlag(ThreadFlag::kMonitorJniEntryExit));
+  result = env_->CallNonvirtualLongMethod(jobj_, jklass_, jmethod_, a, b);
+  EXPECT_EQ(a | b, result);
+  EXPECT_EQ(5, gJava_MyClassNatives_fooJJ_synchronized_calls[gCurrentJni]);
+  gLogVerbosity.systrace_lock_logging = false;
+  InitEntryPoints(&self->tlsPtr_.jni_entrypoints,
+                  &self->tlsPtr_.quick_entrypoints,
+                  self->ReadFlag(ThreadFlag::kMonitorJniEntryExit));
 
   gJava_MyClassNatives_fooJJ_synchronized_calls[gCurrentJni] = 0;
 }
@@ -1220,7 +1193,8 @@ void JniCompilerTest::CompileAndRunStaticIntObjectObjectMethodImpl() {
 JNI_TEST(CompileAndRunStaticIntObjectObjectMethod)
 
 int gJava_MyClassNatives_fooSSIOO_calls[kJniKindCount] = {};
-jobject Java_MyClassNatives_fooSSIOO(JNIEnv*, jclass klass, jint x, jobject y, jobject z) {
+jobject Java_MyClassNatives_fooSSIOO(JNIEnv* env, jclass klass, jint x, jobject y, jobject z) {
+  JniCompilerTest::AssertCallerObjectLocked(env);
   gJava_MyClassNatives_fooSSIOO_calls[gCurrentJni]++;
   switch (x) {
     case 1:
@@ -1236,7 +1210,6 @@ void JniCompilerTest::CompileAndRunStaticSynchronizedIntObjectObjectMethodImpl()
   SetUpForTest(true, "fooSSIOO",
                "(ILjava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
                CURRENT_JNI_WRAPPER(Java_MyClassNatives_fooSSIOO));
-  ScopedSynchronizedEntryPointOverrides ssepo;
 
   EXPECT_EQ(0, gJava_MyClassNatives_fooSSIOO_calls[gCurrentJni]);
   jobject result = env_->CallStaticObjectMethod(jklass_, jmethod_, 0, nullptr, nullptr);
@@ -1315,6 +1288,12 @@ void Java_MyClassNatives_throwException(JNIEnv* env, jobject) {
   env->ThrowNew(c, "hello");
 }
 
+void Java_MyClassNatives_synchronizedThrowException(JNIEnv* env, jobject) {
+  JniCompilerTest::AssertCallerObjectLocked(env);
+  jclass c = env->FindClass("java/lang/RuntimeException");
+  env->ThrowNew(c, "hello");
+}
+
 void JniCompilerTest::ExceptionHandlingImpl() {
   {
     ASSERT_FALSE(runtime_->IsStarted());
@@ -1324,7 +1303,9 @@ void JniCompilerTest::ExceptionHandlingImpl() {
     // all compilation needs to happen before Runtime::Start
     CompileForTestWithCurrentJni(class_loader_, false, "foo", "()V");
     CompileForTestWithCurrentJni(class_loader_, false, "throwException", "()V");
-    CompileForTestWithCurrentJni(class_loader_, false, "foo", "()V");
+    if (gCurrentJni == enum_cast<uint32_t>(JniKind::kNormal)) {
+      CompileForTestWithCurrentJni(class_loader_, false, "synchronizedThrowException", "()V");
+    }
   }
   // Start runtime to avoid re-initialization in SetupForTest.
   Thread::Current()->TransitionFromSuspendedToRunnable();
@@ -1345,16 +1326,38 @@ void JniCompilerTest::ExceptionHandlingImpl() {
                CURRENT_JNI_WRAPPER(Java_MyClassNatives_throwException));
   // Call Java_MyClassNatives_throwException (JNI method that throws exception)
   env_->CallNonvirtualVoidMethod(jobj_, jklass_, jmethod_);
-  EXPECT_EQ(1, gJava_MyClassNatives_foo_calls[gCurrentJni]);
   EXPECT_TRUE(env_->ExceptionCheck() == JNI_TRUE);
   ScopedLocalRef<jthrowable> exception(env_, env_->ExceptionOccurred());
   env_->ExceptionClear();
   EXPECT_TRUE(env_->IsInstanceOf(exception.get(), jlre.get()));
 
   // Check a single call of a JNI method is ok
+  EXPECT_EQ(1, gJava_MyClassNatives_foo_calls[gCurrentJni]);
   SetUpForTest(false, "foo", "()V", reinterpret_cast<void*>(&Java_MyClassNatives_foo));
   env_->CallNonvirtualVoidMethod(jobj_, jklass_, jmethod_);
   EXPECT_EQ(2, gJava_MyClassNatives_foo_calls[gCurrentJni]);
+
+  if (gCurrentJni == enum_cast<uint32_t>(JniKind::kNormal)) {
+    SetUpForTest(false, "synchronizedThrowException", "()V",
+                 CURRENT_JNI_WRAPPER(Java_MyClassNatives_synchronizedThrowException));
+    LockWord lock_word = GetLockWord(jobj_);
+    ASSERT_EQ(lock_word.GetState(), LockWord::kUnlocked);
+    // Call Java_MyClassNatives_synchronizedThrowException (synchronized JNI method
+    // that throws exception) to check that we correctly unlock the object.
+    env_->CallNonvirtualVoidMethod(jobj_, jklass_, jmethod_);
+    EXPECT_TRUE(env_->ExceptionCheck() == JNI_TRUE);
+    ScopedLocalRef<jthrowable> exception2(env_, env_->ExceptionOccurred());
+    env_->ExceptionClear();
+    EXPECT_TRUE(env_->IsInstanceOf(exception2.get(), jlre.get()));
+    lock_word = GetLockWord(jobj_);
+    EXPECT_EQ(lock_word.GetState(), LockWord::kUnlocked);
+
+    // Check a single call of a JNI method is ok
+    EXPECT_EQ(2, gJava_MyClassNatives_foo_calls[gCurrentJni]);
+    SetUpForTest(false, "foo", "()V", reinterpret_cast<void*>(&Java_MyClassNatives_foo));
+    env_->CallNonvirtualVoidMethod(jobj_, jklass_, jmethod_);
+    EXPECT_EQ(3, gJava_MyClassNatives_foo_calls[gCurrentJni]);
+  }
 
   gJava_MyClassNatives_foo_calls[gCurrentJni] = 0;
 }
@@ -1505,7 +1508,8 @@ void JniCompilerTest::GetTextImpl() {
 JNI_TEST(GetText)
 
 int gJava_MyClassNatives_GetSinkProperties_calls[kJniKindCount] = {};
-jarray Java_MyClassNatives_GetSinkProperties(JNIEnv*, jobject thisObj, jstring s) {
+jarray Java_MyClassNatives_GetSinkProperties(JNIEnv* env, jobject thisObj, jstring s) {
+  JniCompilerTest::AssertCallerObjectLocked(env);
   EXPECT_EQ(s, nullptr);
   gJava_MyClassNatives_GetSinkProperties_calls[gCurrentJni]++;
 
@@ -1518,7 +1522,6 @@ jarray Java_MyClassNatives_GetSinkProperties(JNIEnv*, jobject thisObj, jstring s
 void JniCompilerTest::GetSinkPropertiesNativeImpl() {
   SetUpForTest(false, "getSinkPropertiesNative", "(Ljava/lang/String;)[Ljava/lang/Object;",
                CURRENT_JNI_WRAPPER(Java_MyClassNatives_GetSinkProperties));
-  ScopedSynchronizedEntryPointOverrides ssepo;
 
   EXPECT_EQ(0, gJava_MyClassNatives_GetSinkProperties_calls[gCurrentJni]);
   jarray result = down_cast<jarray>(

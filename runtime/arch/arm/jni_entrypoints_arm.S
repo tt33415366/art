@@ -40,6 +40,49 @@
     .endif
 .endm
 
+.macro JNI_SAVE_MANAGED_ARGS_TRAMPOLINE name, cxx_name, arg1 = "none"
+    .extern \cxx_name
+ENTRY \name
+    // Note: Managed callee-save registers have been saved by the JNI stub.
+    // Save managed args, r4 (for stack alignment) and LR.
+    SAVE_MANAGED_ARGS_R4_LR_INCREASE_FRAME
+    // Call `cxx_name()`.
+    .ifnc \arg1, none
+        mov r0, \arg1                     @ Pass arg1.
+    .endif
+    bl     \cxx_name                      @ Call cxx_name(...).
+    // Restore args and R4 and return.
+    RESTORE_MANAGED_ARGS_R4_AND_RETURN /*restore_cfa*/ 0
+END \name
+.endm
+
+.macro JNI_SAVE_RETURN_VALUE_TRAMPOLINE name, cxx_name, arg1, arg2 = "none", label = "none"
+    .extern \cxx_name
+ENTRY \name
+    .ifnc \label, none
+        \label:
+    .endif
+    // Save GPR return registers and return address. Also save r4 for stack alignment.
+    push   {r0-r1, r4, lr}
+    .cfi_adjust_cfa_offset 16
+    .cfi_rel_offset lr, 12
+    // Save FPR return registers.
+    vpush  {s0-s1}
+    .cfi_adjust_cfa_offset 8
+    // Call `cxx_name()`.
+    mov r0, \arg1                         @ Pass arg1.
+    .ifnc \arg2, none
+        mov r1, \arg2                     @ Pass arg2.
+    .endif
+    bl     \cxx_name                      @ Call cxx_name(...).
+    // Restore FPR return registers.
+    vpop   {s0-s1}
+    .cfi_adjust_cfa_offset -8
+    // Restore GPR return registers and r4 and return.
+    pop    {r0-r1, r4, pc}
+END \name
+.endm
+
     /*
      * Jni dlsym lookup stub.
      */
@@ -274,16 +317,28 @@ END art_jni_dlsym_lookup_critical_stub
      * Read barrier for the method's declaring class needed by JNI stub for static methods.
      * (We're using a pointer to the declaring class in `ArtMethod` as `jclass`.)
      */
-    .extern artJniReadBarrier
-ENTRY art_jni_read_barrier
-    // Note: Managed callee-save registers have been saved by the JNI stub.
-    // Save managed args, r4 (for stack alignment) and LR.
-    SAVE_MANAGED_ARGS_R4_LR_INCREASE_FRAME
-    // The method argument is already in r0.
-    bl    artJniReadBarrier  // (ArtMethod*)
-    // Restore args and return.
-    RESTORE_MANAGED_ARGS_R4_AND_RETURN /*restore_cfa*/ 0
-END art_jni_read_barrier
+// The method argument is already in r0 for call to `artJniReadBarrier(ArtMethod*)`.
+JNI_SAVE_MANAGED_ARGS_TRAMPOLINE art_jni_read_barrier, artJniReadBarrier
+
+    /*
+     * Trampoline to `artJniMethodStart()` that preserves all managed arguments.
+     */
+JNI_SAVE_MANAGED_ARGS_TRAMPOLINE art_jni_method_start, artJniMethodStart, rSELF
+
+    /*
+     * Trampoline to `artJniMonitoredMethodStart()` that preserves all managed arguments.
+     */
+JNI_SAVE_MANAGED_ARGS_TRAMPOLINE art_jni_monitored_method_start, artJniMonitoredMethodStart, rSELF
+
+    /*
+     * Trampoline to `artJniMethodEnd()` that preserves all return registers.
+     */
+JNI_SAVE_RETURN_VALUE_TRAMPOLINE art_jni_method_end, artJniMethodEnd, rSELF
+
+    /*
+     * Trampoline to `artJniMonitoredMethodEnd()` that preserves all return registers.
+     */
+JNI_SAVE_RETURN_VALUE_TRAMPOLINE art_jni_monitored_method_end, artJniMonitoredMethodEnd, rSELF
 
     /*
      * Entry from JNI stub that tries to lock the object in a fast path and
@@ -357,26 +412,8 @@ END art_jni_unlock_object
      *     Callee-save registers have been saved and can be used as temporaries.
      *     Return registers r0-r1 and s0-s1 need to be preserved.
      */
-    .extern artJniUnlockObject
-ENTRY art_jni_unlock_object_no_inline
     // This is also the slow path for art_jni_unlock_object.
-    // Note that we need a local label as the assembler emits bad instructions
-    // for CBZ/CBNZ if we try to jump to `art_jni_unlock_object_no_inline`.
-.Lunlock_object_jni_slow:
-    // Save GPR return registers and return address. Also save r4 for stack alignment.
-    push   {r0-r1, r4, lr}
-    .cfi_adjust_cfa_offset 16
-    .cfi_rel_offset lr, 12
-    // Save FPR return registers.
-    vpush  {s0-s1}
-    .cfi_adjust_cfa_offset 8
-    // Call `artJniUnlockObject()`.
-    mov    r0, r4                       @ Pass the object to unlock.
-    mov    r1, rSELF                    @ Pass Thread::Current().
-    bl     artJniUnlockObject           @ (Object* obj, Thread*)
-    // Restore FPR return registers.
-    vpop   {s0-s1}
-    .cfi_adjust_cfa_offset -8
-    // Restore GPR return registers and r4 and return.
-    pop    {r0-r1, r4, pc}
-END art_jni_unlock_object_no_inline
+JNI_SAVE_RETURN_VALUE_TRAMPOLINE art_jni_unlock_object_no_inline, artJniUnlockObject, r4, rSELF, \
+    /* Note that we need a local label as the assembler emits bad instructions                */ \
+    /* for CBZ/CBNZ if we try to jump to `art_jni_unlock_object_no_inline`.                   */ \
+    .Lunlock_object_jni_slow
