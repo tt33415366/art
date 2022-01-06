@@ -1501,17 +1501,13 @@ TEST_F(Dex2oatTest, UncompressedTest) {
 TEST_F(Dex2oatTest, MissingBootImageTest) {
   std::string out_dir = GetScratchDir();
   const std::string base_oat_name = out_dir + "/base.oat";
-  std::string error_msg;
-  int status = GenerateOdexForTestWithStatus(
-      { GetTestDexFileName("MainUncompressedAligned") },
+  // The compilation should succeed even without the boot image.
+  ASSERT_TRUE(GenerateOdexForTest(
+      {GetTestDexFileName("MainUncompressedAligned")},
       base_oat_name,
       CompilerFilter::Filter::kVerify,
-      &error_msg,
       // Note: Extra options go last and the second `--boot-image` option overrides the first.
-      { "--boot-image=/nonx/boot.art" });
-  // Expect to fail with code 1 and not SIGSEGV or SIGABRT.
-  ASSERT_TRUE(WIFEXITED(status));
-  ASSERT_EQ(WEXITSTATUS(status), 1) << error_msg;
+      {"--boot-image=/nonx/boot.art"}));
 }
 
 TEST_F(Dex2oatTest, EmptyUncompressedDexTest) {
@@ -1766,7 +1762,6 @@ TEST_F(Dex2oatTest, DontExtract) {
     std::unique_ptr<VdexFile> vdex(VdexFile::Open(vdex_location.c_str(),
                                                   /*writable=*/ false,
                                                   /*low_4gb=*/ false,
-                                                  /*unquicken=*/ false,
                                                   &error_msg));
     ASSERT_TRUE(vdex != nullptr);
     EXPECT_FALSE(vdex->HasDexSection()) << output_;
