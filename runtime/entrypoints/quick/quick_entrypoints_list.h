@@ -72,9 +72,8 @@
 \
   V(AputObject, void, mirror::Array*, int32_t, mirror::Object*) \
 \
-  V(JniMethodStart, void, Thread*) \
-  V(JniMethodEnd, void, Thread*) \
-  V(JniMethodEndWithReference, mirror::Object*, jobject, Thread*) \
+  V(JniMethodStart, void) \
+  V(JniMethodEnd, void) \
   V(JniDecodeReferenceResult, mirror::Object*, jobject, Thread*) \
   V(JniLockObject, void, mirror::Object*) \
   V(JniUnlockObject, void, mirror::Object*) \
@@ -171,7 +170,7 @@
   V(UpdateInlineCache, void, void) \
   V(CompileOptimized, void, ArtMethod*, Thread*) \
 \
-  V(ReadBarrierJni, void, ArtMethod*) \
+  V(JniReadBarrier, void, ArtMethod*) \
   V(ReadBarrierMarkReg00, mirror::Object*, mirror::Object*) \
   V(ReadBarrierMarkReg01, mirror::Object*, mirror::Object*) \
   V(ReadBarrierMarkReg02, mirror::Object*, mirror::Object*) \

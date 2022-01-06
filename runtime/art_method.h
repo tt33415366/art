@@ -76,7 +76,7 @@ class ArtMethod final {
   static constexpr uint32_t kRuntimeMethodDexMethodIndex = 0xFFFFFFFF;
 
   ArtMethod() : access_flags_(0), dex_method_index_(0),
-      method_index_(0), hotness_count_(interpreter::kNterpHotnessMask) { }
+      method_index_(0), hotness_count_(0) { }
 
   ArtMethod(ArtMethod* src, PointerSize image_pointer_size) {
     CopyFrom(src, image_pointer_size);
@@ -669,13 +669,13 @@ class ArtMethod final {
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Size of an instance of this native class.
-  static size_t Size(PointerSize pointer_size) {
+  static constexpr size_t Size(PointerSize pointer_size) {
     return PtrSizedFieldsOffset(pointer_size) +
         (sizeof(PtrSizedFields) / sizeof(void*)) * static_cast<size_t>(pointer_size);
   }
 
   // Alignment of an instance of this native class.
-  static size_t Alignment(PointerSize pointer_size) {
+  static constexpr size_t Alignment(PointerSize pointer_size) {
     // The ArtMethod alignment is the same as image pointer size. This differs from
     // alignof(ArtMethod) if cross-compiling with pointer_size != sizeof(void*).
     return static_cast<size_t>(pointer_size);
@@ -684,13 +684,13 @@ class ArtMethod final {
   void CopyFrom(ArtMethod* src, PointerSize image_pointer_size)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  ALWAYS_INLINE void ResetCounter();
+  ALWAYS_INLINE void ResetCounter(uint16_t new_value);
   ALWAYS_INLINE void UpdateCounter(int32_t new_samples);
   ALWAYS_INLINE void SetHotCounter();
   ALWAYS_INLINE bool CounterIsHot();
-  ALWAYS_INLINE bool CounterHasReached(uint16_t samples);
+  ALWAYS_INLINE bool CounterHasReached(uint16_t samples, uint16_t threshold);
   ALWAYS_INLINE uint16_t GetCounter();
-  ALWAYS_INLINE bool CounterHasChanged();
+  ALWAYS_INLINE bool CounterHasChanged(uint16_t threshold);
 
   ALWAYS_INLINE static constexpr uint16_t MaxCounter() {
     return std::numeric_limits<decltype(hotness_count_)>::max();
