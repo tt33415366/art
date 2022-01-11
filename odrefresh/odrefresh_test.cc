@@ -28,8 +28,8 @@
 #include "aidl/com/android/art/DexoptBcpExtArgs.h"
 #include "aidl/com/android/art/DexoptSystemServerArgs.h"
 #include "aidl/com/android/art/Isa.h"
+#include "android-base/file.h"
 #include "android-base/parseint.h"
-#include "android-base/properties.h"
 #include "android-base/scopeguard.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
@@ -79,13 +79,6 @@ android::base::ScopeGuard<std::function<void()>> ScopedCreateEmptyFile(const std
   return android::base::ScopeGuard([=]() { unlink(name.c_str()); });
 }
 
-android::base::ScopeGuard<std::function<void()>> ScopedSetProperty(const std::string& key,
-                                                                   const std::string& value) {
-  std::string old_value = android::base::GetProperty(key, /*default_value=*/{});
-  android::base::SetProperty(key, value);
-  return android::base::ScopeGuard([=]() { android::base::SetProperty(key, old_value); });
-}
-
 class MockOdrDexopt : public OdrDexopt {
  public:
   // A workaround to avoid MOCK_METHOD on a method with an `std::string*` parameter, which will lead
@@ -113,6 +106,25 @@ MATCHER_P(FdOf, matcher, "") {
   }
   std::string path_str{path, static_cast<size_t>(len)};
   return ExplainMatchResult(matcher, path_str, result_listener);
+}
+
+void WriteFakeApexInfoList(const std::string& filename) {
+  std::string content = R"xml(
+<?xml version="1.0" encoding="utf-8"?>
+<apex-info-list>
+  <apex-info
+      moduleName="com.android.art"
+      modulePath="/data/apex/active/com.android.art@319999900.apex"
+      preinstalledModulePath="/system/apex/com.android.art.capex"
+      versionCode="319999900"
+      versionName=""
+      isFactory="false"
+      isActive="true"
+      lastUpdateMillis="12345678">
+  </apex-info>
+</apex-info-list>
+)xml";
+  android::base::WriteStringToFile(content, filename);
 }
 
 class OdRefreshTest : public CommonArtTest {
@@ -171,7 +183,10 @@ class OdRefreshTest : public CommonArtTest {
     ASSERT_TRUE(EnsureDirectoryExists(javalib_dir));
     CreateEmptyFile(boot_art);
 
-    config_.SetApexInfoListFile(Concatenate({temp_dir_path, "/apex-info-list.xml"}));
+    std::string apex_info_filename = Concatenate({temp_dir_path, "/apex-info-list.xml"});
+    WriteFakeApexInfoList(apex_info_filename);
+    config_.SetApexInfoListFile(apex_info_filename);
+
     config_.SetArtBinDir(Concatenate({temp_dir_path, "/bin"}));
     config_.SetBootClasspath(framework_jar_);
     config_.SetDex2oatBootclasspath(framework_jar_);
@@ -179,6 +194,8 @@ class OdRefreshTest : public CommonArtTest {
     config_.SetStandaloneSystemServerJars(Concatenate({services_foo_jar_, ":", services_bar_jar_}));
     config_.SetIsa(InstructionSet::kX86_64);
     config_.SetZygoteKind(ZygoteKind::kZygote64_32);
+    config_.SetSystemServerCompilerFilter("speed");  // specify a default
+    config_.SetArtifactDirectory(dalvik_cache_dir_);
 
     std::string staging_dir = dalvik_cache_dir_ + "/staging";
     ASSERT_TRUE(EnsureDirectoryExists(staging_dir));
@@ -293,6 +310,7 @@ TEST_F(OdRefreshTest, PartialSystemServerJars) {
 TEST_F(OdRefreshTest, MissingStandaloneSystemServerJars) {
   config_.SetStandaloneSystemServerJars("");
   auto [odrefresh, mock_odr_dexopt] = CreateOdRefresh();
+  EXPECT_CALL(*mock_odr_dexopt, DoDexoptSystemServer).WillRepeatedly(Return(0));
   EXPECT_EQ(
       odrefresh->Compile(*metrics_,
                          CompilationOptions{
@@ -303,21 +321,10 @@ TEST_F(OdRefreshTest, MissingStandaloneSystemServerJars) {
 
 TEST_F(OdRefreshTest, CompileSetsCompilerFilter) {
   {
-    // Check if the system property can be written.
-    auto guard = ScopedSetProperty("dalvik.vm.systemservercompilerfilter", "foo");
-    if (android::base::GetProperty("dalvik.vm.systemservercompilerfilter", /*default_value=*/{}) !=
-        "foo") {
-      // This test depends on a system property that doesn't exist on old platforms. Since the whole
-      // odrefresh program is for S and later, we don't need to run the test on old platforms.
-      return;
-    }
-  }
-
-  {
     auto [odrefresh, mock_odr_dexopt] = CreateOdRefresh();
 
-    // Test setup: default compiler filter should be "speed".
-    auto guard = ScopedSetProperty("dalvik.vm.systemservercompilerfilter", "");
+    // Test setup: use "speed" compiler filter.
+    config_.SetSystemServerCompilerFilter("speed");
 
     // Uninteresting calls.
     EXPECT_CALL(*mock_odr_dexopt, DoDexoptSystemServer(_))
@@ -350,7 +357,7 @@ TEST_F(OdRefreshTest, CompileSetsCompilerFilter) {
 
     // Test setup: with "speed-profile" compiler filter in the request, only apply if there is a
     // profile, otherwise fallback to speed.
-    auto guard = ScopedSetProperty("dalvik.vm.systemservercompilerfilter", "speed-profile");
+    config_.SetSystemServerCompilerFilter("speed-profile");
 
     // Uninteresting calls.
     EXPECT_CALL(*mock_odr_dexopt, DoDexoptSystemServer(_))
@@ -385,7 +392,7 @@ TEST_F(OdRefreshTest, CompileSetsCompilerFilter) {
     auto [odrefresh, mock_odr_dexopt] = CreateOdRefresh();
 
     // Test setup: "verify" compiler filter should be simply applied.
-    auto guard = ScopedSetProperty("dalvik.vm.systemservercompilerfilter", "verify");
+    config_.SetSystemServerCompilerFilter("verify");
 
     // Uninteresting calls.
     EXPECT_CALL(*mock_odr_dexopt, DoDexoptSystemServer(_))
