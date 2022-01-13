@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2011 The Android Open Source Project
+ * Copyright (C) 2021 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,27 +14,11 @@
  * limitations under the License.
  */
 
-#include <signal.h>
-#include <sys/mman.h>
-
-#include "thread.h"
-
-namespace art {
-
-void Thread::SetUpAlternateSignalStack() {
-  // Bionic does this for us.
+public class Caller {
+  /// CHECK-START: void Caller.doCall() builder (after)
+  /// CHECK:       LoadClass load_kind:BssEntry class_name:pkg1.SuperClass
+  /// CHECK:       InvokeStaticOrDirect method_name:pkg1.SuperClass.$noinline$callMethod
+  public static void doCall() {
+    pkg1.SubClass.$noinline$callMethod();
+  }
 }
-
-void Thread::TearDownAlternateSignalStack() {
-  // Bionic does this for us.
-}
-
-void Thread::MadviseAwayAlternateSignalStack() {
-  stack_t old_ss;
-  int result = sigaltstack(nullptr, &old_ss);
-  CHECK_EQ(result, 0);
-  result = madvise(old_ss.ss_sp, old_ss.ss_size, MADV_FREE);
-  CHECK_EQ(result, 0);
-}
-
-}  // namespace art

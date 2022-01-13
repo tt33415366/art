@@ -689,10 +689,11 @@ bool OatWriter::WriteAndOpenDexFiles(
     /*out*/ std::vector<std::unique_ptr<const DexFile>>* opened_dex_files) {
   CHECK(write_state_ == WriteState::kAddingDexFileSources);
 
+  // Reserve space for Vdex header, sections, and checksums.
   size_vdex_header_ = sizeof(VdexFile::VdexFileHeader) +
       VdexSection::kNumberOfSections * sizeof(VdexFile::VdexSectionHeader);
-  // Reserve space for Vdex header, sections, and checksums.
-  vdex_size_ = size_vdex_header_ + oat_dex_files_.size() * sizeof(VdexFile::VdexChecksum);
+  size_vdex_checksums_ = oat_dex_files_.size() * sizeof(VdexFile::VdexChecksum);
+  vdex_size_ = size_vdex_header_ + size_vdex_checksums_;
 
   // Write DEX files into VDEX, mmap and open them.
   std::vector<MemMap> dex_files_map;
@@ -945,8 +946,7 @@ class OatWriter::InitBssLayoutMethodVisitor : public DexMethodVisitor {
                        /*inout*/ SafeMap<const DexFile*, BitVector>* references) {
     // We currently support inlining of throwing instructions only when they originate in the
     // same oat file as the outer method. All .bss references are used by throwing instructions.
-    DCHECK(std::find(writer_->dex_files_->begin(), writer_->dex_files_->end(), ref.dex_file) !=
-           writer_->dex_files_->end());
+    DCHECK(ContainsElement(*writer_->dex_files_, ref.dex_file));
     DCHECK_LT(ref.index, number_of_indexes);
 
     auto refs_it = references->find(ref.dex_file);
@@ -3212,7 +3212,7 @@ bool OatWriter::WriteDexFiles(File* file,
     std::string error_msg;
     MemMap dex_files_map = MemMap::MapFile(
         page_aligned_size,
-        PROT_READ | PROT_WRITE,
+        use_existing_vdex ? PROT_READ : PROT_READ | PROT_WRITE,
         MAP_SHARED,
         file->Fd(),
         /*start=*/ 0u,
@@ -3241,9 +3241,8 @@ bool OatWriter::WriteDexFiles(File* file,
     // Write shared dex file data section and fix up the dex file headers.
     if (shared_data_size != 0u) {
       DCHECK_EQ(RoundUp(vdex_size_, 4u), vdex_dex_shared_data_offset_);
-      if (!use_existing_vdex) {
-        memset(vdex_begin_ + vdex_size_, 0, vdex_dex_shared_data_offset_ - vdex_size_);
-      }
+      DCHECK(!use_existing_vdex);
+      memset(vdex_begin_ + vdex_size_, 0, vdex_dex_shared_data_offset_ - vdex_size_);
       size_dex_file_alignment_ += vdex_dex_shared_data_offset_ - vdex_size_;
       vdex_size_ = vdex_dex_shared_data_offset_;
 
@@ -3255,8 +3254,7 @@ bool OatWriter::WriteDexFiles(File* file,
         memcpy(vdex_begin_ + vdex_size_, section->Begin(), shared_data_size);
         section->Clear();
         dex_container_.reset();
-      } else if (!use_existing_vdex) {
-        // If we are not updating the input vdex, write out the shared data section.
+      } else {
         memcpy(vdex_begin_ + vdex_size_, raw_dex_file_shared_data_begin, shared_data_size);
       }
       vdex_size_ += shared_data_size;
@@ -3281,6 +3279,14 @@ bool OatWriter::WriteDexFiles(File* file,
     opened_dex_files_map->push_back(std::move(dex_files_map));
   } else {
     vdex_dex_shared_data_offset_ = vdex_size_;
+  }
+
+  if (use_existing_vdex) {
+    // If we re-use an existing vdex, artificially set the verifier deps size,
+    // so the compiler has a correct computation of the vdex size.
+    size_t actual_size = file->GetLength();
+    size_verifier_deps_ = actual_size - vdex_size_;
+    vdex_size_ = actual_size;
   }
 
   return true;
@@ -3763,7 +3769,6 @@ bool OatWriter::FinishVdexFile(File* vdex_file, verifier::VerifierDeps* verifier
   for (size_t i = 0, size = oat_dex_files_.size(); i != size; ++i) {
     OatDexFile* oat_dex_file = &oat_dex_files_[i];
     checksums_data[i] = oat_dex_file->dex_file_location_checksum_;
-    size_vdex_checksums_ += sizeof(VdexFile::VdexChecksum);
   }
 
   // Write sections.

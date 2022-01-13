@@ -23,6 +23,7 @@
 #include <unordered_set>
 
 #include <android-base/logging.h>
+#include <android-base/stringprintf.h>
 #include <log/log.h>
 
 #include "base/bit_utils.h"
@@ -45,6 +46,8 @@
 #include "verifier/verifier_deps.h"
 
 namespace art {
+
+using android::base::StringPrintf;
 
 constexpr uint8_t VdexFile::VdexFileHeader::kVdexInvalidMagic[4];
 constexpr uint8_t VdexFile::VdexFileHeader::kVdexMagic[4];
@@ -118,9 +121,10 @@ std::unique_ptr<VdexFile> VdexFile::OpenAtAddress(uint8_t* mmap_addr,
                                                   bool low_4gb,
                                                   std::string* error_msg) {
   if (mmap_addr != nullptr && mmap_size < vdex_length) {
-    LOG(WARNING) << "Insufficient pre-allocated space to mmap vdex.";
-    mmap_addr = nullptr;
-    mmap_reuse = false;
+    *error_msg = StringPrintf("Insufficient pre-allocated space to mmap vdex: %zu and %zu",
+                              mmap_size,
+                              vdex_length);
+    return nullptr;
   }
   CHECK(!mmap_reuse || mmap_addr != nullptr);
   // Start as PROT_WRITE so we can mprotect back to it if we want to.

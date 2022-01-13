@@ -77,9 +77,6 @@ std::string GetDefaultBootImageLocation(std::string* error_msg);
 std::string GetDefaultBootImageLocation(const std::string& android_root,
                                         bool deny_art_apex_data_files);
 
-// Returns the boot image path of the provided jar, on /system or /data.
-std::string GetBootImagePath(bool on_system, const std::string& jar_path);
-
 // Allows the name to be used for the dalvik cache directory (normally "dalvik-cache") to be
 // overridden with a new value.
 void OverrideDalvikCacheSubDirectory(std::string sub_dir);
@@ -167,6 +164,10 @@ bool LocationIsOnSystemExtFramework(std::string_view location);
 
 // Return whether the location is on /apex/.
 bool LocationIsOnApex(std::string_view location);
+
+// If the given location is /apex/<apexname>/..., return <apexname>, otherwise return an empty
+// string. Note that the result is a view into full_path and is valid only as long as it is.
+std::string_view ApexNameFromLocation(std::string_view full_path);
 
 // Returns whether the location is trusted for loading oat files. Trusted locations are protected
 // by dm-verity or fs-verity. The recognized locations are on /system or

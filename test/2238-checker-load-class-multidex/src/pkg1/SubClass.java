@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2011 The Android Open Source Project
+ * Copyright (C) 2021 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,27 +14,15 @@
  * limitations under the License.
  */
 
-#include <signal.h>
-#include <sys/mman.h>
+package pkg1;
 
-#include "thread.h"
-
-namespace art {
-
-void Thread::SetUpAlternateSignalStack() {
-  // Bionic does this for us.
+// `SuperClass` is only visible to classes in packge `pkg1`.
+class SuperClass {
+  public static void $noinline$callMethod() {
+  }
 }
 
-void Thread::TearDownAlternateSignalStack() {
-  // Bionic does this for us.
+// Any class (inside or outside `pkg1`) can access `SuperClass.callMethod` by referencing it as
+// `SubClass.callMethod`.
+public class SubClass extends SuperClass {
 }
-
-void Thread::MadviseAwayAlternateSignalStack() {
-  stack_t old_ss;
-  int result = sigaltstack(nullptr, &old_ss);
-  CHECK_EQ(result, 0);
-  result = madvise(old_ss.ss_sp, old_ss.ss_size, MADV_FREE);
-  CHECK_EQ(result, 0);
-}
-
-}  // namespace art
