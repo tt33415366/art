@@ -44,7 +44,7 @@ using ::art::odrefresh::OnDeviceRefresh;
 using ::art::odrefresh::QuotePath;
 using ::art::odrefresh::ZygoteKind;
 
-void UsageErrorV(const char* fmt, va_list ap) {
+void UsageMsgV(const char* fmt, va_list ap) {
   std::string error;
   android::base::StringAppendV(&error, fmt, ap);
   if (isatty(fileno(stderr))) {
@@ -54,19 +54,19 @@ void UsageErrorV(const char* fmt, va_list ap) {
   }
 }
 
-void UsageError(const char* fmt, ...) {
+void UsageMsg(const char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  UsageErrorV(fmt, ap);
+  UsageMsgV(fmt, ap);
   va_end(ap);
 }
 
 NO_RETURN void ArgumentError(const char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  UsageErrorV(fmt, ap);
+  UsageMsgV(fmt, ap);
   va_end(ap);
-  UsageError("Try '--help' for more information.");
+  UsageMsg("Try '--help' for more information.");
   exit(EX_USAGE);
 }
 
@@ -129,12 +129,8 @@ int InitializeConfig(int argc, char** argv, OdrConfig* config) {
   for (; n < argc - 1; ++n) {
     const char* arg = argv[n];
     std::string value;
-    if (ArgumentMatches(arg, "--use-compilation-os=", &value)) {
-      int cid;
-      if (!android::base::ParseInt(value, &cid)) {
-        ArgumentError("Failed to parse CID: %s", value.c_str());
-      }
-      config->SetCompilationOsAddress(cid);
+    if (ArgumentEquals(arg, "--compilation-os-mode")) {
+      config->SetCompilationOsMode(true);
     } else if (ArgumentMatches(arg, "--dalvik-cache=", &value)) {
       art::OverrideDalvikCacheSubDirectory(value);
       config->SetArtifactDirectory(GetApexDataDalvikCacheDirectory(art::InstructionSet::kNone));
@@ -152,6 +148,8 @@ int InitializeConfig(int argc, char** argv, OdrConfig* config) {
       config->SetMaxChildProcessSeconds(seconds);
     } else if (ArgumentMatches(arg, "--zygote-arch=", &value)) {
       zygote = value;
+    } else if (ArgumentMatches(arg, "--system-server-compiler-filter=", &value)) {
+      config->SetSystemServerCompilerFilter(value);
     } else if (ArgumentMatches(arg, "--staging-dir=", &value)) {
       config->SetStagingDir(value);
     } else if (ArgumentEquals(arg, "--dry-run")) {
@@ -161,7 +159,7 @@ int InitializeConfig(int argc, char** argv, OdrConfig* config) {
     } else if (ArgumentEquals(arg, "--no-refresh")) {
       config->SetRefresh(false);
     } else {
-      UsageError("Unrecognized argument: '%s'", arg);
+      ArgumentError("Unrecognized argument: '%s'", arg);
     }
   }
 
@@ -175,43 +173,46 @@ int InitializeConfig(int argc, char** argv, OdrConfig* config) {
   }
   config->SetZygoteKind(zygote_kind);
 
-  return n;
-}
+  if (config->GetSystemServerCompilerFilter().empty()) {
+    std::string filter =
+        android::base::GetProperty("dalvik.vm.systemservercompilerfilter", "speed");
+    config->SetSystemServerCompilerFilter(filter);
+  }
 
-void OptionsHelp() {
-  UsageError("--dry-run");
-  UsageError("--partial-compilation            Only generate artifacts that are out-of-date or");
-  UsageError("                                 missing.");
-  UsageError("--no-refresh                     Do not refresh existing artifacts.");
-  UsageError("--use-compilation-os=<CID>       Run compilation in the VM with the given CID.");
-  UsageError("                                 (0 = do not use VM, -1 = use composd's VM)");
-  UsageError("--dalvik-cache=<DIR>             Write artifacts to .../<DIR> rather than");
-  UsageError("                                 .../dalvik-cache");
-  UsageError("--max-execution-seconds=<N>      Maximum timeout of all compilation combined");
-  UsageError("--max-child-process-seconds=<N>  Maximum timeout of each compilation task");
-  UsageError("--staging-dir=<DIR>              Write temporary artifacts to <DIR> rather than");
-  UsageError("                                 .../staging");
-  UsageError("--zygote-arch=<STRING>           Zygote kind that overrides ro.zygote");
+  return n;
 }
 
 NO_RETURN void UsageHelp(const char* argv0) {
   std::string name(android::base::Basename(argv0));
-  UsageError("Usage: %s [OPTION...] ACTION", name.c_str());
-  UsageError("On-device refresh tool for boot class path extensions and system server");
-  UsageError("following an update of the ART APEX.");
-  UsageError("");
-  UsageError("Valid ACTION choices are:");
-  UsageError("");
-  UsageError("--check          Check compilation artifacts are up-to-date based on metadata.");
-  UsageError("--compile        Compile boot class path extensions and system_server jars");
-  UsageError("                 when necessary.");
-  UsageError("--force-compile  Unconditionally compile the boot class path extensions and");
-  UsageError("                 system_server jars.");
-  UsageError("--help           Display this help information.");
-  UsageError("");
-  UsageError("Available OPTIONs are:");
-  UsageError("");
-  OptionsHelp();
+  UsageMsg("Usage: %s [OPTION...] ACTION", name.c_str());
+  UsageMsg("On-device refresh tool for boot classpath and system server");
+  UsageMsg("following an update of the ART APEX.");
+  UsageMsg("");
+  UsageMsg("Valid ACTION choices are:");
+  UsageMsg("");
+  UsageMsg("--check          Check compilation artifacts are up-to-date based on metadata.");
+  UsageMsg("--compile        Compile boot classpath and system_server jars when necessary.");
+  UsageMsg("--force-compile  Unconditionally compile the bootclass path and system_server jars.");
+  UsageMsg("--help           Display this help information.");
+  UsageMsg("");
+  UsageMsg("Available OPTIONs are:");
+  UsageMsg("");
+  UsageMsg("--dry-run");
+  UsageMsg("--partial-compilation            Only generate artifacts that are out-of-date or");
+  UsageMsg("                                 missing.");
+  UsageMsg("--no-refresh                     Do not refresh existing artifacts.");
+  UsageMsg("--compilation-os-mode            Indicate that odrefresh is running in Compilation");
+  UsageMsg("                                 OS.");
+  UsageMsg("--dalvik-cache=<DIR>             Write artifacts to .../<DIR> rather than");
+  UsageMsg("                                 .../dalvik-cache");
+  UsageMsg("--max-execution-seconds=<N>      Maximum timeout of all compilation combined");
+  UsageMsg("--max-child-process-seconds=<N>  Maximum timeout of each compilation task");
+  UsageMsg("--staging-dir=<DIR>              Write temporary artifacts to <DIR> rather than");
+  UsageMsg("                                 .../staging");
+  UsageMsg("--zygote-arch=<STRING>           Zygote kind that overrides ro.zygote");
+  UsageMsg("--system-server-compiler-filter=<STRING>");
+  UsageMsg("                                 Compiler filter that overrides");
+  UsageMsg("                                 dalvik.vm.systemservercompilerfilter");
 
   exit(EX_USAGE);
 }
@@ -232,8 +233,7 @@ int main(int argc, char** argv) {
   argv += n;
   argc -= n;
   if (argc != 1) {
-    UsageError("Expected 1 argument, but have %d.", argc);
-    exit(EX_USAGE);
+    ArgumentError("Expected 1 argument, but have %d.", argc);
   }
 
   OdrMetrics metrics(config.GetArtifactDirectory());
@@ -268,13 +268,12 @@ int main(int argc, char** argv) {
     }
     return odr.Compile(metrics,
                        CompilationOptions{
-                         .compile_boot_extensions_for_isas = config.GetBootExtensionIsas(),
-                         .system_server_jars_to_compile = odr.AllSystemServerJars(),
+                           .compile_boot_classpath_for_isas = config.GetBootClasspathIsas(),
+                           .system_server_jars_to_compile = odr.AllSystemServerJars(),
                        });
   } else if (action == "--help") {
     UsageHelp(argv[0]);
   } else {
-    UsageError("Unknown argument: ", action);
-    exit(EX_USAGE);
+    ArgumentError("Unknown argument: ", action);
   }
 }

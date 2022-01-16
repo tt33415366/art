@@ -2546,7 +2546,8 @@ void Redefiner::ClassRedefinition::UpdateMethods(art::ObjPtr<art::mirror::Class>
     linker->SetEntryPointsToInterpreter(&method);
     if (method.HasCodeItem()) {
       method.SetCodeItem(
-          dex_file_->GetCodeItem(dex_file_->FindCodeItemOffset(class_def, dex_method_idx)));
+          dex_file_->GetCodeItem(dex_file_->FindCodeItemOffset(class_def, dex_method_idx)),
+          dex_file_->IsCompactDexFile());
     }
     // Clear all the intrinsics related flags.
     method.SetNotIntrinsic();
@@ -2928,8 +2929,9 @@ void Redefiner::ClassRedefinition::UpdateClassStructurally(const RedefinitionDat
     // TODO We might be able to avoid doing this but given the rather unstructured nature of the
     // interpreter cache it's probably not worth the effort.
     art::MutexLock mu(driver_->self_, *art::Locks::thread_list_lock_);
+    art::InterpreterCache::ClearShared();
     driver_->runtime_->GetThreadList()->ForEach(
-        [](art::Thread* t) { t->GetInterpreterCache()->Clear(t); });
+        [](art::Thread* t) { t->GetInterpreterCache()->ClearThreadLocal(t); });
   }
 
   if (art::kIsDebugBuild) {

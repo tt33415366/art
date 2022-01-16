@@ -230,7 +230,7 @@ class Thread {
   void AllowThreadSuspension() REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Process pending thread suspension request and handle if pending.
-  void CheckSuspend() REQUIRES_SHARED(Locks::mutator_lock_);
+  void CheckSuspend(bool implicit = false) REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Process a pending empty checkpoint if pending.
   void CheckEmptyCheckpointFromWeakRefAccess(BaseMutex* cond_var_mutex);
@@ -367,7 +367,7 @@ class Thread {
 
   // Called when thread detected that the thread_suspend_count_ was non-zero. Gives up share of
   // mutator_lock_ and waits until it is resumed and thread_suspend_count_ is zero.
-  void FullSuspendCheck()
+  void FullSuspendCheck(bool implicit = false)
       REQUIRES(!Locks::thread_suspend_count_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -1348,10 +1348,6 @@ class Thread {
     return ThreadOffset<pointer_size>(OFFSETOF_MEMBER(Thread, interpreter_cache_));
   }
 
-  static constexpr int InterpreterCacheSizeLog2() {
-    return WhichPowerOf2(InterpreterCache::kSize);
-  }
-
   static constexpr uint32_t AllThreadFlags() {
     return enum_cast<uint32_t>(ThreadFlag::kLastFlag) |
            (enum_cast<uint32_t>(ThreadFlag::kLastFlag) - 1u);
@@ -1479,6 +1475,7 @@ class Thread {
 
   void SetUpAlternateSignalStack();
   void TearDownAlternateSignalStack();
+  void MadviseAwayAlternateSignalStack();
 
   ALWAYS_INLINE void TransitionToSuspendedAndRunCheckpoints(ThreadState new_state)
       REQUIRES(!Locks::thread_suspend_count_lock_, !Roles::uninterruptible_)
@@ -1525,7 +1522,8 @@ class Thread {
   template <bool kPrecise>
   void VisitRoots(RootVisitor* visitor) REQUIRES_SHARED(Locks::mutator_lock_);
 
-  void SweepInterpreterCache(IsMarkedVisitor* visitor) REQUIRES_SHARED(Locks::mutator_lock_);
+  static void SweepInterpreterCaches(IsMarkedVisitor* visitor)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   static bool IsAotCompiler();
 
