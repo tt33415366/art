@@ -616,10 +616,6 @@ class ClassLinker {
     return intern_table_;
   }
 
-  // Set the entrypoints up for method to the enter the interpreter.
-  void SetEntryPointsToInterpreter(ArtMethod* method) const
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
   // Set the entrypoints up for an obsolete method.
   void SetEntryPointsForObsoleteMethod(ArtMethod* method) const
       REQUIRES_SHARED(Locks::mutator_lock_);
@@ -1193,9 +1189,8 @@ class ClassLinker {
   // * kDefaultConflict - Conflicting method implementations were found when searching for
   //                      target_method. The value of *out_default_method is null.
   DefaultMethodSearchResult FindDefaultMethodImplementation(
-      Thread* self,
       ArtMethod* target_method,
-      Handle<mirror::Class> klass,
+      ObjPtr<mirror::Class> klass,
       /*out*/ArtMethod** out_default_method) const
       REQUIRES_SHARED(Locks::mutator_lock_);
 

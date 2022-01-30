@@ -546,7 +546,8 @@ class Dex2Oat final {
         check_linkage_conditions_(false),
         crash_on_linkage_violation_(false),
         compile_individually_(false),
-        profile_load_attempted_(false) {}
+        profile_load_attempted_(false),
+        should_report_dex2oat_compilation_(false) {}
 
   ~Dex2Oat() {
     // Log completion time before deleting the runtime_, because this accesses
@@ -833,7 +834,9 @@ class Dex2Oat final {
     // Set the compilation target's implicit checks options.
     switch (compiler_options_->GetInstructionSet()) {
       case InstructionSet::kArm64:
-        compiler_options_->implicit_suspend_checks_ = true;
+        // TODO: Implicit suspend checks are currently disabled to facilitate search
+        // for unrelated memory use regressions. Bug: 213757852.
+        compiler_options_->implicit_suspend_checks_ = false;
         FALLTHROUGH_INTENDED;
       case InstructionSet::kArm:
       case InstructionSet::kThumb2:
@@ -1200,6 +1203,9 @@ class Dex2Oat final {
       thread_count_ = 1;
     }
 
+    PaletteShouldReportDex2oatCompilation(&should_report_dex2oat_compilation_);
+    AssignTrueIfExists(args, M::ForcePaletteCompilationHooks, &should_report_dex2oat_compilation_);
+
     ProcessOptions(parser_options.get());
   }
 
@@ -1500,6 +1506,13 @@ class Dex2Oat final {
     if (!CreateRuntime(std::move(runtime_options))) {
       return dex2oat::ReturnCode::kCreateRuntime;
     }
+    if (runtime_->GetHeap()->GetBootImageSpaces().empty() &&
+        (IsBootImageExtension() || IsAppImage())) {
+      LOG(ERROR) << "Cannot create "
+                 << (IsBootImageExtension() ? "boot image extension" : "app image")
+                 << " without a primary boot image.";
+      return dex2oat::ReturnCode::kOther;
+    }
     ArrayRef<const DexFile* const> bcp_dex_files(runtime_->GetClassLinker()->GetBootClassPath());
     if (IsBootImage() || IsBootImageExtension()) {
       // Check boot class path dex files and, if compiling an extension, the images it depends on.
@@ -1555,6 +1568,8 @@ class Dex2Oat final {
       key_value_store_->Put(OatHeader::kCompilationReasonKey, compilation_reason_);
     }
 
+    Runtime* runtime = Runtime::Current();
+
     if (IsBootImage()) {
       // If we're compiling the boot image, store the boot classpath into the Key-Value store.
       // We use this when loading the boot image.
@@ -1562,7 +1577,6 @@ class Dex2Oat final {
     } else if (IsBootImageExtension()) {
       // Validate the boot class path and record the dependency on the loaded boot images.
       TimingLogger::ScopedTiming t3("Loading image checksum", timings_);
-      Runtime* runtime = Runtime::Current();
       std::string full_bcp = android::base::Join(runtime->GetBootClassPathLocations(), ':');
       std::string extension_part = ":" + android::base::Join(dex_locations_, ':');
       if (!android::base::EndsWith(full_bcp, extension_part)) {
@@ -1581,18 +1595,12 @@ class Dex2Oat final {
     } else {
       if (CompilerFilter::DependsOnImageChecksum(original_compiler_filter)) {
         TimingLogger::ScopedTiming t3("Loading image checksum", timings_);
-        Runtime* runtime = Runtime::Current();
         key_value_store_->Put(OatHeader::kBootClassPathKey,
                               android::base::Join(runtime->GetBootClassPathLocations(), ':'));
         ArrayRef<ImageSpace* const> image_spaces(runtime->GetHeap()->GetBootImageSpaces());
         key_value_store_->Put(
             OatHeader::kBootClassPathChecksumsKey,
             gc::space::ImageSpace::GetBootClassPathChecksums(image_spaces, bcp_dex_files));
-
-        std::string versions = apex_versions_argument_.empty()
-            ? runtime->GetApexVersions()
-            : apex_versions_argument_;
-        key_value_store_->Put(OatHeader::kApexVersionsKey, versions);
       }
 
       // Open dex files for class path.
@@ -1632,6 +1640,14 @@ class Dex2Oat final {
           class_loader_context_->EncodeContextForOatFile(classpath_dir_,
                                                          stored_class_loader_context_.get());
       key_value_store_->Put(OatHeader::kClassPathKey, class_path_key);
+    }
+
+    if (IsBootImage() ||
+        IsBootImageExtension() ||
+        CompilerFilter::DependsOnImageChecksum(original_compiler_filter)) {
+      std::string versions =
+          apex_versions_argument_.empty() ? runtime->GetApexVersions() : apex_versions_argument_;
+      key_value_store_->Put(OatHeader::kApexVersionsKey, versions);
     }
 
     // Now that we have finalized key_value_store_, start writing the .rodata section.
@@ -2392,10 +2408,9 @@ class Dex2Oat final {
 
   class ScopedDex2oatReporting {
    public:
-    explicit ScopedDex2oatReporting(const Dex2Oat& dex2oat) {
-      bool should_report = false;
-      PaletteShouldReportDex2oatCompilation(&should_report);
-      if (should_report) {
+    explicit ScopedDex2oatReporting(const Dex2Oat& dex2oat) :
+        should_report_(dex2oat.should_report_dex2oat_compilation_) {
+      if (should_report_) {
         if (dex2oat.zip_fd_ != -1) {
           zip_dup_fd_.reset(DupCloexecOrError(dex2oat.zip_fd_));
           if (zip_dup_fd_ < 0) {
@@ -2427,9 +2442,7 @@ class Dex2Oat final {
 
     ~ScopedDex2oatReporting() {
       if (!error_reporting_) {
-        bool should_report = false;
-        PaletteShouldReportDex2oatCompilation(&should_report);
-        if (should_report) {
+        if (should_report_) {
           PaletteNotifyEndDex2oatCompilation(zip_dup_fd_,
                                              image_dup_fd_,
                                              oat_dup_fd_,
@@ -2454,6 +2467,7 @@ class Dex2Oat final {
     android::base::unique_fd zip_dup_fd_;
     android::base::unique_fd image_dup_fd_;
     bool error_reporting_ = false;
+    bool should_report_;
   };
 
  private:
@@ -2939,6 +2953,9 @@ class Dex2Oat final {
 
   // Whether or we attempted to load the profile (if given).
   bool profile_load_attempted_;
+
+  // Whether PaletteNotify{Start,End}Dex2oatCompilation should be called.
+  bool should_report_dex2oat_compilation_;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(Dex2Oat);
 };
