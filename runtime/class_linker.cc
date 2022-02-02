@@ -6299,14 +6299,6 @@ ClassLinker::DefaultMethodSearchResult ClassLinker::FindDefaultMethodImplementat
           !target_name_comparator.HasSameNameAndSignature(
               current_method->GetInterfaceMethodIfProxy(image_pointer_size_))) {
         continue;
-      } else if (!current_method->IsPublic()) {
-        // The verifier should have caught the non-public method for dex version 37. Just warn and
-        // skip it since this is from before default-methods so we don't really need to care that it
-        // has code.
-        LOG(WARNING) << "Interface method " << current_method->PrettyMethod()
-                     << " is not public! "
-                     << "This will be a fatal error in subsequent versions of android. "
-                     << "Continuing anyway.";
       }
       if (UNLIKELY(chosen_iface != nullptr)) {
         // We have multiple default impls of the same method. This is a potential default conflict.
@@ -7337,8 +7329,14 @@ class ClassLinker::LinkMethodsHelper {
   }
 
   void LogNewVirtuals() const REQUIRES_SHARED(Locks::mutator_lock_) {
-    DCHECK(!klass_->IsInterface() || (default_methods_.empty() && miranda_methods_.empty()))
-        << "Interfaces should only have default-conflict methods appended to them.";
+    if (kIsDebugBuild && klass_->IsInterface()) {
+      // Interfaces should only have default-conflict methods appended to them.
+      // There is also nothing to override in interfaces as they do not have a vtable.
+      CHECK(overriding_default_conflict_methods_.empty());
+      CHECK(miranda_methods_.empty());
+      CHECK(default_methods_.empty());
+      CHECK(overriding_default_methods_.empty());
+    }
     VLOG(class_linker) << mirror::Class::PrettyClass(klass_.Get()) << ": miranda_methods="
                        << miranda_methods_.size()
                        << " default_methods=" << default_methods_.size()
@@ -7517,13 +7515,14 @@ ArtMethod* ClassLinker::LinkMethodsHelper<kPointerSize>::FindOrCreateImplementat
           // cannot reuse another classes.
           // Create a new conflict method for this to use.
           default_conflict_method = reinterpret_cast<ArtMethod*>(allocator_.Alloc(kMethodSize));
-          new(default_conflict_method) ArtMethod(interface_method,
-                                                 class_linker_->GetImagePointerSize());
+          new(default_conflict_method) ArtMethod(interface_method, kPointerSize);
           if (vtable_impl == nullptr) {
             // Save the conflict method. We need to add it to the vtable.
             default_conflict_methods_.push_back(default_conflict_method);
           } else {
             // Save the conflict method but it is already in the vtable.
+            DCHECK(!klass_->IsInterface()) << klass_->PrettyDescriptor()
+                << " vm: " << (vtable_impl != nullptr ? vtable_impl->PrettyMethod() : "<null>");
             overriding_default_conflict_methods_.push_back(default_conflict_method);
           }
         }
@@ -7535,7 +7534,8 @@ ArtMethod* ClassLinker::LinkMethodsHelper<kPointerSize>::FindOrCreateImplementat
       DCHECK(current_method != nullptr);
       // Found a default method.
       if (vtable_impl != nullptr &&
-          current_method->GetDeclaringClass() == vtable_impl->GetDeclaringClass()) {
+          current_method->GetDeclaringClass() == vtable_impl->GetDeclaringClass() &&
+          !vtable_impl->IsDefaultConflicting()) {
         // We found a default method but it was the same one we already have from our
         // superclass. Don't bother adding it to our vtable again.
         current_method = vtable_impl;
@@ -7591,7 +7591,7 @@ ArtMethod* ClassLinker::LinkMethodsHelper<kPointerSize>::GetOrCreateMirandaMetho
     miranda_method = reinterpret_cast<ArtMethod*>(allocator_.Alloc(kMethodSize));
     CHECK(miranda_method != nullptr);
     // Point the interface table at a phantom slot.
-    new(miranda_method) ArtMethod(interface_method, class_linker_->GetImagePointerSize());
+    new(miranda_method) ArtMethod(interface_method, kPointerSize);
     miranda_methods_.push_back(miranda_method);
   }
   return miranda_method;
@@ -8014,6 +8014,14 @@ bool ClassLinker::LinkMethodsHelper<kPointerSize>::LinkMethods(
                                 m->PrettyMethod().c_str());
           return false;
         }
+        if (!m->IsPublic()) {
+          // The verifier should have caught the non-public method for dex version 37.
+          // Just warn and skip it since this is from before default-methods so we don't
+          // really need to care that it has code.
+          LOG(WARNING) << "Default interface method " << m->PrettyMethod() << " is not public! "
+                       << "This will be a fatal error in subsequent versions of android. "
+                       << "Continuing anyway.";
+        }
         m->SetAccessFlags(m->GetAccessFlags() | kAccDefault);
         has_defaults = true;
       }
@@ -8322,7 +8330,7 @@ bool ClassLinker::LinkMethodsHelper<kPointerSize>::LinkInterfaceMethods(
                   vtable_method->PrettyMethod().c_str(),
                   interface_method->PrettyMethod().c_str());
               return false;
-            } else if (UNLIKELY(vtable_method->IsOverridableByDefaultMethod())) {
+            } else if (!is_interface && UNLIKELY(vtable_method->IsOverridableByDefaultMethod())) {
               // We might have a newer, better, default method for this, so we just skip it. If we
               // are still using this we will select it again when scanning for default methods. To
               // obviate the need to copy the method again we will make a note that we already found
@@ -8389,7 +8397,7 @@ bool ClassLinker::LinkMethodsHelper<kPointerSize>::LinkInterfaceMethods(
         ArtMethod* current_method = FindOrCreateImplementationMethod(
             interface_method, interface_name_comparator, vtable_impl);
         if (LIKELY(fill_tables)) {
-          if (current_method == nullptr && !super_interface) {
+          if (current_method == nullptr && (!super_interface || !vtable_impl->IsMiranda())) {
             // We could not find an implementation for this method and since it is a brand new
             // interface we searched the entire vtable (and all default methods) for an
             // implementation but couldn't find one. We therefore need to make a miranda method.
