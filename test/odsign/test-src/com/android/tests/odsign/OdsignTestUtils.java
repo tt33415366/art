@@ -50,6 +50,10 @@ public class OdsignTestUtils {
 
     private static final Duration BOOT_COMPLETE_TIMEOUT = Duration.ofMinutes(2);
 
+    private static final String TAG = "OdsignTestUtils";
+    private static final String WAS_ADB_ROOT_KEY = TAG + ":WAS_ADB_ROOT";
+    private static final String ADB_ROOT_ENABLED_KEY = TAG + ":ADB_ROOT_ENABLED";
+
     private final InstallUtilsHost mInstallUtils;
     private final TestInformation mTestInfo;
 
@@ -63,14 +67,12 @@ public class OdsignTestUtils {
         assumeTrue("Updating APEX is not supported", mInstallUtils.isApexUpdateSupported());
         mInstallUtils.installApexes(APEX_FILENAME);
         removeCompilationLogToAvoidBackoff();
-        reboot();
     }
 
     public void uninstallTestApex() throws Exception {
         ApexInfo apex = mInstallUtils.getApexInfo(mInstallUtils.getTestFile(APEX_FILENAME));
         mTestInfo.getDevice().uninstallPackage(apex.name);
         removeCompilationLogToAvoidBackoff();
-        reboot();
     }
 
     public Set<String> getMappedArtifacts(String pid, String grepPattern) throws Exception {
@@ -106,7 +108,7 @@ public class OdsignTestUtils {
         final String zygotePid = result.getStdout().trim().split("\\s+")[0];
         assertTrue(!zygotePid.isEmpty());
 
-        final String grepPattern = ART_APEX_DALVIK_CACHE_DIRNAME + ".*boot-framework";
+        final String grepPattern = ART_APEX_DALVIK_CACHE_DIRNAME + ".*boot";
         return Optional.of(getMappedArtifacts(zygotePid, grepPattern));
     }
 
@@ -142,5 +144,39 @@ public class OdsignTestUtils {
         boolean success =
                 mTestInfo.getDevice().waitForBootComplete(BOOT_COMPLETE_TIMEOUT.toMillis());
         assertWithMessage("Device didn't boot in %s", BOOT_COMPLETE_TIMEOUT).that(success).isTrue();
+    }
+
+    /**
+     * Enables adb root or skips the test if adb root is not supported.
+     */
+    public void enableAdbRootOrSkipTest() throws Exception {
+        setBoolean(WAS_ADB_ROOT_KEY, mTestInfo.getDevice().isAdbRoot());
+        boolean adbRootEnabled = mTestInfo.getDevice().enableAdbRoot();
+        assumeTrue("ADB root failed and required to get process maps", adbRootEnabled);
+        setBoolean(ADB_ROOT_ENABLED_KEY, adbRootEnabled);
+    }
+
+    /**
+     * Restores the device to the state before {@link enableAdbRootOrSkipTest} was called.
+     */
+    public void restoreAdbRoot() throws Exception {
+        if (getBooleanOrDefault(ADB_ROOT_ENABLED_KEY) && !getBooleanOrDefault(WAS_ADB_ROOT_KEY)) {
+            mTestInfo.getDevice().disableAdbRoot();
+        }
+    }
+
+    /**
+     * Returns the value of a boolean test property, or false if it does not exist.
+     */
+    private boolean getBooleanOrDefault(String key) {
+        String value = mTestInfo.properties().get(key);
+        if (value == null) {
+            return false;
+        }
+        return Boolean.parseBoolean(value);
+    }
+
+    private void setBoolean(String key, boolean value) {
+        mTestInfo.properties().put(key, Boolean.toString(value));
     }
 }
