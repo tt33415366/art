@@ -99,13 +99,7 @@ void CommonRuntimeTestImpl::SetUp() {
   options.push_back(std::make_pair(boot_class_path_string, nullptr));
   options.push_back(std::make_pair(boot_class_path_locations_string, nullptr));
   if (use_boot_image_) {
-    std::string image_location = GetImageLocation();
-    if (!IsHost()) {
-      // On target, the boot image can be outdated due to an ART update. In such case, the profile
-      // will be used for generating a boot image in memory.
-      image_location += "!/apex/com.android.art/etc/boot-image.prof";
-    }
-    options.emplace_back("-Ximage:" + image_location, nullptr);
+    options.emplace_back("-Ximage:" + GetImageLocation(), nullptr);
   }
   options.push_back(std::make_pair("-Xcheck:jni", nullptr));
   options.push_back(std::make_pair(min_heap_string, nullptr));
@@ -460,6 +454,7 @@ bool CommonRuntimeTestImpl::CompileBootImage(const std::vector<std::string>& ext
     "-Xmx64m",
     "--runtime-arg",
     "-Xverify:softfail",
+    "--force-determinism",
   };
   CHECK_EQ(dex_files.size(), dex_locations.size());
   for (const std::string& dex_file : dex_files) {
