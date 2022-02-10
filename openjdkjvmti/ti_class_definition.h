@@ -50,7 +50,7 @@ namespace openjdkjvmti {
 class ArtClassDefinition {
  public:
   // If we support doing a on-demand dex-dequickening using signal handlers.
-  static constexpr bool kEnableOnDemandDexDequicken = false;
+  static constexpr bool kEnableOnDemandDexDequicken = true;
 
   ArtClassDefinition()
       : klass_(nullptr),
@@ -65,7 +65,6 @@ class ArtClassDefinition {
         current_dex_memory_(),
         current_dex_file_(),
         redefined_(false),
-        from_class_ext_(false),
         initialized_(false),
         structural_transform_update_(false) {}
 
@@ -156,10 +155,7 @@ class ArtClassDefinition {
 
  private:
   jvmtiError InitCommon(art::Thread* self, jclass klass);
-
-  template<typename GetOriginalDexFile>
-  jvmtiError InitWithDex(GetOriginalDexFile get_original, const art::DexFile* quick_dex)
-      REQUIRES_SHARED(art::Locks::mutator_lock_);
+  jvmtiError Init(const art::DexFile& dex_file);
 
   jclass klass_;
   jobject loader_;
@@ -190,9 +186,6 @@ class ArtClassDefinition {
   art::ArrayRef<const unsigned char> current_dex_file_;
 
   bool redefined_;
-
-  // If we got the initial dex_data_ from a class_ext
-  bool from_class_ext_;
 
   bool initialized_;
 

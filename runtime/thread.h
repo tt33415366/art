@@ -1302,11 +1302,13 @@ class Thread {
   void InitStringEntryPoints();
 
   void ModifyDebugDisallowReadBarrier(int8_t delta) {
-    debug_disallow_read_barrier_ += delta;
+    if (kCheckDebugDisallowReadBarrierCount) {
+      debug_disallow_read_barrier_ += delta;
+    }
   }
 
   uint8_t GetDebugDisallowReadBarrierCount() const {
-    return debug_disallow_read_barrier_;
+    return kCheckDebugDisallowReadBarrierCount ? debug_disallow_read_barrier_ : 0u;
   }
 
   // Gets the current TLSData associated with the key or nullptr if there isn't any. Note that users
@@ -1545,6 +1547,8 @@ class Thread {
 
   void ReleaseLongJumpContextInternal();
 
+  void SetCachedThreadName(const char* name);
+
   // Helper class for manipulating the 32 bits of atomically changed state and flags.
   class StateAndFlags {
    public:
@@ -1690,7 +1694,8 @@ class Thread {
           user_code_suspend_count(0),
           force_interpreter_count(0),
           make_visibly_initialized_counter(0),
-          define_class_counter(0) {}
+          define_class_counter(0),
+          num_name_readers(0) {}
 
     // The state and flags field must be changed atomically so that flag values aren't lost.
     // See `StateAndFlags` for bit assignments of `ThreadFlag` and `ThreadState` values.
@@ -1779,6 +1784,11 @@ class Thread {
     // Counter for how many nested define-classes are ongoing in this thread. Used to allow waiting
     // for threads to be done with class-definition work.
     uint32_t define_class_counter;
+
+    // A count of the number of readers of tlsPtr_.name that may still be looking at a string they
+    // retrieved.
+    mutable std::atomic<uint32_t> num_name_readers;
+    static_assert(std::atomic<uint32_t>::is_always_lock_free);
   } tls32_;
 
   struct PACKED(8) tls_64bit_sized_values {
@@ -1924,8 +1934,11 @@ class Thread {
     // set local values there first.
     FrameIdToShadowFrame* frame_id_to_shadow_frame;
 
-    // A cached copy of the java.lang.Thread's name.
-    std::string* name;
+    // A cached copy of the java.lang.Thread's (modified UTF-8) name.
+    // If this is not null or kThreadNameDuringStartup, then it owns the malloc memory holding
+    // the string. Updated in an RCU-like manner.
+    std::atomic<const char*> name;
+    static_assert(std::atomic<const char*>::is_always_lock_free);
 
     // A cached pthread_t for the pthread underlying this Thread*.
     pthread_t pthread_self;
