@@ -19,9 +19,6 @@ package com.android.tests.odsign;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeTrue;
 
 import com.android.tradefed.device.DeviceNotAvailableException;
@@ -29,23 +26,12 @@ import com.android.tradefed.device.ITestDevice;
 import com.android.tradefed.invoker.TestInformation;
 import com.android.tradefed.testtype.DeviceJUnit4ClassRunner;
 import com.android.tradefed.testtype.junit4.AfterClassWithInfo;
-import com.android.tradefed.testtype.junit4.BaseHostJUnit4Test;
 import com.android.tradefed.testtype.junit4.BeforeClassWithInfo;
-import com.android.tradefed.testtype.junit4.DeviceTestRunOptions;
-import com.android.tradefed.util.CommandResult;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import java.util.Arrays;
-import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * Test to check if CompOS works properly.
@@ -56,51 +42,36 @@ import java.util.stream.Stream;
 @RunWith(DeviceJUnit4ClassRunner.class)
 public class CompOsSigningHostTest extends ActivationTest {
 
-    private static final String COMPOSD_CMD_BIN = "/apex/com.android.compos/bin/composd_cmd";
-    private static final String PENDING_ARTIFACTS_DIR =
-            "/data/misc/apexdata/com.android.art/compos-pending";
-
-    /** odrefresh is currently hard-coded to fail if it does not complete in 300 seconds. */
-    private static final int ODREFRESH_MAX_SECONDS = 300;
-
-    /** Waiting time before starting to check odrefresh progress. */
-    private static final int SECONDS_BEFORE_PROGRESS_CHECK = 30;
-
-    /** Job ID of the pending compilation with staged APEXes. */
-    private static final String JOB_ID = "5132251";
-
     private static final String ORIGINAL_CHECKSUMS_KEY = "compos_test_orig_checksums";
     private static final String PENDING_CHECKSUMS_KEY = "compos_test_pending_checksums";
+    private static final String TIMESTAMP_VM_START_KEY = "compos_test_timestamp_vm_start";
+    private static final String TIMESTAMP_REBOOT_KEY = "compos_test_timestamp_reboot";
 
     @BeforeClassWithInfo
     public static void beforeClassWithDevice(TestInformation testInfo) throws Exception {
         ITestDevice device = testInfo.getDevice();
+        OdsignTestUtils testUtils = new OdsignTestUtils(testInfo);
+        CompOsTestUtils compOsTestUtils = new CompOsTestUtils(device);
 
-        assumeCompOsPresent(device);
+        compOsTestUtils.assumeCompOsPresent();
 
         testInfo.properties().put(ORIGINAL_CHECKSUMS_KEY,
-                checksumDirectoryContentPartial(device,
-                    "/data/misc/apexdata/com.android.art/dalvik-cache/"));
+                compOsTestUtils.checksumDirectoryContentPartial(
+                        OdsignTestUtils.ART_APEX_DALVIK_CACHE_DIRNAME));
 
-        OdsignTestUtils testUtils = new OdsignTestUtils(testInfo);
         testUtils.installTestApex();
 
-        // Once the test APK is installed, a CompilationJob is scheduled to run when certain
-        // criteria are met, e.g. the device is charging and idle. Since we don't want to wait in
-        // the test, here we start the job by ID immediately.
-        assertCommandSucceeds(device, "cmd jobscheduler run android " + JOB_ID);
-        // It takes time. Just don't spam.
-        TimeUnit.SECONDS.sleep(SECONDS_BEFORE_PROGRESS_CHECK);
-        // The job runs asynchronously. To wait until it completes.
-        waitForJobExit(device, ODREFRESH_MAX_SECONDS - SECONDS_BEFORE_PROGRESS_CHECK);
+        testInfo.properties().put(TIMESTAMP_VM_START_KEY,
+                        String.valueOf(testUtils.getCurrentTimeMs()));
 
-        // Checks the output validity, then store the hashes of pending files.
-        assertThat(device.getChildren(PENDING_ARTIFACTS_DIR)).asList().containsAtLeast(
-                "cache-info.xml", "compos.info", "compos.info.signature");
+        compOsTestUtils.runCompilationJobEarlyAndWait();
+
         testInfo.properties().put(PENDING_CHECKSUMS_KEY,
-                checksumDirectoryContentPartial(device,
-                    "/data/misc/apexdata/com.android.art/compos-pending/"));
+                compOsTestUtils.checksumDirectoryContentPartial(
+                        CompOsTestUtils.PENDING_ARTIFACTS_DIR));
 
+        testInfo.properties().put(TIMESTAMP_REBOOT_KEY,
+                        String.valueOf(testUtils.getCurrentTimeMs()));
         testUtils.reboot();
     }
 
@@ -114,8 +85,9 @@ public class CompOsSigningHostTest extends ActivationTest {
 
     @Test
     public void checkFileChecksums() throws Exception {
-        String actualChecksums = checksumDirectoryContentPartial(getDevice(),
-                "/data/misc/apexdata/com.android.art/dalvik-cache/");
+        CompOsTestUtils compOsTestUtils = new CompOsTestUtils(getDevice());
+        String actualChecksums = compOsTestUtils.checksumDirectoryContentPartial(
+                OdsignTestUtils.ART_APEX_DALVIK_CACHE_DIRNAME);
 
         String pendingChecksums = getTestInformation().properties().get(PENDING_CHECKSUMS_KEY);
         assertThat(actualChecksums).isEqualTo(pendingChecksums);
@@ -125,59 +97,26 @@ public class CompOsSigningHostTest extends ActivationTest {
         assertThat(actualChecksums).isNotEqualTo(originalChecksums);
     }
 
-    @Ignore("Override base class. Need to handle compilation log. b/208446270")
-    public void verifyGeneratedArtifactsLoaded() {}
+    @Test
+    public void checkFileCreationTimeAfterVmStartAndBeforeReboot() throws Exception {
+        OdsignTestUtils testUtils = new OdsignTestUtils(getTestInformation());
 
-    private static String checksumDirectoryContentPartial(ITestDevice device, String path)
-            throws Exception {
-        // Sort by filename (second column) to make comparison easier.
-        // Filter out compos.info* (which will be deleted at boot) and cache-info.xm
-        // compos.info.signature since it's only generated by CompOS.
-        // TODO(b/210473615): Remove irrelevant APEXes (i.e. those aren't contributing to the
-        // classpaths, thus not in the VM) from cache-info.xml.
-        return assertCommandSucceeds(device, "cd " + path + "; find -type f -exec sha256sum {} \\;"
-                + "| grep -v cache-info.xml | grep -v compos.info"
-                + "| sort -k2");
-    }
+        // No files are created before our VM starts.
+        int numFiles = testUtils.countFilesCreatedBeforeTime(
+                OdsignTestUtils.ART_APEX_DALVIK_CACHE_DIRNAME,
+                Long.parseLong(getTestInformation().properties().get(TIMESTAMP_VM_START_KEY)));
+        assertThat(numFiles).isEqualTo(0);
 
-    private static String assertCommandSucceeds(ITestDevice device, String command)
-            throws DeviceNotAvailableException {
-        CommandResult result = device.executeShellV2Command(command);
-        assertWithMessage(result.toString()).that(result.getExitCode()).isEqualTo(0);
-        return result.getStdout();
-    }
+        // (All) Files are created after our VM starts.
+        numFiles = testUtils.countFilesCreatedAfterTime(
+                OdsignTestUtils.ART_APEX_DALVIK_CACHE_DIRNAME,
+                Long.parseLong(getTestInformation().properties().get(TIMESTAMP_VM_START_KEY)));
+        assertThat(numFiles).isGreaterThan(0);
 
-    private static void waitForJobExit(ITestDevice device, int timeout)
-            throws Exception {
-        boolean started = false;
-        for (int i = 0; i < timeout; i++) {
-            CommandResult result = device.executeShellV2Command(
-                    "cmd jobscheduler get-job-state android " + JOB_ID);
-            String state = result.getStdout().toString();
-            if (state.contains("ready") || state.contains("active")) {
-                started = true;
-                TimeUnit.SECONDS.sleep(1);
-            } else if (state.startsWith("unknown")) {
-                if (!started) {
-                    // It's likely that the job hasn't been scheduled. So try again.
-                    TimeUnit.SECONDS.sleep(1);
-                    continue;
-                } else {
-                    // Job has completed
-                    return;
-                }
-            } else {
-                fail("Failing due to unexpected job state: " + result);
-            }
-        }
-        fail("Timed out waiting for the job to complete");
-    }
-
-    public static void assumeCompOsPresent(ITestDevice device) throws Exception {
-        // We have to have kernel support for a VM.
-        assumeTrue(device.doesFileExist("/dev/kvm"));
-
-        // And the CompOS APEX must be present.
-        assumeTrue(device.doesFileExist("/apex/com.android.compos/"));
+        // No files are created after reboot.
+        numFiles = testUtils.countFilesCreatedAfterTime(
+                OdsignTestUtils.ART_APEX_DALVIK_CACHE_DIRNAME,
+                Long.parseLong(getTestInformation().properties().get(TIMESTAMP_REBOOT_KEY)));
+        assertThat(numFiles).isEqualTo(0);
     }
 }
