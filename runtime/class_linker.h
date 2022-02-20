@@ -766,6 +766,10 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
+  void AppendToBootClassPath(const DexFile* dex_file, ObjPtr<mirror::DexCache> dex_cache)
+      REQUIRES_SHARED(Locks::mutator_lock_)
+      REQUIRES(!Locks::dex_lock_);
+
   // Visit all of the class loaders in the class linker.
   void VisitClassLoaders(ClassLoaderVisitor* visitor) const
       REQUIRES_SHARED(Locks::classlinker_classes_lock_, Locks::mutator_lock_);
@@ -960,10 +964,6 @@ class ClassLinker {
                                          Handle<mirror::ClassLoader> class_loader)
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_, !Roles::uninterruptible_);
-
-  void AppendToBootClassPath(const DexFile* dex_file, ObjPtr<mirror::DexCache> dex_cache)
-      REQUIRES_SHARED(Locks::mutator_lock_)
-      REQUIRES(!Locks::dex_lock_);
 
   // Precomputes size needed for Class, in the case of a non-temporary class this size must be
   // sufficient to hold all static fields.
@@ -1261,12 +1261,6 @@ class ClassLinker {
                           bool ignore_copied_methods,
                           /*out*/bool* new_conflict,
                           /*out*/ArtMethod** imt) REQUIRES_SHARED(Locks::mutator_lock_);
-
-  void FillImtFromSuperClass(Handle<mirror::Class> klass,
-                             ArtMethod* unimplemented_method,
-                             ArtMethod* imt_conflict_method,
-                             bool* new_conflict,
-                             ArtMethod** imt) REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Check invoke type against the referenced class. Throws IncompatibleClassChangeError
   // (if `kThrowOnError`) and returns true on mismatch (kInterface on a non-interface class,
