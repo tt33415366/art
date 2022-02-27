@@ -56,8 +56,8 @@ public class OdsignTestUtils {
     private static final String ODREFRESH_COMPILATION_LOG =
             "/data/misc/odrefresh/compilation-log.txt";
 
-    private static final Duration BOOT_COMPLETE_TIMEOUT = Duration.ofMinutes(2);
-    private static final Duration RESTART_ZYGOTE_COMPLETE_TIMEOUT = Duration.ofMinutes(1);
+    private static final Duration BOOT_COMPLETE_TIMEOUT = Duration.ofMinutes(5);
+    private static final Duration RESTART_ZYGOTE_COMPLETE_TIMEOUT = Duration.ofMinutes(3);
 
     private static final String TAG = "OdsignTestUtils";
     private static final String WAS_ADB_ROOT_KEY = TAG + ":WAS_ADB_ROOT";
@@ -82,17 +82,18 @@ public class OdsignTestUtils {
         String packagesOutput =
                 mTestInfo.getDevice().executeShellCommand("pm list packages -f --apex-only");
         Pattern p = Pattern.compile(
-                "^package:(.*)=com(\\.google)?\\.android\\.art$", Pattern.MULTILINE);
+                "^package:(.*)=(com(?:\\.google)?\\.android\\.art)$", Pattern.MULTILINE);
         Matcher m = p.matcher(packagesOutput);
         assertTrue("ART module not found. Packages are:\n" + packagesOutput, m.find());
         String artApexPath = m.group(1);
+        String artApexName = m.group(2);
 
-        File artApexFile = mTestInfo.getDevice().pullFile(artApexPath);
-        String installResult = mTestInfo.getDevice().installPackage(artApexFile, false);
-        assertNull("Failed to install APEX. Reason: " + installResult, installResult);
+        CommandResult result = mTestInfo.getDevice().executeShellV2Command(
+                "pm install --apex " + artApexPath);
+        assertWithMessage("Failed to install APEX. Reason: " + result.toString())
+            .that(result.getExitCode()).isEqualTo(0);
 
-        ApexInfo apex = mInstallUtils.getApexInfo(artApexFile);
-        mTestInfo.properties().put(PACKAGE_NAME_KEY, apex.name);
+        mTestInfo.properties().put(PACKAGE_NAME_KEY, artApexName);
 
         removeCompilationLogToAvoidBackoff();
     }
