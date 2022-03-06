@@ -1217,6 +1217,9 @@
       "name": "art-run-test-963-default-range-smali[com.google.android.art.apex]"
     },
     {
+      "name": "art_libnativebridge_cts_tests[com.google.android.art.apex]"
+    },
+    {
       "name": "art_standalone_cmdline_tests[com.google.android.art.apex]"
     },
     {
@@ -1269,6 +1272,9 @@
     },
     {
       "name": "art_standalone_sigchain_tests[com.google.android.art.apex]"
+    },
+    {
+      "name": "libnativeloader_test[com.google.android.art.apex]"
     }
   ],
   "presubmit": [
@@ -2500,6 +2506,9 @@
       "name": "art-run-test-963-default-range-smali"
     },
     {
+      "name": "art_libnativebridge_cts_tests"
+    },
+    {
       "name": "art_standalone_cmdline_tests"
     },
     {
@@ -2555,6 +2564,9 @@
     },
     {
       "name": "art_standalone_sigchain_tests"
+    },
+    {
+      "name": "libnativeloader_test"
     }
   ]
 }
