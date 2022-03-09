@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,21 @@
  * limitations under the License.
  */
 
-public class Main {
-  public static void main(String[] args) throws Exception {
-    try {
-      new Unbalanced().unbalanced();
-      throw new Error("Expected IllegalMonitorStateException");
-    } catch (IllegalMonitorStateException expected) {
-    }
-  }
+#include "odr_common.h"
+
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+
+namespace art {
+namespace odrefresh {
+
+TEST(OdrCommonTest, ShouldDisableRefresh) {
+  EXPECT_TRUE(ShouldDisableRefresh("32"));
+  EXPECT_TRUE(ShouldDisableRefresh("33"));
+  EXPECT_FALSE(ShouldDisableRefresh("31"));
+  EXPECT_FALSE(ShouldDisableRefresh(""));
+  EXPECT_FALSE(ShouldDisableRefresh("invalid"));
 }
+
+}  // namespace odrefresh
+}  // namespace art
