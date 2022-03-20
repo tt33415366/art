@@ -263,8 +263,9 @@ class BitMemoryRegion final : public ValueObject {
   // Returns `true` if the iteration visited all chunks successfully, i.e. none of the
   // calls to `visitor(offset, num_bits, value)` returned `false`; otherwise `false`.
   template <typename VisitorType>
-  ALWAYS_INLINE
-  bool VisitChunks(VisitorType&& visitor) const {
+  ATTRIBUTE_NO_SANITIZE_ADDRESS  // We might touch extra bytes due to the alignment.
+  ATTRIBUTE_NO_SANITIZE_HWADDRESS  // The hwasan uses different attribute.
+  ALWAYS_INLINE bool VisitChunks(VisitorType&& visitor) const {
     constexpr size_t kChunkSize = BitSizeOf<size_t>();
     size_t remaining_bits = bit_size_;
     if (remaining_bits == 0) {
