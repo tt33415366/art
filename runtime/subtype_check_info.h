@@ -18,7 +18,6 @@
 #define ART_RUNTIME_SUBTYPE_CHECK_INFO_H_
 
 #include "base/bit_string.h"
-#include "base/logging.h"
 #include "subtype_check_bits.h"
 
 // Forward-declare for testing purposes.
@@ -281,9 +280,9 @@ struct SubtypeCheckInfo {
     // Either Assigned or Initialized.
     BitString path_to_root = GetPathToRoot();
 
-    DCHECK_IMPLIES(HasNext(), GetNext() != 0u)
-        << "Expected (Assigned|Initialized) state to have >0 Next value: " << GetNext()
-        << " path: " << path_to_root;
+    DCHECK(!HasNext() || GetNext() != 0u)
+        << "Expected (Assigned|Initialized) state to have >0 Next value: "
+        << GetNext() << " path: " << path_to_root;
 
     if (path_to_root.Length() == depth_) {
       return kAssigned;
