@@ -260,6 +260,11 @@ class Instrumentation {
   bool IsDeoptimized(ArtMethod* method)
       REQUIRES(!GetDeoptimizedMethodsLock()) REQUIRES_SHARED(Locks::mutator_lock_);
 
+  // Indicates if any method needs to be deoptimized. This is used to avoid walking the stack to
+  // determine if a deoptimization is required.
+  bool IsDeoptimizedMethodsEmpty() const
+      REQUIRES(!GetDeoptimizedMethodsLock()) REQUIRES_SHARED(Locks::mutator_lock_);
+
   // Enable method tracing by installing instrumentation entry/exit stubs or interpreter.
   void EnableMethodTracing(const char* key,
                            bool needs_interpreter = kDeoptimizeForAccurateMethodEntryExitListeners)
@@ -371,12 +376,11 @@ class Instrumentation {
     return have_exception_handled_listeners_;
   }
 
-  bool IsActive() const REQUIRES_SHARED(Locks::mutator_lock_) {
-    return have_dex_pc_listeners_ || have_method_entry_listeners_ || have_method_exit_listeners_ ||
-        have_field_read_listeners_ || have_field_write_listeners_ ||
-        have_exception_thrown_listeners_ || have_method_unwind_listeners_ ||
-        have_branch_listeners_ || have_watched_frame_pop_listeners_ ||
-        have_exception_handled_listeners_;
+  bool NeedsSlowInterpreterForListeners() const REQUIRES_SHARED(Locks::mutator_lock_) {
+    return have_field_read_listeners_ ||
+           have_field_write_listeners_ ||
+           have_watched_frame_pop_listeners_ ||
+           have_exception_handled_listeners_;
   }
 
   // Inform listeners that a method has been entered. A dex PC is provided as we may install
@@ -574,6 +578,10 @@ class Instrumentation {
                !Locks::thread_list_lock_,
                !Locks::classlinker_classes_lock_);
 
+  // If there are no pending deoptimizations restores the stack to the normal state by updating the
+  // return pcs to actual return addresses from the instrumentation stack and clears the
+  // instrumentation stack.
+  void MaybeRestoreInstrumentationStack() REQUIRES(Locks::mutator_lock_);
 
   // No thread safety analysis to get around SetQuickAllocEntryPointsInstrumented requiring
   // exclusive access to mutator lock which you can't get if the runtime isn't started.
@@ -619,7 +627,7 @@ class Instrumentation {
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(GetDeoptimizedMethodsLock());
   ArtMethod* BeginDeoptimizedMethod()
       REQUIRES_SHARED(Locks::mutator_lock_, GetDeoptimizedMethodsLock());
-  bool IsDeoptimizedMethodsEmpty() const
+  bool IsDeoptimizedMethodsEmptyLocked() const
       REQUIRES_SHARED(Locks::mutator_lock_, GetDeoptimizedMethodsLock());
   void UpdateMethodsCodeImpl(ArtMethod* method, const void* new_code)
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!GetDeoptimizedMethodsLock());
@@ -738,13 +746,11 @@ struct InstrumentationStackFrame {
   InstrumentationStackFrame(mirror::Object* this_object,
                             ArtMethod* method,
                             uintptr_t return_pc,
-                            size_t frame_id,
                             bool interpreter_entry,
                             uint64_t force_deopt_id)
       : this_object_(this_object),
         method_(method),
         return_pc_(return_pc),
-        frame_id_(frame_id),
         interpreter_entry_(interpreter_entry),
         force_deopt_id_(force_deopt_id) {
   }
@@ -754,7 +760,6 @@ struct InstrumentationStackFrame {
   mirror::Object* this_object_;
   ArtMethod* method_;
   uintptr_t return_pc_;
-  size_t frame_id_;
   bool interpreter_entry_;
   uint64_t force_deopt_id_;
 };

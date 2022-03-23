@@ -316,12 +316,7 @@ END \name
     beq NterpHandleHotnessOverflow
     add r2, r2, #-1
     strh r2, [r0, #ART_METHOD_HOTNESS_COUNT_OFFSET]
-    // Otherwise, do a suspend check.
-    ldr r0, [rSELF, #THREAD_FLAGS_OFFSET]
-    tst r0, #THREAD_SUSPEND_OR_CHECKPOINT_REQUEST
-    beq 1b
-    EXPORT_PC
-    bl    art_quick_test_suspend
+    DO_SUSPEND_CHECK continue_label=1b
     b 1b
 .endm
 
@@ -455,25 +450,22 @@ END \name
     ldr r0, [sp]
     ldrh r2, [r0, #ART_METHOD_HOTNESS_COUNT_OFFSET]
     cmp r2, #NTERP_HOTNESS_VALUE
-    beq 2f
+    beq 3f
     add r2, r2, #-1
     strh r2, [r0, #ART_METHOD_HOTNESS_COUNT_OFFSET]
-    ldr r0, [rSELF, #THREAD_FLAGS_OFFSET]
-    tst r0, #THREAD_SUSPEND_OR_CHECKPOINT_REQUEST
-    bne 3f
 1:
+    DO_SUSPEND_CHECK continue_label=2f
+2:
     FETCH_INST
     GET_INST_OPCODE ip
     GOTO_OPCODE ip
-2:
+3:
+    CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=4f, if_not_hot=1b
+4:
     mov r1, #0
     mov r2, rFP
     bl nterp_hot_method
-    b 1b
-3:
-    EXPORT_PC
-    bl art_quick_test_suspend
-    b 1b
+    b 2b
 .endm
 
 .macro SPILL_ALL_CALLEE_SAVES
@@ -1483,19 +1475,6 @@ END \name
    LDREXD_STREXD_LOOP \addr, \tmp1, \tmp2, \store1, \store2, \tmp1, \label
 .endm
 
-// Fetch some information from the thread cache.
-// Uses ip and lr as temporaries.
-.macro FETCH_FROM_THREAD_CACHE dest_reg, slow_path
-   add      ip, rSELF, #THREAD_INTERPRETER_CACHE_OFFSET       // cache address
-   ubfx     lr, rPC, #2, #THREAD_INTERPRETER_CACHE_SIZE_LOG2  // entry index
-   add      ip, ip, lr, lsl #3             // entry address within the cache
-   // In T32, we would use `ldrd ip, \dest_reg, [ip]`
-   ldr      \dest_reg, [ip, #4]            // value (offset)
-   ldr      ip, [ip]                       // entry key (pc)
-   cmp      ip, rPC
-   bne \slow_path
-.endm
-
 // Puts the next int/long/object parameter passed in physical register
 // in the expected dex register array entry, and in case of object in the
 // expected reference array entry.
@@ -1596,6 +1575,28 @@ END \name
     add \arg_offset, \arg_offset, #4
     bne 1b
 .endm
+
+.macro DO_SUSPEND_CHECK continue_label
+    // Otherwise, do a suspend check.
+    ldr ip, [rSELF, #THREAD_FLAGS_OFFSET]
+    tst ip, #THREAD_SUSPEND_OR_CHECKPOINT_REQUEST
+    beq \continue_label
+    EXPORT_PC
+    bl    art_quick_test_suspend
+.endm
+
+.macro CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot, if_not_hot
+    ldr ip, [r0, #ART_METHOD_ACCESS_FLAGS_OFFSET]
+    tst ip, #ART_METHOD_IS_MEMORY_SHARED_FLAG
+    beq \if_hot
+    ldr ip, [rSELF, #THREAD_SHARED_METHOD_HOTNESS_OFFSET]
+    cmp ip, #0
+    beq \if_hot
+    add ip, ip, #-1
+    str ip, [rSELF, #THREAD_SHARED_METHOD_HOTNESS_OFFSET]
+    b \if_not_hot
+.endm
+
 
 %def entry():
 /*
@@ -1703,7 +1704,17 @@ OAT_ENTRY ExecuteNterpImpl, EndExecuteNterpImpl
 
 %def opcode_pre():
 
-%def helpers():
+%def fetch_from_thread_cache(dest_reg, miss_label):
+   // Fetch some information from the thread cache.
+   // Uses ip and lr as temporaries.
+   add      ip, rSELF, #THREAD_INTERPRETER_CACHE_OFFSET       // cache address
+   ubfx     lr, rPC, #2, #THREAD_INTERPRETER_CACHE_SIZE_LOG2  // entry index
+   add      ip, ip, lr, lsl #3             // entry address within the cache
+   // In T32, we would use `ldrd ip, \dest_reg, [ip]`
+   ldr      ${dest_reg}, [ip, #4]          // value (offset)
+   ldr      ip, [ip]                       // entry key (pc)
+   cmp      ip, rPC
+   bne      ${miss_label}
 
 %def footer():
 /*
@@ -1771,43 +1782,20 @@ NterpHandleStringInit:
 NterpHandleStringInitRange:
    COMMON_INVOKE_RANGE is_string_init=1, suffix="stringInit"
 
-NterpNewArray:
-   /* new-array vA, vB, class@CCCC */
-   EXPORT_PC
-   // Fast-path which gets the class from thread-local cache.
-   FETCH_FROM_THREAD_CACHE r0, 2f
-   TEST_IF_MARKING 3f
-1:
-   lsr     r1, rINST, #12              // r1<- B
-   GET_VREG r1, r1                     // r1<- vB (array length)
-   ldr lr, [rSELF, #THREAD_ALLOC_ARRAY_ENTRYPOINT_OFFSET]
-   blx lr
-   ubfx    r1, rINST, #8, #4           // r1<- A
-   SET_VREG_OBJECT r0, r1
-   FETCH_ADVANCE_INST 2
-   GET_INST_OPCODE ip
-   GOTO_OPCODE ip
-2:
-   mov r0, rSELF
-   ldr r1, [sp]
-   mov r2, rPC
-   bl nterp_get_class_or_allocate_object
-   b 1b
-3:
-   bl art_quick_read_barrier_mark_reg00
-   b 1b
-
 
 NterpHandleHotnessOverflow:
+    CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=1f, if_not_hot=5f
+1:
     mov r1, rPC
     mov r2, rFP
     bl nterp_hot_method
     cmp r0, #0
-    bne 1f
+    bne 3f
+2:
     FETCH_INST                          // load rINST
     GET_INST_OPCODE ip                  // extract opcode from rINST
     GOTO_OPCODE ip                      // jump to next instruction
-1:
+3:
     // Drop the current frame.
     ldr ip, [rREFS, #-4]
     mov sp, ip
@@ -1844,12 +1832,12 @@ NterpHandleHotnessOverflow:
     sub sp, sp, r1
 
     add r2, r0, #OSR_DATA_MEMORY
-2:
+4:
     sub r1, r1, #4
     ldr ip, [r2, r1]
     str ip, [sp, r1]
     cmp r1, #0
-    bne 2b
+    bne 4b
 
     // Fetch the native PC to jump to and save it in a callee-save register.
     ldr rFP, [r0, #OSR_DATA_NATIVE_PC]
@@ -1859,6 +1847,10 @@ NterpHandleHotnessOverflow:
 
     // Jump to the compiled code.
     bx rFP
+5:
+    DO_SUSPEND_CHECK continue_label=2b
+    b 2b
+
 // This is the logical end of ExecuteNterpImpl, where the frame info applies.
 // EndExecuteNterpImpl includes the methods below as we want the runtime to
 // see them as part of the Nterp PCs.
@@ -2000,14 +1992,15 @@ artNterpAsmInstructionEnd:
 artNterpAsmInstructionStart = .L_op_nop
     .text
 
-%def default_helper_prefix():
-%  return "nterp_"
-
+%def opcode_name_prefix():
+%   return "nterp_"
 %def opcode_start():
     NAME_START nterp_${opcode}
 %def opcode_end():
     NAME_END nterp_${opcode}
-%def helper_start(name):
+    // Advance to the end of this handler. Causes error if we are past that point.
+    .org nterp_${opcode} + NTERP_HANDLER_SIZE  // ${opcode} handler is too big!
+%def opcode_slow_path_start(name):
     NAME_START ${name}
-%def helper_end(name):
+%def opcode_slow_path_end(name):
     NAME_END ${name}

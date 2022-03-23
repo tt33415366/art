@@ -62,8 +62,8 @@ include $(art_path)/build/Android.cpplint.mk
 ifneq ($(HOST_OS),darwin)
 include $(CLEAR_VARS)
 LOCAL_MODULE := art-tools
-LOCAL_LICENSE_KINDS := SPDX-license-identifier-Apache-2.0 SPDX-license-identifier-BSD SPDX-license-identifier-GPL-2.0
-LOCAL_LICENSE_CONDITIONS := notice restricted
+LOCAL_LICENSE_KINDS := SPDX-license-identifier-Apache-2.0
+LOCAL_LICENSE_CONDITIONS := notice
 LOCAL_NOTICE_FILE := $(LOCAL_PATH)/NOTICE
 LOCAL_IS_HOST_MODULE := true
 
@@ -100,7 +100,7 @@ endif # HOST_OS != darwin
 
 ########################################################################
 # Everything below is only available in ART source builds
-# (SOONG_CONFIG_art_module_source_build=true).
+# (ART_MODULE_BUILD_FROM_SOURCE=true).
 ########################################################################
 
 # TODO(b/172480617): Clean up the platform dependencies on everything above and
@@ -388,16 +388,16 @@ art_apex_manifest_file :=
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := art-runtime
-LOCAL_LICENSE_KINDS := SPDX-license-identifier-Apache-2.0 SPDX-license-identifier-BSD SPDX-license-identifier-GPL-2.0
-LOCAL_LICENSE_CONDITIONS := notice restricted
+LOCAL_LICENSE_KINDS := SPDX-license-identifier-Apache-2.0
+LOCAL_LICENSE_CONDITIONS := notice
 LOCAL_NOTICE_FILE := $(LOCAL_PATH)/NOTICE
 
 # Reference the libraries and binaries in the appropriate APEX module, because
 # they don't have platform variants. However if
-# SOONG_CONFIG_art_module_source_build isn't true then the APEX modules are
-# disabled, so Soong won't apply the APEX mutators to them, and then they are
-# available with their plain names.
-ifeq (true,$(SOONG_CONFIG_art_module_source_build))
+# ART_MODULE_BUILD_FROM_SOURCE isn't true then the APEX
+# modules are disabled, so Soong won't apply the APEX mutators to them, and
+# then they are available with their plain names.
+ifeq (true,$(ART_MODULE_BUILD_FROM_SOURCE))
   art_module_lib = $(1).com.android.art
   art_module_debug_lib = $(1).com.android.art.debug
 else
@@ -465,8 +465,8 @@ ifneq ($(HOST_OS),darwin)
 ifeq ($(ART_BUILD_HOST_DEBUG),true)
 include $(CLEAR_VARS)
 LOCAL_MODULE := art-libartd-libopenjdkd-host-dependency
-LOCAL_LICENSE_KINDS := SPDX-license-identifier-Apache-2.0 SPDX-license-identifier-BSD SPDX-license-identifier-GPL-2.0
-LOCAL_LICENSE_CONDITIONS := notice restricted
+LOCAL_LICENSE_KINDS := SPDX-license-identifier-Apache-2.0
+LOCAL_LICENSE_CONDITIONS := notice
 LOCAL_NOTICE_FILE := $(LOCAL_PATH)/NOTICE
 LOCAL_MULTILIB := both
 LOCAL_REQUIRED_MODULES := libopenjdkd
@@ -687,13 +687,8 @@ standalone-apex-files: deapexer \
 
 .PHONY: build-art-target-golem
 
-# TODO(b/129332183): Clean this up when Golem runs can mount the APEXes directly
-# in the chroot.
-
 ART_TARGET_PLATFORM_DEPENDENCIES := \
   $(TARGET_OUT)/etc/public.libraries.txt \
-  $(TARGET_OUT_SHARED_LIBRARIES)/heapprofd_client_api.so \
-  $(TARGET_OUT_SHARED_LIBRARIES)/libartpalette-system.so \
   $(TARGET_OUT_SHARED_LIBRARIES)/libcutils.so \
   $(TARGET_OUT_SHARED_LIBRARIES)/liblz4.so \
   $(TARGET_OUT_SHARED_LIBRARIES)/libprocessgroup.so \
@@ -711,6 +706,7 @@ build-art-target-golem: $(RELEASE_ART_APEX) com.android.runtime $(CONSCRYPT_APEX
                         $(TARGET_OUT_EXECUTABLES)/dex2oat_wrapper \
                         $(ART_TARGET_PLATFORM_DEPENDENCIES) \
                         $(ART_TARGET_SHARED_LIBRARY_BENCHMARK) \
+                        $(PRODUCT_OUT)/apex/art_boot_images/javalib/$(TARGET_ARCH)/boot.art \
                         standalone-apex-files
 	# remove debug libraries from public.libraries.txt because golem builds
 	# won't have it.

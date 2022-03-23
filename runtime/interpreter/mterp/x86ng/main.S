@@ -312,12 +312,7 @@ END_FUNCTION \name
     // Update counter.
     addl $$-1, %ecx
     movw %cx, ART_METHOD_HOTNESS_COUNT_OFFSET(%eax)
-    // If the counter overflows, handle this in the runtime.
-    jz NterpHandleHotnessOverflow
-    // Otherwise, do a suspend check.
-    testl   $$(THREAD_SUSPEND_OR_CHECKPOINT_REQUEST), rSELF:THREAD_FLAGS_OFFSET
-    jz      2b
-    jmp NterpCallSuspend
+    DO_SUSPEND_CHECK continue_label=2b
 .endm
 
 // Expects:
@@ -978,25 +973,27 @@ END_FUNCTION \name
 #error Expected 0 for hotness value
 #endif
    // If the counter is at zero, handle this in the runtime.
-   testw %cx, %cx
-   je 2f
+   testl %ecx, %ecx
+   je 3f
    // Update counter.
    addl $$-1, %ecx
    movw %cx, ART_METHOD_HOTNESS_COUNT_OFFSET(%eax)
-   jz 2f
+1:
    testl $$(THREAD_SUSPEND_OR_CHECKPOINT_REQUEST), rSELF:THREAD_FLAGS_OFFSET
-   jz 1f
+   jz 2f
    EXPORT_PC
    call SYMBOL(art_quick_test_suspend)
    RESTORE_IBASE
-1:
+2:
    FETCH_INST
    GOTO_NEXT
-2:
+3:
+   CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=4f, if_not_hot=1b
+4:
    movl $$0, ARG1
    movl rFP, ARG2
    call nterp_hot_method
-   jmp 1b
+   jmp 2b
 .endm
 
 .macro SPILL_ALL_CALLEE_SAVES
@@ -1516,22 +1513,10 @@ END_FUNCTION \name
    jmp .Ldone_return_range_\suffix
 .endm
 
-// Fetch some information from the thread cache.
-// Uses eax, and ecx as temporaries.
-.macro FETCH_FROM_THREAD_CACHE dest_reg, slow_path
-   movl rSELF:THREAD_SELF_OFFSET, %eax
-   movl rPC, %ecx
-   sall MACRO_LITERAL(THREAD_INTERPRETER_CACHE_SIZE_SHIFT), %ecx
-   andl MACRO_LITERAL(THREAD_INTERPRETER_CACHE_SIZE_MASK), %ecx
-   cmpl THREAD_INTERPRETER_CACHE_OFFSET(%eax, %ecx, 1), rPC
-   jne \slow_path
-   movl __SIZEOF_POINTER__+THREAD_INTERPRETER_CACHE_OFFSET(%eax, %ecx, 1), \dest_reg
-.endm
-
 // Helper for static field get.
 .macro OP_SGET load="movl", wide="0"
    // Fast-path which gets the field from thread-local cache.
-   FETCH_FROM_THREAD_CACHE %eax, 2f
+%  fetch_from_thread_cache("%eax", miss_label="2f")
 1:
    movl ART_FIELD_OFFSET_OFFSET(%eax), %ecx
    movl ART_FIELD_DECLARING_CLASS_OFFSET(%eax), %eax
@@ -1583,7 +1568,7 @@ END_FUNCTION \name
 // Helper for static field put.
 .macro OP_SPUT rINST_reg="rINST", store="movl", wide="0":
    // Fast-path which gets the field from thread-local cache.
-   FETCH_FROM_THREAD_CACHE %eax, 2f
+%  fetch_from_thread_cache("%eax", miss_label="2f")
 1:
    movl ART_FIELD_OFFSET_OFFSET(%eax), %ecx
    movl ART_FIELD_DECLARING_CLASS_OFFSET(%eax), %eax
@@ -1656,7 +1641,7 @@ END_FUNCTION \name
 // Helper for instance field put.
 .macro OP_IPUT rINST_reg="rINST", store="movl", wide="0":
    // Fast-path which gets the field from thread-local cache.
-   FETCH_FROM_THREAD_CACHE %eax, 2f
+%  fetch_from_thread_cache("%eax", miss_label="2f")
 1:
    OP_IPUT_INTERNAL \rINST_reg, \store, \wide, volatile=0
    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
@@ -1678,7 +1663,7 @@ END_FUNCTION \name
 // Helper for instance field get.
 .macro OP_IGET load="movl", wide="0"
    // Fast-path which gets the field from thread-local cache.
-   FETCH_FROM_THREAD_CACHE %eax, 2f
+%  fetch_from_thread_cache("%eax", miss_label="2f")
 1:
    movl    rINST, %ecx                     # ecx <- BA
    sarl    $$4, %ecx                       # ecx <- B
@@ -1744,6 +1729,24 @@ END_FUNCTION \name
     subl MACRO_LITERAL(1), REG_VAR(ins)
     jne 1b
 .endm
+
+.macro DO_SUSPEND_CHECK continue_label
+    testl   $$(THREAD_SUSPEND_OR_CHECKPOINT_REQUEST), rSELF:THREAD_FLAGS_OFFSET
+    jz      \continue_label
+    jmp     NterpCallSuspendAndGotoNext
+.endm
+
+.macro CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot, if_not_hot
+    testl $$ART_METHOD_IS_MEMORY_SHARED_FLAG, ART_METHOD_ACCESS_FLAGS_OFFSET(%eax)
+    jz \if_hot
+    movzwl rSELF:THREAD_SHARED_METHOD_HOTNESS_OFFSET, %ecx
+    testl %ecx, %ecx
+    je \if_hot
+    addl $$-1, %ecx
+    movw %cx, rSELF:THREAD_SHARED_METHOD_HOTNESS_OFFSET
+    jmp \if_not_hot
+.endm
+
 
 %def entry():
 /*
@@ -1882,7 +1885,16 @@ OAT_ENTRY ExecuteNterpImpl, EndExecuteNterpImpl
 
 %def opcode_pre():
 
-%def helpers():
+%def fetch_from_thread_cache(dest_reg, miss_label):
+   // Fetch some information from the thread cache.
+   // Uses eax, and ecx as temporaries.
+   movl rSELF:THREAD_SELF_OFFSET, %eax
+   movl rPC, %ecx
+   sall MACRO_LITERAL(THREAD_INTERPRETER_CACHE_SIZE_SHIFT), %ecx
+   andl MACRO_LITERAL(THREAD_INTERPRETER_CACHE_SIZE_MASK), %ecx
+   cmpl THREAD_INTERPRETER_CACHE_OFFSET(%eax, %ecx, 1), rPC
+   jne  ${miss_label}
+   movl __SIZEOF_POINTER__+THREAD_INTERPRETER_CACHE_OFFSET(%eax, %ecx, 1), ${dest_reg}
 
 %def footer():
 /*
@@ -1954,7 +1966,7 @@ NterpHandleStringInitRange:
 NterpNewInstance:
    EXPORT_PC
    // Fast-path which gets the class from thread-local cache.
-   FETCH_FROM_THREAD_CACHE %eax, 2f
+%  fetch_from_thread_cache("%eax", miss_label="2f")
    cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
    jne 3f
 4:
@@ -1979,7 +1991,7 @@ NterpNewArray:
    /* new-array vA, vB, class@CCCC */
    EXPORT_PC
    // Fast-path which gets the class from thread-local cache.
-   FETCH_FROM_THREAD_CACHE %eax, 2f
+%  fetch_from_thread_cache("%eax", miss_label="2f")
    cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
    jne 3f
 1:
@@ -2005,7 +2017,7 @@ NterpNewArray:
 
 NterpPutObjectInstanceField:
    // Fast-path which gets the field from thread-local cache.
-   FETCH_FROM_THREAD_CACHE %eax, 2f
+%  fetch_from_thread_cache("%eax", miss_label="2f")
 1:
    movl    rINST, %ecx                     # ecx <- BA
    andl    $$0xf, %ecx                     # ecx <- A
@@ -2055,7 +2067,7 @@ NterpPutObjectInstanceField:
 
 NterpGetObjectInstanceField:
    // Fast-path which gets the field from thread-local cache.
-   FETCH_FROM_THREAD_CACHE %eax, 2f
+%  fetch_from_thread_cache("%eax", miss_label="2f")
 1:
    movl    rINST, %ecx                     # ecx <- BA
    sarl    $$4, %ecx                       # ecx <- B
@@ -2090,7 +2102,7 @@ NterpGetObjectInstanceField:
 NterpPutObjectStaticField:
    GET_VREG rINST, rINST
    // Fast-path which gets the field from thread-local cache.
-   FETCH_FROM_THREAD_CACHE %eax, 2f
+%  fetch_from_thread_cache("%eax", miss_label="2f")
 1:
    movl ART_FIELD_OFFSET_OFFSET(%eax), %ecx
    movl ART_FIELD_DECLARING_CLASS_OFFSET(%eax), %eax
@@ -2140,7 +2152,7 @@ NterpPutObjectStaticField:
 
 NterpGetObjectStaticField:
    // Fast-path which gets the field from thread-local cache.
-   FETCH_FROM_THREAD_CACHE %eax, 2f
+%  fetch_from_thread_cache("%eax", miss_label="2f")
 1:
    movl ART_FIELD_OFFSET_OFFSET(%eax), %ecx
    movl ART_FIELD_DECLARING_CLASS_OFFSET(%eax), %eax
@@ -2233,7 +2245,7 @@ NterpGetWideInstanceField:
 NterpGetInstanceField:
   OP_IGET load="movl", wide=0
 
-NterpCallSuspend:
+NterpCallSuspendAndGotoNext:
     EXPORT_PC
     // Save branch offset.
     movl rINST, LOCAL0(%esp)
@@ -2244,18 +2256,21 @@ NterpCallSuspend:
     GOTO_NEXT
 
 NterpHandleHotnessOverflow:
+    CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=1f, if_not_hot=4f
+1:
     movl rPC, %ecx
     movl rFP, ARG2
     // Save next PC.
     movl %ecx, LOCAL0(%esp)
     call nterp_hot_method
     testl %eax, %eax
-    jne 1f
+    jne 3f
     // Fetch next PC.
     mov LOCAL0(%esp), rPC
+2:
     FETCH_INST
     GOTO_NEXT
-1:
+3:
     // Drop the current frame.
     movl -4(rREFS), %esp
     CFI_DEF_CFA(esp, PARAMETERS_SAVES_SIZE+CALLEE_SAVES_SIZE)
@@ -2291,6 +2306,9 @@ NterpHandleHotnessOverflow:
 
     // Jump to the compiled code.
     ret
+4:
+    DO_SUSPEND_CHECK continue_label=2b
+
 
 NterpHandleInvokeInterfaceOnObjectMethodRange:
    shrl $$16, %eax
@@ -2347,14 +2365,15 @@ SYMBOL(artNterpAsmInstructionEnd):
 SYMBOL(artNterpAsmInstructionStart) = .L_op_nop
     .text
 
-%def default_helper_prefix():
-%  return "nterp_"
-
+%def opcode_name_prefix():
+%   return "nterp_"
 %def opcode_start():
     ENTRY nterp_${opcode}
 %def opcode_end():
     END nterp_${opcode}
-%def helper_start(name):
+    // Advance to the end of this handler. Causes error if we are past that point.
+    .org nterp_${opcode} + NTERP_HANDLER_SIZE  // ${opcode} handler is too big!
+%def opcode_slow_path_start(name):
     ENTRY ${name}
-%def helper_end(name):
+%def opcode_slow_path_end(name):
     END ${name}

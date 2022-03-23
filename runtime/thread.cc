@@ -19,6 +19,7 @@
 #include <limits.h>  // for INT_MAX
 #include <pthread.h>
 #include <signal.h>
+#include <stdlib.h>
 #include <sys/resource.h>
 #include <sys/time.h>
 
@@ -29,6 +30,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <bitset>
 #include <cerrno>
 #include <iostream>
@@ -1066,7 +1068,7 @@ Thread* Thread::Attach(const char* thread_name,
     } else {
       // These aren't necessary, but they improve diagnostics for unit tests & command-line tools.
       if (thread_name != nullptr) {
-        self->tlsPtr_.name->assign(thread_name);
+        self->SetCachedThreadName(thread_name);
         ::art::SetThreadName(thread_name);
       } else if (self->GetJniEnv()->IsCheckJniEnabled()) {
         LOG(WARNING) << *Thread::Current() << " attached without supplying a name";
@@ -1232,8 +1234,27 @@ void Thread::InitPeer(ScopedObjectAccessAlreadyRunnable& soa,
       SetInt<kTransactionActive>(peer, thread_priority);
 }
 
+void Thread::SetCachedThreadName(const char* name) {
+  DCHECK(name != kThreadNameDuringStartup);
+  const char* old_name = tlsPtr_.name.exchange(name == nullptr ? nullptr : strdup(name));
+  if (old_name != nullptr && old_name !=  kThreadNameDuringStartup) {
+    // Deallocate it, carefully. Note that the load has to be ordered wrt the store of the xchg.
+    for (uint32_t i = 0; UNLIKELY(tls32_.num_name_readers.load(std::memory_order_seq_cst) != 0);
+         ++i) {
+      static constexpr uint32_t kNumSpins = 1000;
+      // Ugly, but keeps us from having to do anything on the reader side.
+      if (i > kNumSpins) {
+        usleep(500);
+      }
+    }
+    // We saw the reader count drop to zero since we replaced the name; old one is now safe to
+    // deallocate.
+    free(const_cast<char *>(old_name));
+  }
+}
+
 void Thread::SetThreadName(const char* name) {
-  tlsPtr_.name->assign(name);
+  SetCachedThreadName(name);
   ::art::SetThreadName(name);
   Dbg::DdmSendThreadNotification(this, CHUNK_TYPE("THNM"));
 }
@@ -1359,11 +1380,14 @@ void Thread::ShortDump(std::ostream& os) const {
     os << GetThreadId()
        << ",tid=" << GetTid() << ',';
   }
+  tls32_.num_name_readers.fetch_add(1, std::memory_order_seq_cst);
+  const char* name = tlsPtr_.name.load();
   os << GetState()
      << ",Thread*=" << this
      << ",peer=" << tlsPtr_.opeer
-     << ",\"" << (tlsPtr_.name != nullptr ? *tlsPtr_.name : "null") << "\""
+     << ",\"" << (name == nullptr ? "null" : name) << "\""
      << "]";
+  tls32_.num_name_readers.fetch_sub(1 /* at least memory_order_release */);
 }
 
 void Thread::Dump(std::ostream& os, bool dump_native_stack, BacktraceMap* backtrace_map,
@@ -1382,7 +1406,10 @@ ObjPtr<mirror::String> Thread::GetThreadName() const {
 }
 
 void Thread::GetThreadName(std::string& name) const {
-  name.assign(*tlsPtr_.name);
+  tls32_.num_name_readers.fetch_add(1, std::memory_order_seq_cst);
+  // The store part of the increment has to be ordered with respect to the following load.
+  name.assign(tlsPtr_.name.load(std::memory_order_seq_cst));
+  tls32_.num_name_readers.fetch_sub(1 /* at least memory_order_release */);
 }
 
 uint64_t Thread::GetCpuMicroTime() const {
@@ -1941,7 +1968,9 @@ void Thread::DumpState(std::ostream& os, const Thread* thread, pid_t tid) {
   }
 
   if (thread != nullptr) {
-    os << '"' << *thread->tlsPtr_.name << '"';
+    thread->tls32_.num_name_readers.fetch_add(1, std::memory_order_seq_cst);
+    os << '"' << thread->tlsPtr_.name.load() << '"';
+    thread->tls32_.num_name_readers.fetch_sub(1 /* at least memory_order_release */);
     if (is_daemon) {
       os << " daemon";
     }
@@ -2382,7 +2411,7 @@ Thread::Thread(bool daemon)
   DCHECK(tlsPtr_.mutator_lock != nullptr);
   tlsPtr_.instrumentation_stack =
       new std::map<uintptr_t, instrumentation::InstrumentationStackFrame>;
-  tlsPtr_.name = new std::string(kThreadNameDuringStartup);
+  tlsPtr_.name.store(kThreadNameDuringStartup, std::memory_order_relaxed);
 
   static_assert((sizeof(Thread) % 4) == 0U,
                 "art::Thread has a size which is not a multiple of 4.");
@@ -2419,7 +2448,7 @@ bool Thread::IsStillStarting() const {
   // It turns out that the last thing to change is the thread name; that's a good proxy for "has
   // this thread _ever_ entered kRunnable".
   return (tlsPtr_.jpeer == nullptr && tlsPtr_.opeer == nullptr) ||
-      (*tlsPtr_.name == kThreadNameDuringStartup);
+      (tlsPtr_.name.load() == kThreadNameDuringStartup);
 }
 
 void Thread::AssertPendingException() const {
@@ -2572,7 +2601,7 @@ Thread::~Thread() {
   }
 
   delete tlsPtr_.instrumentation_stack;
-  delete tlsPtr_.name;
+  SetCachedThreadName(nullptr);  // Deallocate name.
   delete tlsPtr_.deps_or_stack_trace_sample.stack_trace_sample;
 
   Runtime::Current()->GetHeap()->AssertThreadLocalBuffersAreRevoked(this);
@@ -3351,7 +3380,7 @@ void Thread::ThrowNewWrappedException(const char* exception_class_descriptor,
     DCHECK(IsExceptionPending());
     return;
   }
-  DCHECK(!runtime->IsStarted() || exception_class->IsThrowableClass());
+  DCHECK_IMPLIES(runtime->IsStarted(), exception_class->IsThrowableClass());
   Handle<mirror::Throwable> exception(
       hs.NewHandle(ObjPtr<mirror::Throwable>::DownCast(exception_class->AllocObject(this))));
 
@@ -3431,6 +3460,7 @@ void Thread::ThrowOutOfMemoryError(const char* msg) {
                << '"' << msg << '"'
                << " (VmSize " << GetProcessStatus("VmSize")
                << (tls32_.throwing_OutOfMemoryError ? ", recursive case)" : ")");
+  ScopedTrace trace("OutOfMemoryError");
   if (!tls32_.throwing_OutOfMemoryError) {
     tls32_.throwing_OutOfMemoryError = true;
     ThrowNewException("Ljava/lang/OutOfMemoryError;", msg);
@@ -3672,7 +3702,9 @@ void Thread::QuickDeliverException() {
 
   ReadBarrier::MaybeAssertToSpaceInvariant(exception.Ptr());
 
-  // This is a real exception: let the instrumentation know about it.
+  // This is a real exception: let the instrumentation know about it. Exception throw listener
+  // could set a breakpoint or install listeners that might require a deoptimization. Hence the
+  // deoptimization check needs to happen after calling the listener.
   instrumentation::Instrumentation* instrumentation = Runtime::Current()->GetInstrumentation();
   if (instrumentation->HasExceptionThrownListeners() &&
       IsExceptionThrownByCurrentMethod(exception)) {
@@ -4248,39 +4280,63 @@ void Thread::VisitRoots(RootVisitor* visitor) {
 }
 #pragma GCC diagnostic pop
 
-void Thread::SweepInterpreterCache(IsMarkedVisitor* visitor) {
-  for (InterpreterCache::Entry& entry : GetInterpreterCache()->GetArray()) {
-    const Instruction* inst = reinterpret_cast<const Instruction*>(entry.first);
-    if (inst != nullptr) {
-      if (inst->Opcode() == Instruction::NEW_INSTANCE ||
-          inst->Opcode() == Instruction::CHECK_CAST ||
-          inst->Opcode() == Instruction::INSTANCE_OF ||
-          inst->Opcode() == Instruction::NEW_ARRAY ||
-          inst->Opcode() == Instruction::CONST_CLASS) {
-        mirror::Class* cls = reinterpret_cast<mirror::Class*>(entry.second);
-        if (cls == nullptr || cls == Runtime::GetWeakClassSentinel()) {
-          // Entry got deleted in a previous sweep.
-          continue;
-        }
-        Runtime::ProcessWeakClass(
-            reinterpret_cast<GcRoot<mirror::Class>*>(&entry.second),
-            visitor,
-            Runtime::GetWeakClassSentinel());
-      } else if (inst->Opcode() == Instruction::CONST_STRING ||
-                 inst->Opcode() == Instruction::CONST_STRING_JUMBO) {
-        mirror::Object* object = reinterpret_cast<mirror::Object*>(entry.second);
-        mirror::Object* new_object = visitor->IsMarked(object);
-        // We know the string is marked because it's a strongly-interned string that
-        // is always alive (see b/117621117 for trying to make those strings weak).
-        // The IsMarked implementation of the CMS collector returns
-        // null for newly allocated objects, but we know those haven't moved. Therefore,
-        // only update the entry if we get a different non-null string.
-        if (new_object != nullptr && new_object != object) {
-          entry.second = reinterpret_cast<size_t>(new_object);
-        }
-      }
-    }
+static void SweepCacheEntry(IsMarkedVisitor* visitor, const Instruction* inst, size_t* value)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  if (inst == nullptr) {
+    return;
   }
+  using Opcode = Instruction::Code;
+  Opcode opcode = inst->Opcode();
+  switch (opcode) {
+    case Opcode::NEW_INSTANCE:
+    case Opcode::CHECK_CAST:
+    case Opcode::INSTANCE_OF:
+    case Opcode::NEW_ARRAY:
+    case Opcode::CONST_CLASS: {
+      mirror::Class* cls = reinterpret_cast<mirror::Class*>(*value);
+      if (cls == nullptr || cls == Runtime::GetWeakClassSentinel()) {
+        // Entry got deleted in a previous sweep.
+        return;
+      }
+      Runtime::ProcessWeakClass(
+          reinterpret_cast<GcRoot<mirror::Class>*>(value),
+          visitor,
+          Runtime::GetWeakClassSentinel());
+      return;
+    }
+    case Opcode::CONST_STRING:
+    case Opcode::CONST_STRING_JUMBO: {
+      mirror::Object* object = reinterpret_cast<mirror::Object*>(*value);
+      mirror::Object* new_object = visitor->IsMarked(object);
+      // We know the string is marked because it's a strongly-interned string that
+      // is always alive (see b/117621117 for trying to make those strings weak).
+      // The IsMarked implementation of the CMS collector returns
+      // null for newly allocated objects, but we know those haven't moved. Therefore,
+      // only update the entry if we get a different non-null string.
+      if (new_object != nullptr && new_object != object) {
+        *value = reinterpret_cast<size_t>(new_object);
+      }
+      return;
+    }
+    default:
+      // The following opcode ranges store non-reference values.
+      if ((Opcode::IGET <= opcode && opcode <= Opcode::SPUT_SHORT) ||
+          (Opcode::INVOKE_VIRTUAL <= opcode && opcode <= Opcode::INVOKE_INTERFACE_RANGE)) {
+        return;  // Nothing to do for the GC.
+      }
+      // New opcode is using the cache. We need to explicitly handle it in this method.
+      DCHECK(false) << "Unhandled opcode " << inst->Opcode();
+  }
+};
+
+void Thread::SweepInterpreterCaches(IsMarkedVisitor* visitor) {
+  MutexLock mu(Thread::Current(), *Locks::thread_list_lock_);
+  Runtime::Current()->GetThreadList()->ForEach([visitor](Thread* thread) {
+    Locks::mutator_lock_->AssertSharedHeld(Thread::Current());
+    for (InterpreterCache::Entry& entry : thread->GetInterpreterCache()->GetArray()) {
+      SweepCacheEntry(visitor, reinterpret_cast<const Instruction*>(entry.first), &entry.second);
+    }
+  });
 }
 
 // FIXME: clang-r433403 reports the below function exceeds frame size limit.

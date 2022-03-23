@@ -36,6 +36,7 @@
 #include "interpreter/mterp/nterp.h"
 #include "intrinsics.h"
 #include "intrinsics_arm64.h"
+#include "intrinsics_utils.h"
 #include "linker/linker_patch.h"
 #include "lock_word.h"
 #include "mirror/array-inl.h"
@@ -282,7 +283,9 @@ class LoadClassSlowPathARM64 : public SlowPathCodeARM64 {
     InvokeRuntimeCallingConvention calling_convention;
     if (must_resolve_type) {
       DCHECK(IsSameDexFile(cls_->GetDexFile(), arm64_codegen->GetGraph()->GetDexFile()) ||
-             arm64_codegen->GetCompilerOptions().WithinOatFile(&cls_->GetDexFile()));
+             arm64_codegen->GetCompilerOptions().WithinOatFile(&cls_->GetDexFile()) ||
+             ContainsElement(Runtime::Current()->GetClassLinker()->GetBootClassPath(),
+                             &cls_->GetDexFile()));
       dex::TypeIndex type_index = cls_->GetTypeIndex();
       __ Mov(calling_convention.GetRegisterAt(0).W(), type_index.index_);
       if (cls_->NeedsAccessCheck()) {
@@ -672,30 +675,16 @@ class ReadBarrierForHeapReferenceSlowPathARM64 : public SlowPathCodeARM64 {
             "art::mirror::HeapReference<art::mirror::Object> and int32_t have different sizes.");
         __ Add(index_reg, index_reg, Operand(offset_));
       } else {
-        // In the case of the UnsafeGetObject/UnsafeGetObjectVolatile/VarHandleGet
-        // intrinsics, `index_` is not shifted by a scale factor of 2
-        // (as in the case of ArrayGet), as it is actually an offset
-        // to an object field within an object.
+        // In the case of the following intrinsics `index_` is not shifted by a scale factor of 2
+        // (as in the case of ArrayGet), as it is actually an offset to an object field within an
+        // object.
         DCHECK(instruction_->IsInvoke()) << instruction_->DebugName();
         DCHECK(instruction_->GetLocations()->Intrinsified());
-        Intrinsics intrinsic = instruction_->AsInvoke()->GetIntrinsic();
-        DCHECK(intrinsic == Intrinsics::kUnsafeGetObject ||
-               intrinsic == Intrinsics::kUnsafeGetObjectVolatile ||
-               intrinsic == Intrinsics::kUnsafeCASObject ||
-               intrinsic == Intrinsics::kJdkUnsafeGetObject ||
-               intrinsic == Intrinsics::kJdkUnsafeGetObjectVolatile ||
-               intrinsic == Intrinsics::kJdkUnsafeGetObjectAcquire ||
-               intrinsic == Intrinsics::kJdkUnsafeCASObject ||
-               intrinsic == Intrinsics::kJdkUnsafeCompareAndSetObject ||
-               mirror::VarHandle::GetAccessModeTemplateByIntrinsic(intrinsic) ==
-                   mirror::VarHandle::AccessModeTemplate::kGet ||
-               mirror::VarHandle::GetAccessModeTemplateByIntrinsic(intrinsic) ==
-                   mirror::VarHandle::AccessModeTemplate::kCompareAndSet ||
-               mirror::VarHandle::GetAccessModeTemplateByIntrinsic(intrinsic) ==
-                   mirror::VarHandle::AccessModeTemplate::kCompareAndExchange ||
-               mirror::VarHandle::GetAccessModeTemplateByIntrinsic(intrinsic) ==
-                   mirror::VarHandle::AccessModeTemplate::kGetAndUpdate)
-            << instruction_->AsInvoke()->GetIntrinsic();
+        HInvoke* invoke = instruction_->AsInvoke();
+        DCHECK(IsUnsafeGetObject(invoke) ||
+               IsVarHandleGet(invoke) ||
+               IsUnsafeCASObject(invoke) ||
+               IsVarHandleCASFamily(invoke)) << invoke->GetIntrinsic();
         DCHECK_EQ(offset_, 0u);
         DCHECK(index_.IsRegister());
       }
@@ -2431,9 +2420,9 @@ void InstructionCodeGeneratorARM64::VisitDataProcWithShifterOp(
   // operand. Note that VIXL would still manage if it was passed by generating
   // the extension as a separate instruction.
   // `HNeg` also does not support extension. See comments in `ShifterOperandSupportsExtension()`.
-  DCHECK(!right_operand.IsExtendedRegister() ||
-         (kind != HInstruction::kAnd && kind != HInstruction::kOr && kind != HInstruction::kXor &&
-          kind != HInstruction::kNeg));
+  DCHECK_IMPLIES(right_operand.IsExtendedRegister(),
+                 kind != HInstruction::kAnd && kind != HInstruction::kOr &&
+                     kind != HInstruction::kXor && kind != HInstruction::kNeg);
   switch (kind) {
     case HInstruction::kAdd:
       __ Add(out, left, right_operand);
@@ -7182,7 +7171,7 @@ void CodeGeneratorARM64::CompileBakerReadBarrierThunk(Arm64Assembler& assembler,
 
   // For JIT, the slow path is considered part of the compiled method,
   // so JIT should pass null as `debug_name`.
-  DCHECK(!GetCompilerOptions().IsJitCompiler() || debug_name == nullptr);
+  DCHECK_IMPLIES(GetCompilerOptions().IsJitCompiler(), debug_name == nullptr);
   if (debug_name != nullptr && GetCompilerOptions().GenerateAnyDebugInfo()) {
     std::ostringstream oss;
     oss << "BakerReadBarrierThunk";

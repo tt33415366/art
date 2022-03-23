@@ -171,8 +171,24 @@ enum class DeoptimizationMethodType {
   kDefault     // dex pc may or may not advance depending on other conditions.
 };
 
+// For the CC colector, normal weak reference access can be disabled on a per-thread basis, while
+// processing references.  After finishing, the reference processor asynchronously sets the
+// per-thread flags back to kEnabled with release memory ordering semantics. Each mutator thread
+// should check its flag with acquire semantics before assuming that it is enabled. However,
+// that is often too expensive, so the reading thread sets it to kVisiblyEnabled after seeing it
+// kEnabled.  The Reference.get() intrinsic can thus read it in relaxed mode, and reread (by
+// resorting to the slow path) with acquire semantics if it sees a value of kEnabled rather than
+// kVisiblyEnabled.
+enum class WeakRefAccessState : int32_t {
+  kVisiblyEnabled = 0,  // Enabled, and previously read with acquire load by this thread.
+  kEnabled,
+  kDisabled
+};
+
 // This should match RosAlloc::kNumThreadLocalSizeBrackets.
 static constexpr size_t kNumRosAllocThreadLocalSizeBracketsInThread = 16;
+
+static constexpr size_t kSharedMethodHotnessThreshold = 0xffff;
 
 // Thread's stack layout for implicit stack overflow checks:
 //
@@ -399,7 +415,7 @@ class Thread {
   // End region where no thread suspension is expected.
   void EndAssertNoThreadSuspension(const char* old_cause) RELEASE(Roles::uninterruptible_) {
     if (kIsDebugBuild) {
-      CHECK(old_cause != nullptr || tls32_.no_thread_suspension == 1);
+      CHECK_IMPLIES(old_cause == nullptr, tls32_.no_thread_suspension == 1);
       CHECK_GT(tls32_.no_thread_suspension, 0U);
       tls32_.no_thread_suspension--;
       tlsPtr_.last_no_thread_suspension_cause = old_cause;
@@ -754,6 +770,13 @@ class Thread {
     return sizeof(tls32_.is_gc_marking);
   }
 
+  template<PointerSize pointer_size>
+  static constexpr ThreadOffset<pointer_size> SharedMethodHotnessOffset() {
+    return ThreadOffset<pointer_size>(
+        OFFSETOF_MEMBER(Thread, tls32_) +
+        OFFSETOF_MEMBER(tls_32bit_sized_values, shared_method_hotness));
+  }
+
   // Deoptimize the Java stack.
   void DeoptimizeWithDeoptimizationException(JValue* result) REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -994,14 +1017,13 @@ class Thread {
 
   void SetIsGcMarkingAndUpdateEntrypoints(bool is_marking);
 
-  bool GetWeakRefAccessEnabled() const {
-    CHECK(kUseReadBarrier);
-    return tls32_.weak_ref_access_enabled;
-  }
+  bool GetWeakRefAccessEnabled() const;  // Only safe for current thread.
 
   void SetWeakRefAccessEnabled(bool enabled) {
     CHECK(kUseReadBarrier);
-    tls32_.weak_ref_access_enabled = enabled;
+    WeakRefAccessState new_state = enabled ?
+        WeakRefAccessState::kEnabled : WeakRefAccessState::kDisabled;
+    tls32_.weak_ref_access_enabled.store(new_state, std::memory_order_release);
   }
 
   uint32_t GetDisableThreadFlipCount() const {
@@ -1289,11 +1311,13 @@ class Thread {
   void InitStringEntryPoints();
 
   void ModifyDebugDisallowReadBarrier(int8_t delta) {
-    debug_disallow_read_barrier_ += delta;
+    if (kCheckDebugDisallowReadBarrierCount) {
+      debug_disallow_read_barrier_ += delta;
+    }
   }
 
   uint8_t GetDebugDisallowReadBarrierCount() const {
-    return debug_disallow_read_barrier_;
+    return kCheckDebugDisallowReadBarrierCount ? debug_disallow_read_barrier_ : 0u;
   }
 
   // Gets the current TLSData associated with the key or nullptr if there isn't any. Note that users
@@ -1371,6 +1395,19 @@ class Thread {
 
   static constexpr uint32_t StoredThreadStateValue(ThreadState state) {
     return StateAndFlags::EncodeState(state);
+  }
+
+  void ResetSharedMethodHotness() {
+    tls32_.shared_method_hotness = kSharedMethodHotnessThreshold;
+  }
+
+  uint32_t GetSharedMethodHotness() const {
+    return tls32_.shared_method_hotness;
+  }
+
+  uint32_t DecrementSharedMethodHotness() {
+    tls32_.shared_method_hotness = (tls32_.shared_method_hotness - 1) & 0xffff;
+    return tls32_.shared_method_hotness;
   }
 
  private:
@@ -1526,11 +1563,14 @@ class Thread {
   template <bool kPrecise>
   void VisitRoots(RootVisitor* visitor) REQUIRES_SHARED(Locks::mutator_lock_);
 
-  void SweepInterpreterCache(IsMarkedVisitor* visitor) REQUIRES_SHARED(Locks::mutator_lock_);
+  static void SweepInterpreterCaches(IsMarkedVisitor* visitor)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   static bool IsAotCompiler();
 
   void ReleaseLongJumpContextInternal();
+
+  void SetCachedThreadName(const char* name);
 
   // Helper class for manipulating the 32 bits of atomically changed state and flags.
   class StateAndFlags {
@@ -1672,12 +1712,15 @@ class Thread {
           thread_exit_check_count(0),
           is_transitioning_to_runnable(false),
           is_gc_marking(false),
-          weak_ref_access_enabled(true),
+          weak_ref_access_enabled(WeakRefAccessState::kVisiblyEnabled),
           disable_thread_flip_count(0),
           user_code_suspend_count(0),
           force_interpreter_count(0),
           make_visibly_initialized_counter(0),
-          define_class_counter(0) {}
+          define_class_counter(0),
+          num_name_readers(0),
+          shared_method_hotness(kSharedMethodHotnessThreshold)
+        {}
 
     // The state and flags field must be changed atomically so that flag values aren't lost.
     // See `StateAndFlags` for bit assignments of `ThreadFlag` and `ThreadState` values.
@@ -1728,14 +1771,17 @@ class Thread {
 
     AtomicInteger park_state_;
 
-    // True if the thread is allowed to access a weak ref (Reference::GetReferent() and system
-    // weaks) and to potentially mark an object alive/gray. This is used for concurrent reference
-    // processing of the CC collector only. This is thread local so that we can enable/disable weak
-    // ref access by using a checkpoint and avoid a race around the time weak ref access gets
-    // disabled and concurrent reference processing begins (if weak ref access is disabled during a
-    // pause, this is not an issue.) Other collectors use Runtime::DisallowNewSystemWeaks() and
-    // ReferenceProcessor::EnableSlowPath().
-    bool32_t weak_ref_access_enabled;
+    // Determines whether the thread is allowed to directly access a weak ref
+    // (Reference::GetReferent() and system weaks) and to potentially mark an object alive/gray.
+    // This is used for concurrent reference processing of the CC collector only. This is thread
+    // local so that we can enable/disable weak ref access by using a checkpoint and avoid a race
+    // around the time weak ref access gets disabled and concurrent reference processing begins
+    // (if weak ref access is disabled during a pause, this is not an issue.) Other collectors use
+    // Runtime::DisallowNewSystemWeaks() and ReferenceProcessor::EnableSlowPath().  Can be
+    // concurrently accessed by GetReferent() and set (by iterating over threads).
+    // Can be changed from kEnabled to kVisiblyEnabled by readers. No other concurrent access is
+    // possible when that happens.
+    mutable std::atomic<WeakRefAccessState> weak_ref_access_enabled;
 
     // A thread local version of Heap::disable_thread_flip_count_. This keeps track of how many
     // levels of (nested) JNI critical sections the thread is in and is used to detect a nested JNI
@@ -1763,6 +1809,19 @@ class Thread {
     // Counter for how many nested define-classes are ongoing in this thread. Used to allow waiting
     // for threads to be done with class-definition work.
     uint32_t define_class_counter;
+
+    // A count of the number of readers of tlsPtr_.name that may still be looking at a string they
+    // retrieved.
+    mutable std::atomic<uint32_t> num_name_readers;
+    static_assert(std::atomic<uint32_t>::is_always_lock_free);
+
+    // Thread-local hotness counter for shared memory methods. Initialized with
+    // `kSharedMethodHotnessThreshold`. The interpreter decrements it and goes
+    // into the runtime when hitting zero. Note that all previous decrements
+    // could have been executed by another method than the one seeing zero.
+    // There is a second level counter in `Jit::shared_method_counters_` to make
+    // sure we at least have a few samples before compiling a method.
+    uint32_t shared_method_hotness;
   } tls32_;
 
   struct PACKED(8) tls_64bit_sized_values {
@@ -1908,8 +1967,11 @@ class Thread {
     // set local values there first.
     FrameIdToShadowFrame* frame_id_to_shadow_frame;
 
-    // A cached copy of the java.lang.Thread's name.
-    std::string* name;
+    // A cached copy of the java.lang.Thread's (modified UTF-8) name.
+    // If this is not null or kThreadNameDuringStartup, then it owns the malloc memory holding
+    // the string. Updated in an RCU-like manner.
+    std::atomic<const char*> name;
+    static_assert(std::atomic<const char*>::is_always_lock_free);
 
     // A cached pthread_t for the pthread underlying this Thread*.
     pthread_t pthread_self;

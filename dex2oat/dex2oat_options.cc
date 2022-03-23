@@ -255,7 +255,15 @@ static void AddCompilerMappings(Builder& builder) {
           .IntoKey(M::ProfileFd)
       .Define("--no-inline-from=_")
           .WithType<std::string>()
-          .IntoKey(M::NoInlineFrom);
+          .IntoKey(M::NoInlineFrom)
+      .Define("--preloaded-classes=_")
+          .WithType<std::vector<std::string>>().AppendValues()
+          .WithHelp("Specify files containing list of classes preloaded in the zygote.")
+          .IntoKey(M::PreloadedClasses)
+      .Define("--preloaded-classes-fds=_")
+          .WithType<std::vector<int>>().AppendValues()
+          .WithHelp("Specify files containing list of classes preloaded in the zygote.")
+          .IntoKey(M::PreloadedClassesFds);
 }
 
 static void AddTargetMappings(Builder& builder) {
@@ -437,7 +445,10 @@ Parser CreateDex2oatArgumentParser() {
           .IntoKey(M::ApexVersions)
       .Define("--force-jit-zygote")
           .WithHelp("Optimizes the app to be executed in an environment that uses JIT Zygote.")
-          .IntoKey(M::ForceJitZygote);
+          .IntoKey(M::ForceJitZygote)
+      .Define("--force-palette-compilation-hooks")
+          .WithHelp("Force PaletteNotify{Start,End}Dex2oatCompilation calls.")
+          .IntoKey(M::ForcePaletteCompilationHooks);
 
   AddCompilerOptionsArgumentParserOptions<Dex2oatArgumentMap>(*parser_builder);
 

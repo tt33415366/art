@@ -109,6 +109,7 @@ constexpr time_t kMaxChildProcessSeconds = 90;
 constexpr mode_t kFileMode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
 constexpr const char* kFirstBootImageBasename = "boot.art";
+constexpr const char* kMinimalBootImageBasename = "boot_minimal.art";
 
 void EraseFiles(const std::vector<std::unique_ptr<File>>& files) {
   for (auto& file : files) {
@@ -182,26 +183,24 @@ std::optional<apex::ApexInfo> GetArtApexInfo(const std::vector<apex::ApexInfo>& 
 
 // Returns cache provenance information based on the current APEX version and filesystem
 // information.
-art_apex::ModuleInfo GenerateModuleInfo(const apex::ApexInfo& apex_info,
-                                        bool include_last_update_millis) {
+art_apex::ModuleInfo GenerateModuleInfo(const apex::ApexInfo& apex_info) {
   // The lastUpdateMillis is an addition to ApexInfoList.xsd to support samegrade installs.
   int64_t last_update_millis =
       apex_info.hasLastUpdateMillis() ? apex_info.getLastUpdateMillis() : 0;
-  return art_apex::ModuleInfo{
-      apex_info.getModuleName(),
-      apex_info.getVersionCode(),
-      apex_info.getVersionName(),
-      include_last_update_millis ? std::make_optional(last_update_millis) : std::nullopt};
+  return art_apex::ModuleInfo{apex_info.getModuleName(),
+                              apex_info.getVersionCode(),
+                              apex_info.getVersionName(),
+                              last_update_millis};
 }
 
 // Returns cache provenance information for all APEXes.
 std::vector<art_apex::ModuleInfo> GenerateModuleInfoList(
-    const std::vector<apex::ApexInfo>& apex_info_list, bool include_last_update_millis) {
+    const std::vector<apex::ApexInfo>& apex_info_list) {
   std::vector<art_apex::ModuleInfo> module_info_list;
   std::transform(apex_info_list.begin(),
                  apex_info_list.end(),
                  std::back_inserter(module_info_list),
-                 std::bind(GenerateModuleInfo, std::placeholders::_1, include_last_update_millis));
+                 GenerateModuleInfo);
   return module_info_list;
 }
 
@@ -659,13 +658,9 @@ Result<void> OnDeviceRefresh::WriteCacheInfo() const {
     return Errorf("Could not update {}: no ART APEX info", QuotePath(cache_info_filename_));
   }
 
-  // We don't write lastUpdateMillis to the cache info in Compilation OS because APEX timestamps
-  // inside the VM are different from those outside (b/211458160).
-  bool include_last_update_millis = !config_.GetCompilationOsMode();
-  art_apex::ModuleInfo art_module_info =
-      GenerateModuleInfo(art_apex_info.value(), include_last_update_millis);
+  art_apex::ModuleInfo art_module_info = GenerateModuleInfo(art_apex_info.value());
   std::vector<art_apex::ModuleInfo> module_info_list =
-      GenerateModuleInfoList(apex_info_list.value(), include_last_update_millis);
+      GenerateModuleInfoList(apex_info_list.value());
 
   std::optional<std::vector<art_apex::Component>> bcp_components =
       GenerateBootClasspathComponents();
@@ -734,19 +729,23 @@ std::vector<art_apex::SystemServerComponent> OnDeviceRefresh::GenerateSystemServ
       });
 }
 
-std::string OnDeviceRefresh::GetBootImage(bool on_system) const {
+std::string OnDeviceRefresh::GetBootImage(bool on_system, bool minimal) const {
+  DCHECK(!on_system || !minimal);
+  const char* basename = minimal ? kMinimalBootImageBasename : kFirstBootImageBasename;
   if (on_system) {
     // Typically "/system/framework/boot.art".
-    return GetPrebuiltPrimaryBootImageDir() + "/" + kFirstBootImageBasename;
+    return GetPrebuiltPrimaryBootImageDir() + "/" + basename;
   } else {
     // Typically "/data/misc/apexdata/com.android.art/dalvik-cache/boot.art".
-    return config_.GetArtifactDirectory() + "/" + kFirstBootImageBasename;
+    return config_.GetArtifactDirectory() + "/" + basename;
   }
 }
 
-std::string OnDeviceRefresh::GetBootImagePath(bool on_system, const InstructionSet isa) const {
+std::string OnDeviceRefresh::GetBootImagePath(bool on_system,
+                                              bool minimal,
+                                              const InstructionSet isa) const {
   // Typically "/data/misc/apexdata/com.android.art/dalvik-cache/<isa>/boot.art".
-  return GetSystemImageFilename(GetBootImage(on_system).c_str(), isa);
+  return GetSystemImageFilename(GetBootImage(on_system, minimal).c_str(), isa);
 }
 
 std::string OnDeviceRefresh::GetSystemBootImageExtension() const {
@@ -796,10 +795,11 @@ WARN_UNUSED bool OnDeviceRefresh::RemoveArtifactsDirectory() const {
 
 WARN_UNUSED bool OnDeviceRefresh::BootClasspathArtifactsExist(
     bool on_system,
+    bool minimal,
     const InstructionSet isa,
     /*out*/ std::string* error_msg,
     /*out*/ std::vector<std::string>* checked_artifacts) const {
-  std::string path = GetBootImagePath(on_system, isa);
+  std::string path = GetBootImagePath(on_system, minimal, isa);
   OdrArtifacts artifacts = OdrArtifacts::ForBootImage(path);
   if (!ArtifactsExist(artifacts, /*check_art_file=*/true, error_msg, checked_artifacts)) {
     return false;
@@ -847,7 +847,7 @@ WARN_UNUSED bool OnDeviceRefresh::CheckBootClasspathArtifactsAreUpToDate(
 
     // ART is not updated, so we can use the artifacts on /system. Check if they exist.
     std::string error_msg;
-    if (BootClasspathArtifactsExist(/*on_system=*/true, isa, &error_msg)) {
+    if (BootClasspathArtifactsExist(/*on_system=*/true, /*minimal=*/false, isa, &error_msg)) {
       return true;
     }
 
@@ -888,21 +888,16 @@ WARN_UNUSED bool OnDeviceRefresh::CheckBootClasspathArtifactsAreUpToDate(
     return false;
   }
 
-  // We don't check lastUpdateMillis if the cache info is generated in Compilation OS because APEX
-  // timestamps inside the VM are different from those outside (b/211458160). The cache info will be
-  // updated in the `--compile` phase to fill this field.
-  if (!(cache_info->hasCompilationOsMode() && cache_info->getCompilationOsMode())) {
-    // Check lastUpdateMillis for samegrade installs. If `cached_art_info` is missing the
-    // lastUpdateMillis field then it is not current with the schema used by this binary so treat
-    // it as a samegrade update. Otherwise check whether the lastUpdateMillis changed.
-    const int64_t cached_art_last_update_millis =
-        cached_art_info->hasLastUpdateMillis() ? cached_art_info->getLastUpdateMillis() : -1;
-    if (cached_art_last_update_millis != art_apex_info.getLastUpdateMillis()) {
-      LOG(INFO) << "ART APEX last update time mismatch (" << cached_art_last_update_millis
-                << " != " << art_apex_info.getLastUpdateMillis() << ").";
-      metrics.SetTrigger(OdrMetrics::Trigger::kApexVersionMismatch);
-      return false;
-    }
+  // Check lastUpdateMillis for samegrade installs. If `cached_art_info` is missing the
+  // lastUpdateMillis field then it is not current with the schema used by this binary so treat
+  // it as a samegrade update. Otherwise check whether the lastUpdateMillis changed.
+  const int64_t cached_art_last_update_millis =
+      cached_art_info->hasLastUpdateMillis() ? cached_art_info->getLastUpdateMillis() : -1;
+  if (cached_art_last_update_millis != art_apex_info.getLastUpdateMillis()) {
+    LOG(INFO) << "ART APEX last update time mismatch (" << cached_art_last_update_millis
+              << " != " << art_apex_info.getLastUpdateMillis() << ").";
+    metrics.SetTrigger(OdrMetrics::Trigger::kApexVersionMismatch);
+    return false;
   }
 
   // Check boot class components.
@@ -935,9 +930,17 @@ WARN_UNUSED bool OnDeviceRefresh::CheckBootClasspathArtifactsAreUpToDate(
 
   // Cache info looks good, check all compilation artifacts exist.
   std::string error_msg;
-  if (!BootClasspathArtifactsExist(/*on_system=*/false, isa, &error_msg, checked_artifacts)) {
+  if (!BootClasspathArtifactsExist(
+          /*on_system=*/false, /*minimal=*/false, isa, &error_msg, checked_artifacts)) {
     LOG(INFO) << "Incomplete boot classpath artifacts. " << error_msg;
     metrics.SetTrigger(OdrMetrics::Trigger::kMissingArtifacts);
+    // Add the minimal boot image to `checked_artifacts` if exists. This is to prevent the minimal
+    // boot image from being deleted. It does not affect the return value because we should still
+    // attempt to generate a full boot image even if the minimal one exists.
+    if (BootClasspathArtifactsExist(
+            /*on_system=*/false, /*minimal=*/true, isa, &error_msg, checked_artifacts)) {
+      LOG(INFO) << "Found minimal boot classpath artifacts.";
+    }
     return false;
   }
 
@@ -1039,15 +1042,13 @@ bool OnDeviceRefresh::CheckSystemServerArtifactsAreUpToDate(
       return compile_all();
     }
 
-    if (!(cache_info->hasCompilationOsMode() && cache_info->getCompilationOsMode())) {
-      if (!cached_module_info->hasLastUpdateMillis() ||
-          cached_module_info->getLastUpdateMillis() != current_apex_info.getLastUpdateMillis()) {
-        LOG(INFO) << "APEX (" << apex_name << ") last update time mismatch ("
-                  << cached_module_info->getLastUpdateMillis()
-                  << " != " << current_apex_info.getLastUpdateMillis() << ").";
-        metrics.SetTrigger(OdrMetrics::Trigger::kApexVersionMismatch);
-        return compile_all();
-      }
+    if (!cached_module_info->hasLastUpdateMillis() ||
+        cached_module_info->getLastUpdateMillis() != current_apex_info.getLastUpdateMillis()) {
+      LOG(INFO) << "APEX (" << apex_name << ") last update time mismatch ("
+                << cached_module_info->getLastUpdateMillis()
+                << " != " << current_apex_info.getLastUpdateMillis() << ").";
+      metrics.SetTrigger(OdrMetrics::Trigger::kApexVersionMismatch);
+      return compile_all();
     }
   }
 
@@ -1229,13 +1230,6 @@ OnDeviceRefresh::CheckArtifactsAreUpToDate(OdrMetrics& metrics,
     return RemoveArtifactsDirectory() ? ExitCode::kCompilationRequired : ExitCode::kCleanupFailed;
   };
 
-  // Compilation OS cannot reuse the artifacts generated before because it cannot securely verify
-  // them (b/203630168). Therefore, we always compile everything in Compilation OS. This is fine
-  // because Compilation OS runs when the device is idling and it does not affact boot time.
-  if (config_.GetCompilationOsMode()) {
-    return cleanup_and_compile_all();
-  }
-
   std::optional<std::vector<apex::ApexInfo>> apex_info_list = GetApexInfoList();
   if (!apex_info_list.has_value()) {
     // This should never happen, further up-to-date checks are not possible if it does.
@@ -1313,18 +1307,6 @@ OnDeviceRefresh::CheckArtifactsAreUpToDate(OdrMetrics& metrics,
     return ExitCode::kCleanupFailed;
   }
 
-  // If the cache info was genereted in Compilation OS, update it to fill the lastUpdateMillis
-  // field.
-  if (!compilation_required && cache_info->hasCompilationOsMode() &&
-      cache_info->getCompilationOsMode()) {
-    compilation_options->update_cache_info_only = true;
-    // Return `kCompilationRequired` though there is nothing to compile. This is needed so that
-    // odsign will invoke `odrefresh --compile` and therefore we can update the cache info in that
-    // phase. We cannot update the cache info here because `odrefresh --check` should not modify any
-    // file. Otherwise, it will break odsign's signature verification.
-    compilation_required = true;
-  }
-
   return compilation_required ? ExitCode::kCompilationRequired : ExitCode::kOkay;
 }
 
@@ -1333,6 +1315,7 @@ WARN_UNUSED bool OnDeviceRefresh::CompileBootClasspathArtifacts(
     const std::string& staging_dir,
     OdrMetrics& metrics,
     const std::function<void()>& on_dex2oat_success,
+    bool minimal,
     std::string* error_msg) const {
   ScopedOdrCompilationTimer compilation_timer(metrics);
   std::vector<std::string> args;
@@ -1365,8 +1348,26 @@ WARN_UNUSED bool OnDeviceRefresh::CompileBootClasspathArtifacts(
     LOG(WARNING) << "Missing dirty objects file : " << QuotePath(dirty_image_objects_file);
   }
 
+  const std::string preloaded_classes_file(GetAndroidRoot() + "/etc/preloaded-classes");
+  if (OS::FileExists(preloaded_classes_file.c_str())) {
+    std::unique_ptr<File> file(OS::OpenFileForReading(preloaded_classes_file.c_str()));
+    args.emplace_back(android::base::StringPrintf("--preloaded-classes-fds=%d", file->Fd()));
+    readonly_files_raii.push_back(std::move(file));
+  } else {
+    LOG(WARNING) << "Missing preloaded classes file : " << QuotePath(preloaded_classes_file);
+  }
+
   // Add boot classpath jars to compile.
-  for (const std::string& component : boot_classpath_compilable_jars_) {
+  std::vector<std::string> jars_to_compile = boot_classpath_compilable_jars_;
+  if (minimal) {
+    auto end =
+        std::remove_if(jars_to_compile.begin(), jars_to_compile.end(), [](const std::string& jar) {
+          return !android::base::StartsWith(jar, GetArtRoot());
+        });
+    jars_to_compile.erase(end, jars_to_compile.end());
+  }
+
+  for (const std::string& component : jars_to_compile) {
     std::string actual_path = AndroidRootRewrite(component);
     args.emplace_back("--dex-file=" + component);
     std::unique_ptr<File> file(OS::OpenFileForReading(actual_path.c_str()));
@@ -1375,13 +1376,12 @@ WARN_UNUSED bool OnDeviceRefresh::CompileBootClasspathArtifacts(
   }
 
   args.emplace_back("--runtime-arg");
-  args.emplace_back(Concatenate({"-Xbootclasspath:", config_.GetDex2oatBootClasspath()}));
-  auto bcp_jars = android::base::Split(config_.GetDex2oatBootClasspath(), ":");
-  if (!AddBootClasspathFds(args, readonly_files_raii, bcp_jars)) {
+  args.emplace_back(Concatenate({"-Xbootclasspath:", android::base::Join(jars_to_compile, ":")}));
+  if (!AddBootClasspathFds(args, readonly_files_raii, jars_to_compile)) {
     return false;
   }
 
-  const std::string image_location = GetBootImagePath(/*on_system=*/false, isa);
+  const std::string image_location = GetBootImagePath(/*on_system=*/false, minimal, isa);
   const OdrArtifacts artifacts = OdrArtifacts::ForBootImage(image_location);
 
   args.emplace_back("--oat-location=" + artifacts.OatPath());
@@ -1420,8 +1420,11 @@ WARN_UNUSED bool OnDeviceRefresh::CompileBootClasspathArtifacts(
 
   const time_t timeout = GetSubprocessTimeout();
   const std::string cmd_line = android::base::Join(args, ' ');
-  LOG(INFO) << "Compiling boot classpath (" << isa << "): " << cmd_line << " [timeout " << timeout
-            << "s]";
+  LOG(INFO) << android::base::StringPrintf("Compiling boot classpath (%s%s): %s [timeout %lds]",
+                                           GetInstructionSetString(isa),
+                                           minimal ? ", minimal" : "",
+                                           cmd_line.c_str(),
+                                           timeout);
   if (config_.GetDryRun()) {
     LOG(INFO) << "Compilation skipped (dry-run).";
     return true;
@@ -1538,17 +1541,19 @@ WARN_UNUSED bool OnDeviceRefresh::CompileSystemServerArtifacts(
     std::string unused_error_msg;
     // If the boot classpath artifacts are not on /data, then the boot classpath are not re-compiled
     // and the artifacts must exist on /system.
-    bool boot_image_on_system =
-        !BootClasspathArtifactsExist(/*on_system=*/false, isa, &unused_error_msg);
+    bool boot_image_on_system = !BootClasspathArtifactsExist(
+        /*on_system=*/false, /*minimal=*/false, isa, &unused_error_msg);
     AddCompiledBootClasspathFdsIfAny(
         args,
         readonly_files_raii,
         bcp_jars,
         isa,
         boot_image_on_system ? GetSystemBootImageDir() : config_.GetArtifactDirectory());
-    args.emplace_back(Concatenate({"--boot-image=", boot_image_on_system
-        ? GetBootImage(/*on_system=*/true) + ":" + GetSystemBootImageExtension()
-        : GetBootImage(/*on_system=*/false)}));
+    args.emplace_back(
+        Concatenate({"--boot-image=",
+                     boot_image_on_system ? GetBootImage(/*on_system=*/true, /*minimal=*/false) +
+                                                ":" + GetSystemBootImageExtension() :
+                                            GetBootImage(/*on_system=*/false, /*minimal=*/false)}));
 
     const std::string context_path = android::base::Join(classloader_context, ':');
     if (art::ContainsElement(systemserver_classpath_jars_, jar)) {
@@ -1625,11 +1630,6 @@ WARN_UNUSED ExitCode OnDeviceRefresh::Compile(OdrMetrics& metrics,
     return ExitCode::kCleanupFailed;
   }
 
-  if (compilation_options.update_cache_info_only) {
-    metrics.SetStage(OdrMetrics::Stage::kComplete);
-    return ExitCode::kCompilationSuccess;
-  }
-
   if (!config_.GetStagingDir().empty()) {
     staging_dir = config_.GetStagingDir().c_str();
   } else {
@@ -1653,25 +1653,63 @@ WARN_UNUSED ExitCode OnDeviceRefresh::Compile(OdrMetrics& metrics,
 
   const auto& bcp_instruction_sets = config_.GetBootClasspathIsas();
   DCHECK(!bcp_instruction_sets.empty() && bcp_instruction_sets.size() <= 2);
+  bool full_compilation_failed = false;
   for (const InstructionSet isa : compilation_options.compile_boot_classpath_for_isas) {
     auto stage = (isa == bcp_instruction_sets.front()) ? OdrMetrics::Stage::kPrimaryBootClasspath :
                                                          OdrMetrics::Stage::kSecondaryBootClasspath;
     metrics.SetStage(stage);
-    if (!CheckCompilationSpace()) {
-      metrics.SetStatus(OdrMetrics::Status::kNoSpace);
-      // Return kCompilationFailed so odsign will keep and sign whatever we have been able to
-      // compile.
-      return ExitCode::kCompilationFailed;
+    if (!config_.GetMinimal()) {
+      if (CheckCompilationSpace()) {
+        if (CompileBootClasspathArtifacts(isa,
+                                          staging_dir,
+                                          metrics,
+                                          advance_animation_progress,
+                                          /*minimal=*/false,
+                                          &error_msg)) {
+          // Remove the minimal boot image only if the full boot image is successfully generated.
+          std::string path = GetBootImagePath(/*on_system=*/false, /*minimal=*/true, isa);
+          OdrArtifacts artifacts = OdrArtifacts::ForBootImage(path);
+          unlink(artifacts.ImagePath().c_str());
+          unlink(artifacts.OatPath().c_str());
+          unlink(artifacts.VdexPath().c_str());
+          continue;
+        }
+        LOG(ERROR) << "Compilation of BCP failed: " << error_msg;
+      } else {
+        metrics.SetStatus(OdrMetrics::Status::kNoSpace);
+      }
     }
 
-    if (!CompileBootClasspathArtifacts(
-            isa, staging_dir, metrics, advance_animation_progress, &error_msg)) {
-      LOG(ERROR) << "Compilation of BCP failed: " << error_msg;
-      if (!config_.GetDryRun() && !RemoveDirectory(staging_dir)) {
-        return ExitCode::kCleanupFailed;
-      }
-      return ExitCode::kCompilationFailed;
+    // Fall back to generating a minimal boot image.
+    // The compilation of the full boot image will be retried on later reboots with a backoff time,
+    // and the minimal boot image will be removed once the compilation of the full boot image
+    // succeeds.
+    full_compilation_failed = true;
+    std::string ignored_error_msg;
+    if (BootClasspathArtifactsExist(
+            /*on_system=*/false, /*minimal=*/true, isa, &ignored_error_msg)) {
+      continue;
     }
+    if (CompileBootClasspathArtifacts(isa,
+                                      staging_dir,
+                                      metrics,
+                                      advance_animation_progress,
+                                      /*minimal=*/true,
+                                      &error_msg)) {
+      continue;
+    }
+    LOG(ERROR) << "Compilation of minimal BCP failed: " << error_msg;
+    if (!config_.GetDryRun() && !RemoveDirectory(staging_dir)) {
+      return ExitCode::kCleanupFailed;
+    }
+    return ExitCode::kCompilationFailed;
+  }
+
+  if (full_compilation_failed) {
+    if (!config_.GetDryRun() && !RemoveDirectory(staging_dir)) {
+      return ExitCode::kCleanupFailed;
+    }
+    return ExitCode::kCompilationFailed;
   }
 
   if (!compilation_options.system_server_jars_to_compile.empty()) {

@@ -22,6 +22,7 @@
 import argparse
 import copy
 import collections
+import itertools
 import json
 import logging
 import os
@@ -109,6 +110,10 @@ runnable_test_exceptions = frozenset([
   "678-quickening",
   "818-clinit-nterp",
   "821-madvise-willneed",
+])
+
+known_slow_tests = frozenset([
+  "175-alloc-big-bignums",
 ])
 
 # Known failing ART run-tests.
@@ -202,6 +207,7 @@ known_failing_tests = frozenset([
 
 # ART gtests that do not need root access to the device.
 art_gtest_user_module_names = [
+    "art_libnativebridge_cts_tests",
     "art_standalone_cmdline_tests",
     "art_standalone_compiler_tests",
     "art_standalone_dex2oat_tests",
@@ -219,6 +225,7 @@ art_gtest_user_module_names = [
     "art_standalone_runtime_compiler_tests",
     "art_standalone_runtime_tests",
     "art_standalone_sigchain_tests",
+    "libnativeloader_test",
 ]
 
 # ART gtests that need root access to the device.
@@ -255,14 +262,32 @@ art_gtests_mainline_presubmit_module_names.remove("art_standalone_odrefresh_test
 flaky_tests_excluded_from_mts = [
     ("CtsLibcoreFileIOTestCases" +
      " android.cts.FileChannelInterProcessLockTest#" + m) for m in [
+         "test_lockJJZ_Exclusive_asyncChannel",
          "test_lockJJZ_Exclusive_syncChannel",
          "test_lock_differentChannelTypes",
+         "test_lockJJZ_Shared_asyncChannel",
+         "test_lockJJZ_Shared_syncChannel",
     ]
 ] + [
     ("CtsLibcoreTestCases" +
-     " com.android.org.conscrypt.javax.net.ssl.SSLSocketVersionCompatibilityTest#" + m) for m in [
-         "test_SSLSocket_interrupt_read_withoutAutoClose",
-         "test_SSLSocket_setSoWriteTimeout",
+     " com.android.org.conscrypt.javax.net.ssl.SSLSocketVersionCompatibilityTest#" + m + c)
+    for (m, c) in itertools.product(
+         [
+             "test_SSLSocket_interrupt_read_withoutAutoClose",
+             "test_SSLSocket_setSoWriteTimeout",
+         ],
+         [
+             "[0: TLSv1.2 client, TLSv1.2 server]",
+             "[1: TLSv1.2 client, TLSv1.3 server]",
+             "[2: TLSv1.3 client, TLSv1.2 server]",
+             "[3: TLSv1.3 client, TLSv1.3 server]",
+         ]
+     )
+] + [
+    ("CtsLibcoreTestCases" +
+     " libcore.dalvik.system.DelegateLastClassLoaderTest#" + m) for m in [
+         "testLookupOrderNodelegate_getResource",
+         "testLookupOrder_getResource",
     ]
 ]
 
@@ -339,7 +364,8 @@ class Generator:
                    "smali",
                    "smali-ex",
                    "smali-multidex",
-                   "src-dex2oat-unresolved",
+                   "src-aotex",
+                   "src-bcpex",
                    "src-ex",
                    "src-ex2",
                    "src-multidex",
@@ -382,6 +408,9 @@ class Generator:
     # All other tests are considered runnable.
     return True
 
+  def is_slow(self, run_test):
+    return run_test in known_slow_tests
+
   def regen_bp_files(self, run_tests, buildable_tests):
     for run_test in run_tests:
       # Remove any previously generated file.
@@ -402,7 +431,10 @@ class Generator:
     run_test_module_name = ART_RUN_TEST_MODULE_NAME_PREFIX + run_test
 
     if self.is_runnable(run_test):
-      test_config_template = "art-run-test-target-template"
+      if self.is_slow(run_test):
+        test_config_template= "art-run-test-target-slow-template"
+      else:
+        test_config_template = "art-run-test-target-template"
     else:
       test_config_template = "art-run-test-target-no-test-suite-tag-template"
 

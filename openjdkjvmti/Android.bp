@@ -36,7 +36,6 @@ license {
     visibility: [":__subpackages__"],
     license_kinds: [
         "SPDX-license-identifier-Apache-2.0",
-        "SPDX-license-identifier-GPL-2.0",
         "SPDX-license-identifier-GPL-with-classpath-exception",
     ],
     license_text: [
@@ -69,7 +68,6 @@ cc_defaults {
         "alloc_manager.cc",
         "deopt_manager.cc",
         "events.cc",
-        "fixed_up_dex_file.cc",
         "object_tagging.cc",
         "OpenjdkJvmTi.cc",
         "ti_allocator.cc",

@@ -766,6 +766,10 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
+  void AppendToBootClassPath(const DexFile* dex_file, ObjPtr<mirror::DexCache> dex_cache)
+      REQUIRES_SHARED(Locks::mutator_lock_)
+      REQUIRES(!Locks::dex_lock_);
+
   // Visit all of the class loaders in the class linker.
   void VisitClassLoaders(ClassLoaderVisitor* visitor) const
       REQUIRES_SHARED(Locks::classlinker_classes_lock_, Locks::mutator_lock_);
@@ -783,7 +787,7 @@ class ClassLinker {
   // Registers the native method and returns the new entry point. NB The returned entry point
   // might be different from the native_method argument if some MethodCallback modifies it.
   const void* RegisterNative(Thread* self, ArtMethod* method, const void* native_method)
-      REQUIRES_SHARED(Locks::mutator_lock_) WARN_UNUSED;
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Unregister native code for a method.
   void UnregisterNative(Thread* self, ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_);
@@ -857,7 +861,6 @@ class ClassLinker {
   class LinkFieldsHelper;
   template <PointerSize kPointerSize>
   class LinkMethodsHelper;
-  class MethodTranslation;
   class VisiblyInitializedCallback;
 
   struct ClassLoaderData {
@@ -962,10 +965,6 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_, !Roles::uninterruptible_);
 
-  void AppendToBootClassPath(const DexFile* dex_file, ObjPtr<mirror::DexCache> dex_cache)
-      REQUIRES_SHARED(Locks::mutator_lock_)
-      REQUIRES(!Locks::dex_lock_);
-
   // Precomputes size needed for Class, in the case of a non-temporary class this size must be
   // sufficient to hold all static fields.
   uint32_t SizeOfClassWithoutEmbeddedTables(const DexFile& dex_file,
@@ -976,7 +975,7 @@ class ClassLinker {
 
   void LoadMethod(const DexFile& dex_file,
                   const ClassAccessor::Method& method,
-                  Handle<mirror::Class> klass,
+                  ObjPtr<mirror::Class> klass,
                   ArtMethod* dst)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -1164,36 +1163,6 @@ class ClassLinker {
       const dex::MethodHandleItem& method_handle,
       ArtMethod* referrer) REQUIRES_SHARED(Locks::mutator_lock_);
 
-  enum class DefaultMethodSearchResult {
-    kDefaultFound,
-    kAbstractFound,
-    kDefaultConflict
-  };
-
-  // Find the default method implementation for 'interface_method' in 'klass', if one exists.
-  //
-  // Arguments:
-  // * self - The current thread.
-  // * target_method - The method we are trying to find a default implementation for.
-  // * klass - The class we are searching for a definition of target_method.
-  // * out_default_method - The pointer we will store the found default method to on success.
-  //
-  // Return value:
-  // * kDefaultFound - There were no conflicting method implementations found in the class while
-  //                   searching for target_method. The default method implementation is stored into
-  //                   out_default_method.
-  // * kAbstractFound - There were no conflicting method implementations found in the class while
-  //                   searching for target_method but no default implementation was found either.
-  //                   out_default_method is set to null and the method should be considered not
-  //                   implemented.
-  // * kDefaultConflict - Conflicting method implementations were found when searching for
-  //                      target_method. The value of *out_default_method is null.
-  DefaultMethodSearchResult FindDefaultMethodImplementation(
-      ArtMethod* target_method,
-      ObjPtr<mirror::Class> klass,
-      /*out*/ArtMethod** out_default_method) const
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
   bool LinkStaticFields(Thread* self, Handle<mirror::Class> klass, size_t* class_size)
       REQUIRES_SHARED(Locks::mutator_lock_);
   bool LinkInstanceFields(Thread* self, Handle<mirror::Class> klass)
@@ -1268,12 +1237,6 @@ class ClassLinker {
       REQUIRES(!Locks::dex_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  // Allocate method arrays for interfaces.
-  bool AllocateIfTableMethodArrays(Thread* self,
-                                   Handle<mirror::Class> klass,
-                                   Handle<mirror::IfTable> iftable)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
   // Sets imt_ref appropriately for LinkInterfaceMethods.
   // If there is no method in the imt location of imt_ref it will store the given method there.
   // Otherwise it will set the conflict method which will figure out which method to use during
@@ -1292,12 +1255,6 @@ class ClassLinker {
                           bool ignore_copied_methods,
                           /*out*/bool* new_conflict,
                           /*out*/ArtMethod** imt) REQUIRES_SHARED(Locks::mutator_lock_);
-
-  void FillImtFromSuperClass(Handle<mirror::Class> klass,
-                             ArtMethod* unimplemented_method,
-                             ArtMethod* imt_conflict_method,
-                             bool* new_conflict,
-                             ArtMethod** imt) REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Check invoke type against the referenced class. Throws IncompatibleClassChangeError
   // (if `kThrowOnError`) and returns true on mismatch (kInterface on a non-interface class,

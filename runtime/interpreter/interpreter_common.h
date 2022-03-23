@@ -46,6 +46,7 @@
 #include "dex/dex_instruction-inl.h"
 #include "entrypoints/entrypoint_utils-inl.h"
 #include "handle_scope-inl.h"
+#include "interpreter_cache-inl.h"
 #include "interpreter_switch_impl.h"
 #include "jit/jit-inl.h"
 #include "mirror/call_site.h"
@@ -59,6 +60,7 @@
 #include "obj_ptr.h"
 #include "stack.h"
 #include "thread.h"
+#include "thread-inl.h"
 #include "unstarted_runtime.h"
 #include "verifier/method_verifier.h"
 #include "well_known_classes.h"
@@ -238,7 +240,7 @@ static ALWAYS_INLINE bool DoInvoke(Thread* self,
   InterpreterCache* tls_cache = self->GetInterpreterCache();
   size_t tls_value;
   ArtMethod* resolved_method;
-  if (!IsNterpSupported() && LIKELY(tls_cache->Get(inst, &tls_value))) {
+  if (!IsNterpSupported() && LIKELY(tls_cache->Get(self, inst, &tls_value))) {
     resolved_method = reinterpret_cast<ArtMethod*>(tls_value);
   } else {
     ClassLinker* const class_linker = Runtime::Current()->GetClassLinker();
@@ -252,7 +254,7 @@ static ALWAYS_INLINE bool DoInvoke(Thread* self,
       return false;
     }
     if (!IsNterpSupported()) {
-      tls_cache->Set(inst, reinterpret_cast<size_t>(resolved_method));
+      tls_cache->Set(self, inst, reinterpret_cast<size_t>(resolved_method));
     }
   }
 
@@ -392,9 +394,9 @@ ALWAYS_INLINE bool DoFieldGet(Thread* self, ShadowFrame& shadow_frame, const Ins
                               uint16_t inst_data) REQUIRES_SHARED(Locks::mutator_lock_) {
   const bool is_static = (find_type == StaticObjectRead) || (find_type == StaticPrimitiveRead);
   const uint32_t field_idx = is_static ? inst->VRegB_21c() : inst->VRegC_22c();
-  ArtField* f =
-      FindFieldFromCode<find_type, do_access_check>(field_idx, shadow_frame.GetMethod(), self,
-                                                    Primitive::ComponentSize(field_type));
+  ArtMethod* method = shadow_frame.GetMethod();
+  ArtField* f = FindFieldFromCode<find_type, do_access_check>(
+      field_idx, method, self, Primitive::ComponentSize(field_type));
   if (UNLIKELY(f == nullptr)) {
     CHECK(self->IsExceptionPending());
     return false;
@@ -412,7 +414,7 @@ ALWAYS_INLINE bool DoFieldGet(Thread* self, ShadowFrame& shadow_frame, const Ins
   } else {
     obj = shadow_frame.GetVRegReference(inst->VRegB_22c(inst_data));
     if (UNLIKELY(obj == nullptr)) {
-      ThrowNullPointerExceptionForFieldAccess(f, true);
+      ThrowNullPointerExceptionForFieldAccess(f, method, true);
       return false;
     }
   }
@@ -491,9 +493,9 @@ ALWAYS_INLINE bool DoFieldPut(Thread* self, const ShadowFrame& shadow_frame,
   const bool do_assignability_check = do_access_check;
   bool is_static = (find_type == StaticObjectWrite) || (find_type == StaticPrimitiveWrite);
   uint32_t field_idx = is_static ? inst->VRegB_21c() : inst->VRegC_22c();
-  ArtField* f =
-      FindFieldFromCode<find_type, do_access_check>(field_idx, shadow_frame.GetMethod(), self,
-                                                    Primitive::ComponentSize(field_type));
+  ArtMethod* method = shadow_frame.GetMethod();
+  ArtField* f = FindFieldFromCode<find_type, do_access_check>(
+      field_idx, method, self, Primitive::ComponentSize(field_type));
   if (UNLIKELY(f == nullptr)) {
     CHECK(self->IsExceptionPending());
     return false;
@@ -504,7 +506,7 @@ ALWAYS_INLINE bool DoFieldPut(Thread* self, const ShadowFrame& shadow_frame,
   } else {
     obj = shadow_frame.GetVRegReference(inst->VRegB_22c(inst_data));
     if (UNLIKELY(obj == nullptr)) {
-      ThrowNullPointerExceptionForFieldAccess(f, false);
+      ThrowNullPointerExceptionForFieldAccess(f, method, false);
       return false;
     }
   }
@@ -705,8 +707,8 @@ static inline int32_t DoSparseSwitch(const Instruction* inst, const ShadowFrame&
 // TODO We might wish to reconsider how we cause some events to be ignored.
 bool MoveToExceptionHandler(Thread* self,
                             ShadowFrame& shadow_frame,
-                            const instrumentation::Instrumentation* instrumentation)
-    REQUIRES_SHARED(Locks::mutator_lock_);
+                            bool skip_listeners,
+                            bool skip_throw_listener) REQUIRES_SHARED(Locks::mutator_lock_);
 
 NO_RETURN void UnexpectedOpcode(const Instruction* inst, const ShadowFrame& shadow_frame)
   __attribute__((cold))

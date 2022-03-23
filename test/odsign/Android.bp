@@ -26,7 +26,6 @@ java_test_host {
         "frameworks-base-hostutils",
     ],
     data: [
-        ":test_com.android.art",
         ":odsign_e2e_test_app",
     ],
     test_config: "odsign-e2e-tests.xml",
@@ -64,6 +63,7 @@ android_test_helper_app {
         "junit",
     ],
     static_libs: [
+        "androidx.test.ext.truth",
         "androidx.test.runner",
         "ctstestrunner-axt",
     ],

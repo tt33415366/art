@@ -28,6 +28,7 @@
 #include "heap_poisoning.h"
 #include "interpreter/mterp/nterp.h"
 #include "intrinsics.h"
+#include "intrinsics_utils.h"
 #include "intrinsics_x86_64.h"
 #include "jit/profiling_info.h"
 #include "linker/linker_patch.h"
@@ -273,7 +274,9 @@ class LoadClassSlowPathX86_64 : public SlowPathCode {
     // Custom calling convention: RAX serves as both input and output.
     if (must_resolve_type) {
       DCHECK(IsSameDexFile(cls_->GetDexFile(), x86_64_codegen->GetGraph()->GetDexFile()) ||
-             x86_64_codegen->GetCompilerOptions().WithinOatFile(&cls_->GetDexFile()));
+             x86_64_codegen->GetCompilerOptions().WithinOatFile(&cls_->GetDexFile()) ||
+             ContainsElement(Runtime::Current()->GetClassLinker()->GetBootClassPath(),
+                             &cls_->GetDexFile()));
       dex::TypeIndex type_index = cls_->GetTypeIndex();
       __ movl(CpuRegister(RAX), Immediate(type_index.index_));
       if (cls_->NeedsAccessCheck()) {
@@ -599,18 +602,8 @@ class ReadBarrierMarkAndUpdateFieldSlowPathX86_64 : public SlowPathCode {
     DCHECK((instruction_->IsInvoke() && instruction_->GetLocations()->Intrinsified()))
         << "Unexpected instruction in read barrier marking and field updating slow path: "
         << instruction_->DebugName();
-    DCHECK(instruction_->GetLocations()->Intrinsified());
-    Intrinsics intrinsic = instruction_->AsInvoke()->GetIntrinsic();
-    static constexpr auto kVarHandleCAS = mirror::VarHandle::AccessModeTemplate::kCompareAndSet;
-    static constexpr auto kVarHandleCAX =
-        mirror::VarHandle::AccessModeTemplate::kCompareAndExchange;
-    static constexpr auto kVarHandleGAU = mirror::VarHandle::AccessModeTemplate::kGetAndUpdate;
-    DCHECK(intrinsic == Intrinsics::kUnsafeCASObject ||
-           intrinsic == Intrinsics::kJdkUnsafeCASObject ||
-           intrinsic == Intrinsics::kJdkUnsafeCompareAndSetObject ||
-           mirror::VarHandle::GetAccessModeTemplateByIntrinsic(intrinsic) == kVarHandleCAS ||
-           mirror::VarHandle::GetAccessModeTemplateByIntrinsic(intrinsic) == kVarHandleCAX ||
-           mirror::VarHandle::GetAccessModeTemplateByIntrinsic(intrinsic) == kVarHandleGAU);
+    HInvoke* invoke = instruction_->AsInvoke();
+    DCHECK(IsUnsafeCASObject(invoke) || IsVarHandleCASFamily(invoke)) << invoke->GetIntrinsic();
 
     __ Bind(GetEntryLabel());
     if (unpoison_ref_before_marking_) {
@@ -1250,7 +1243,9 @@ void CodeGeneratorX86_64::RecordBootImageMethodPatch(HInvoke* invoke) {
 
 void CodeGeneratorX86_64::RecordMethodBssEntryPatch(HInvoke* invoke) {
   DCHECK(IsSameDexFile(GetGraph()->GetDexFile(), *invoke->GetMethodReference().dex_file) ||
-         GetCompilerOptions().WithinOatFile(invoke->GetMethodReference().dex_file));
+         GetCompilerOptions().WithinOatFile(invoke->GetMethodReference().dex_file) ||
+         ContainsElement(Runtime::Current()->GetClassLinker()->GetBootClassPath(),
+                         invoke->GetMethodReference().dex_file));
   method_bss_entry_patches_.emplace_back(invoke->GetMethodReference().dex_file,
                                          invoke->GetMethodReference().index);
   __ Bind(&method_bss_entry_patches_.back().label);
@@ -5204,8 +5199,7 @@ void InstructionCodeGeneratorX86_64::HandleFieldSet(HInstruction* instruction,
         if (byte_swap) {
           v = BSWAP(v);
         }
-        // `field_type == DataType::Type::kReference` implies `v == 0`.
-        DCHECK((field_type != DataType::Type::kReference) || (v == 0));
+        DCHECK_IMPLIES(field_type == DataType::Type::kReference, v == 0);
         // Note: if heap poisoning is enabled, no need to poison
         // (negate) `v` if it is a reference, as it would be null.
         __ movl(field_addr, Immediate(v));

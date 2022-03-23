@@ -28,6 +28,7 @@
 #include "dex/dex_instruction-inl.h"
 #include "driver/dex_compilation_unit.h"
 #include "driver/compiler_options.h"
+#include "entrypoints/entrypoint_utils-inl.h"
 #include "imtable-inl.h"
 #include "intrinsics.h"
 #include "intrinsics_utils.h"
@@ -932,35 +933,17 @@ static ArtMethod* ResolveMethod(uint16_t method_idx,
   // make this an invoke-unresolved to handle cross-dex invokes or abstract super methods, both of
   // which require runtime handling.
   if (*invoke_type == kSuper) {
-    ObjPtr<mirror::Class> compiling_class = dex_compilation_unit.GetCompilingClass().Get();
-    if (compiling_class == nullptr) {
+    if (referrer == nullptr) {
       // We could not determine the method's class we need to wait until runtime.
       DCHECK(Runtime::Current()->IsAotCompiler());
       return nullptr;
     }
-    ObjPtr<mirror::Class> referenced_class = class_linker->LookupResolvedType(
-        dex_compilation_unit.GetDexFile()->GetMethodId(method_idx).class_idx_,
-        dex_compilation_unit.GetDexCache().Get(),
-        class_loader.Get());
-    DCHECK(referenced_class != nullptr);  // We have already resolved a method from this class.
-    if (!referenced_class->IsAssignableFrom(compiling_class)) {
-      // We cannot statically determine the target method. The runtime will throw a
-      // NoSuchMethodError on this one.
+    ArtMethod* actual_method = FindSuperMethodToCall</*access_check=*/true>(
+        method_idx, resolved_method, referrer, soa.Self());
+    if (actual_method == nullptr) {
+      // Clean up any exception left by method resolution.
+      soa.Self()->ClearException();
       return nullptr;
-    }
-    ArtMethod* actual_method;
-    if (referenced_class->IsInterface()) {
-      actual_method = referenced_class->FindVirtualMethodForInterfaceSuper(
-          resolved_method, class_linker->GetImagePointerSize());
-    } else {
-      uint16_t vtable_index = resolved_method->GetMethodIndex();
-      if (vtable_index >= static_cast<uint32_t>(
-              compiling_class->GetSuperClass()->GetVTableLength())) {
-        // No super method. The runtime will throw a NoSuchMethodError.
-        return nullptr;
-      }
-      actual_method = compiling_class->GetSuperClass()->GetVTableEntry(
-          vtable_index, class_linker->GetImagePointerSize());
     }
     if (!actual_method->IsInvokable()) {
       // Fail if the actual method cannot be invoked. Otherwise, the runtime resolution stub
@@ -1846,7 +1829,8 @@ bool HInstructionBuilder::HandleInvoke(HInvoke* invoke,
                                        const InstructionOperands& operands,
                                        const char* shorty,
                                        bool is_unresolved) {
-  DCHECK(!invoke->IsInvokeStaticOrDirect() || !invoke->AsInvokeStaticOrDirect()->IsStringInit());
+  DCHECK_IMPLIES(invoke->IsInvokeStaticOrDirect(),
+                 !invoke->AsInvokeStaticOrDirect()->IsStringInit());
 
   ReceiverArg receiver_arg = (invoke->GetInvokeType() == InvokeType::kStatic)
       ? ReceiverArg::kNone
@@ -2241,22 +2225,26 @@ ArtField* HInstructionBuilder::ResolveField(uint16_t field_idx, bool is_static, 
     return nullptr;
   }
 
-  if (is_put &&
-      resolved_field->IsFinal() &&
-      (compiling_class.Get() != resolved_field->GetDeclaringClass())) {
-    // Final fields can only be updated within their own class.
-    // TODO: Only allow it in constructors. b/34966607.
-    return nullptr;
+  if (is_put) {
+    if (resolved_field->IsFinal() &&
+        (compiling_class.Get() != resolved_field->GetDeclaringClass())) {
+      // Final fields can only be updated within their own class.
+      // TODO: Only allow it in constructors. b/34966607.
+      return nullptr;
+    }
+
+    // Note: We do not need to resolve the field type for `get` opcodes.
+    StackArtFieldHandleScope<1> rhs(soa.Self());
+    ReflectiveHandle<ArtField> resolved_field_handle(rhs.NewHandle(resolved_field));
+    if (resolved_field->ResolveType().IsNull()) {
+      // ArtField::ResolveType() may fail as evidenced with a dexing bug (b/78788577).
+      soa.Self()->ClearException();
+      return nullptr;  // Failure
+    }
+    resolved_field = resolved_field_handle.Get();
   }
 
-  StackArtFieldHandleScope<1> rhs(soa.Self());
-  ReflectiveHandle<ArtField> resolved_field_handle(rhs.NewHandle(resolved_field));
-  if (resolved_field->ResolveType().IsNull()) {
-    // ArtField::ResolveType() may fail as evidenced with a dexing bug (b/78788577).
-    soa.Self()->ClearException();
-    return nullptr;  // Failure
-  }
-  return resolved_field_handle.Get();
+  return resolved_field;
 }
 
 void HInstructionBuilder::BuildStaticFieldAccess(const Instruction& instruction,

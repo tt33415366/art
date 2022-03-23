@@ -250,6 +250,17 @@ class ArtMethod final {
     AddAccessFlags(kAccPreCompiled | kAccCompileDontBother);
   }
 
+  bool IsMemorySharedMethod() {
+    return (GetAccessFlags() & kAccMemorySharedMethod) != 0;
+  }
+
+  void SetMemorySharedMethod() REQUIRES_SHARED(Locks::mutator_lock_) {
+    if (!IsIntrinsic() && !IsAbstract()) {
+      AddAccessFlags(kAccMemorySharedMethod);
+      SetHotCounter();
+    }
+  }
+
   void ClearPreCompiled() REQUIRES_SHARED(Locks::mutator_lock_) {
     ClearAccessFlags(kAccPreCompiled | kAccCompileDontBother);
   }
@@ -542,6 +553,7 @@ class ArtMethod final {
     DCHECK(!IsNative());
     // Non-abstract method's single implementation is just itself.
     DCHECK(IsAbstract());
+    DCHECK(method == nullptr || method->IsInvokable());
     SetDataPtrSize(method, pointer_size);
   }
 

@@ -57,6 +57,7 @@
 #include "scoped_thread_state_change-inl.h"
 #include "stack.h"
 #include "thread-current-inl.h"
+#include "thread-inl.h"
 #include "thread_list.h"
 
 namespace art {
@@ -646,7 +647,7 @@ bool JitCodeCache::Commit(Thread* self,
                           CompilationKind compilation_kind,
                           bool has_should_deoptimize_flag,
                           const ArenaSet<ArtMethod*>& cha_single_implementation_list) {
-  DCHECK(!method->IsNative() || (compilation_kind != CompilationKind::kOsr));
+  DCHECK_IMPLIES(method->IsNative(), (compilation_kind != CompilationKind::kOsr));
 
   if (!method->IsNative()) {
     // We need to do this before grabbing the lock_ because it needs to be able to see the string

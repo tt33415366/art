@@ -24,6 +24,7 @@
 #include "dex/dex_instruction_utils.h"
 #include "debugger.h"
 #include "entrypoints/entrypoint_utils-inl.h"
+#include "interpreter/interpreter_cache-inl.h"
 #include "interpreter/interpreter_common.h"
 #include "interpreter/interpreter_intrinsics.h"
 #include "interpreter/shadow_frame-inl.h"
@@ -46,7 +47,7 @@ bool CanRuntimeUseNterp() REQUIRES_SHARED(Locks::mutator_lock_) {
   return IsNterpSupported() &&
       !instr->InterpretOnly() &&
       !runtime->IsAotCompiler() &&
-      !runtime->GetInstrumentation()->IsActive() &&
+      !runtime->GetInstrumentation()->NeedsSlowInterpreterForListeners() &&
       // An async exception has been thrown. We need to go to the switch interpreter. nterp doesn't
       // know how to deal with these so we could end up never dealing with it if we are in an
       // infinite loop.
@@ -90,12 +91,7 @@ inline void UpdateHotness(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock
 template<typename T>
 inline void UpdateCache(Thread* self, uint16_t* dex_pc_ptr, T value) {
   DCHECK(kUseReadBarrier) << "Nterp only works with read barriers";
-  // For simplicity, only update the cache if weak ref accesses are enabled. If
-  // they are disabled, this means the GC is processing the cache, and is
-  // reading it concurrently.
-  if (self->GetWeakRefAccessEnabled()) {
-    self->GetInterpreterCache()->Set(dex_pc_ptr, value);
-  }
+  self->GetInterpreterCache()->Set(self, dex_pc_ptr, value);
 }
 
 template<typename T>
@@ -330,42 +326,13 @@ extern "C" size_t NterpGetMethod(Thread* self, ArtMethod* caller, uint16_t* dex_
     return 0;
   }
 
-  // ResolveMethod returns the method based on the method_id. For super invokes
-  // we must use the executing class's context to find the right method.
   if (invoke_type == kSuper) {
-    ObjPtr<mirror::Class> executing_class = caller->GetDeclaringClass();
-    ObjPtr<mirror::Class> referenced_class = class_linker->LookupResolvedType(
-        executing_class->GetDexFile().GetMethodId(method_index).class_idx_,
-        executing_class->GetDexCache(),
-        executing_class->GetClassLoader());
-    DCHECK(referenced_class != nullptr);  // We have already resolved a method from this class.
-    if (!referenced_class->IsAssignableFrom(executing_class)) {
-      // We cannot determine the target method.
-      ThrowNoSuchMethodError(invoke_type,
-                             resolved_method->GetDeclaringClass(),
-                             resolved_method->GetName(),
-                             resolved_method->GetSignature());
+    resolved_method = caller->SkipAccessChecks()
+        ? FindSuperMethodToCall</*access_check=*/false>(method_index, resolved_method, caller, self)
+        : FindSuperMethodToCall</*access_check=*/true>(method_index, resolved_method, caller, self);
+    if (resolved_method == nullptr) {
+      DCHECK(self->IsExceptionPending());
       return 0;
-    }
-    if (referenced_class->IsInterface()) {
-      resolved_method = referenced_class->FindVirtualMethodForInterfaceSuper(
-          resolved_method, class_linker->GetImagePointerSize());
-    } else {
-      uint16_t vtable_index = resolved_method->GetMethodIndex();
-      ObjPtr<mirror::Class> super_class = executing_class->GetSuperClass();
-      if (super_class == nullptr ||
-          !super_class->HasVTable() ||
-          vtable_index >= static_cast<uint32_t>(super_class->GetVTableLength())) {
-        // Behavior to agree with that of the verifier.
-        ThrowNoSuchMethodError(invoke_type,
-                               resolved_method->GetDeclaringClass(),
-                               resolved_method->GetName(),
-                               resolved_method->GetSignature());
-        return 0;
-      } else {
-        resolved_method = executing_class->GetSuperClass()->GetVTableEntry(
-            vtable_index, class_linker->GetImagePointerSize());
-      }
     }
   }
 
@@ -726,7 +693,12 @@ extern "C" jit::OsrData* NterpHotMethod(ArtMethod* method, uint16_t* dex_pc_ptr,
   // method.
   ScopedAssertNoThreadSuspension sants("In nterp");
   Runtime* runtime = Runtime::Current();
-  method->ResetCounter(runtime->GetJITOptions()->GetWarmupThreshold());
+  if (method->IsMemorySharedMethod()) {
+    DCHECK_EQ(Thread::Current()->GetSharedMethodHotness(), 0u);
+    Thread::Current()->ResetSharedMethodHotness();
+  } else {
+    method->ResetCounter(runtime->GetJITOptions()->GetWarmupThreshold());
+  }
   jit::Jit* jit = runtime->GetJit();
   if (jit != nullptr && jit->UseJitCompilation()) {
     // Nterp passes null on entry where we don't want to OSR.
@@ -740,7 +712,7 @@ extern "C" jit::OsrData* NterpHotMethod(ArtMethod* method, uint16_t* dex_pc_ptr,
         return osr_data;
       }
     }
-    jit->EnqueueCompilation(method, Thread::Current());
+    jit->MaybeEnqueueCompilation(method, Thread::Current());
   }
   return nullptr;
 }

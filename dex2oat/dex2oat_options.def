@@ -102,5 +102,8 @@ DEX2OAT_OPTIONS_KEY (Unit,                           CompileIndividually)
 DEX2OAT_OPTIONS_KEY (std::string,                    PublicSdk)
 DEX2OAT_OPTIONS_KEY (Unit,                           ForceAllowOjInlines)
 DEX2OAT_OPTIONS_KEY (std::string,                    ApexVersions)
+DEX2OAT_OPTIONS_KEY (Unit,                           ForcePaletteCompilationHooks)
+DEX2OAT_OPTIONS_KEY (std::vector<std::string>,       PreloadedClasses)
+DEX2OAT_OPTIONS_KEY (std::vector<int>,               PreloadedClassesFds)
 
 #undef DEX2OAT_OPTIONS_KEY

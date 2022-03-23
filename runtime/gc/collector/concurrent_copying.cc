@@ -1080,35 +1080,7 @@ class ConcurrentCopying::ComputeLiveBytesAndMarkRefFieldsVisitor {
       REQUIRES_SHARED(Locks::heap_bitmap_lock_) {
     DCHECK_EQ(collector_->RegionSpace()->RegionIdxForRef(obj), obj_region_idx_);
     DCHECK(kHandleInterRegionRefs || collector_->immune_spaces_.ContainsObject(obj));
-    mirror::Object* ref =
-            obj->GetFieldObject<mirror::Object, kVerifyNone, kWithoutReadBarrier>(offset);
-    // TODO(lokeshgidra): Remove the following condition once b/173676071 is fixed.
-    if (UNLIKELY(ref == nullptr && offset == mirror::Object::ClassOffset())) {
-      // It has been verified as a race condition (see b/173676071)! After a small
-      // wait when we reload the class pointer, it turns out to be a valid class
-      // object. So as a workaround, we can continue execution and log an error
-      // that this happened.
-      for (size_t i = 0; i < 1000; i++) {
-        // Wait for 1ms at a time. Don't wait for more than 1 second in total.
-        usleep(1000);
-        ref = obj->GetClass<kVerifyNone, kWithoutReadBarrier>();
-        if (ref != nullptr) {
-          LOG(ERROR) << "klass pointer for obj: "
-                     << obj << " (" << mirror::Object::PrettyTypeOf(obj)
-                     << ") found to be null first. Reloading after a small wait fetched klass: "
-                     << ref << " (" << mirror::Object::PrettyTypeOf(ref) << ")";
-          break;
-        }
-      }
-
-      if (UNLIKELY(ref == nullptr)) {
-        // It must be heap corruption. Remove memory protection and dump data.
-        collector_->region_space_->Unprotect();
-        LOG(FATAL_WITHOUT_ABORT) << "klass pointer for ref: " << obj << " found to be null.";
-        collector_->heap_->GetVerification()->LogHeapCorruption(obj, offset, ref, /* fatal */ true);
-      }
-    }
-    CheckReference(ref);
+    CheckReference(obj->GetFieldObject<mirror::Object, kVerifyNone, kWithoutReadBarrier>(offset));
   }
 
   void operator()(ObjPtr<mirror::Class> klass, ObjPtr<mirror::Reference> ref) const
@@ -1621,18 +1593,28 @@ void ConcurrentCopying::CopyingPhase() {
 
   {
     TimingLogger::ScopedTiming split7("Process mark stacks and References", GetTimings());
+
+    // Process the mark stack once in the thread local stack mode. This marks most of the live
+    // objects, aside from weak ref accesses with read barriers (Reference::GetReferent() and
+    // system weaks) that may happen concurrently while we are processing the mark stack and newly
+    // mark/gray objects and push refs on the mark stack.
+    ProcessMarkStack();
+
+    ReferenceProcessor* rp = GetHeap()->GetReferenceProcessor();
+    bool clear_soft_references = GetCurrentIteration()->GetClearSoftReferences();
+    rp->Setup(self, this, /*concurrent=*/ true, clear_soft_references);
+    if (!clear_soft_references) {
+      // Forward as many SoftReferences as possible before inhibiting reference access.
+      rp->ForwardSoftReferences(GetTimings());
+    }
+
     // We transition through three mark stack modes (thread-local, shared, GC-exclusive). The
-    // primary reasons are the fact that we need to use a checkpoint to process thread-local mark
+    // primary reasons are that we need to use a checkpoint to process thread-local mark
     // stacks, but after we disable weak refs accesses, we can't use a checkpoint due to a deadlock
     // issue because running threads potentially blocking at WaitHoldingLocks, and that once we
     // reach the point where we process weak references, we can avoid using a lock when accessing
     // the GC mark stack, which makes mark stack processing more efficient.
 
-    // Process the mark stack once in the thread local stack mode. This marks most of the live
-    // objects, aside from weak ref accesses with read barriers (Reference::GetReferent() and system
-    // weaks) that may happen concurrently while we processing the mark stack and newly mark/gray
-    // objects and push refs on the mark stack.
-    ProcessMarkStack();
     // Switch to the shared mark stack mode. That is, revoke and process thread-local mark stacks
     // for the last time before transitioning to the shared mark stack mode, which would process new
     // refs that may have been concurrently pushed onto the mark stack during the ProcessMarkStack()
@@ -1649,6 +1631,7 @@ void ConcurrentCopying::CopyingPhase() {
     // forever as the checkpoint never finishes (See runtime/mutator_gc_coord.md).
     SwitchToSharedMarkStackMode();
     CHECK(!self->GetWeakRefAccessEnabled());
+
     // Now that weak refs accesses are disabled, once we exhaust the shared mark stack again here
     // (which may be non-empty if there were refs found on thread-local mark stacks during the above
     // SwitchToSharedMarkStackMode() call), we won't have new refs to process, that is, mutators
@@ -1656,6 +1639,7 @@ void ConcurrentCopying::CopyingPhase() {
     // before we process weak refs below.
     ProcessMarkStack();
     CheckEmptyMarkStack();
+
     // Switch to the GC exclusive mark stack mode so that we can process the mark stack without a
     // lock from this point on.
     SwitchToGcExclusiveMarkStackMode();
@@ -1663,24 +1647,23 @@ void ConcurrentCopying::CopyingPhase() {
     if (kVerboseMode) {
       LOG(INFO) << "ProcessReferences";
     }
-    // Process weak references. This may produce new refs to process and have them processed via
-    // ProcessMarkStack (in the GC exclusive mark stack mode).
+    // Process weak references. This also marks through finalizers. Although
+    // reference processing is "disabled", some accesses will proceed once we've ensured that
+    // objects directly reachable by the mutator are marked, i.e. before we mark through
+    // finalizers.
     ProcessReferences(self);
     CheckEmptyMarkStack();
+    // JNI WeakGlobalRefs and most other system weaks cannot be processed until we're done marking
+    // through finalizers, since such references to finalizer-reachable objects must be preserved.
     if (kVerboseMode) {
       LOG(INFO) << "SweepSystemWeaks";
     }
     SweepSystemWeaks(self);
+    CheckEmptyMarkStack();
+    ReenableWeakRefAccess(self);
     if (kVerboseMode) {
       LOG(INFO) << "SweepSystemWeaks done";
     }
-    // Process the mark stack here one last time because the above SweepSystemWeaks() call may have
-    // marked some objects (strings alive) as hash_set::Erase() can call the hash function for
-    // arbitrary elements in the weak intern table in InternTable::Table::SweepWeaks().
-    ProcessMarkStack();
-    CheckEmptyMarkStack();
-    // Re-enable weak ref accesses.
-    ReenableWeakRefAccess(self);
     // Free data for class loaders that we unloaded.
     Runtime::Current()->GetClassLinker()->CleanupClassLoaders();
     // Marking is done. Disable marking.
@@ -3141,7 +3124,7 @@ class ConcurrentCopying::RefFieldsVisitor {
   explicit RefFieldsVisitor(ConcurrentCopying* collector, Thread* const thread)
       : collector_(collector), thread_(thread) {
     // Cannot have `kNoUnEvac` when Generational CC collection is disabled.
-    DCHECK(!kNoUnEvac || collector_->use_generational_cc_);
+    DCHECK_IMPLIES(kNoUnEvac, collector_->use_generational_cc_);
   }
 
   void operator()(mirror::Object* obj, MemberOffset offset, bool /* is_static */)
@@ -3178,7 +3161,7 @@ class ConcurrentCopying::RefFieldsVisitor {
 template <bool kNoUnEvac>
 inline void ConcurrentCopying::Scan(mirror::Object* to_ref, size_t obj_size) {
   // Cannot have `kNoUnEvac` when Generational CC collection is disabled.
-  DCHECK(!kNoUnEvac || use_generational_cc_);
+  DCHECK_IMPLIES(kNoUnEvac, use_generational_cc_);
   if (kDisallowReadBarrierDuringScan && !Runtime::Current()->IsActiveTransaction()) {
     // Avoid all read barriers during visit references to help performance.
     // Don't do this in transaction mode because we may read the old value of an field which may
@@ -3204,7 +3187,7 @@ inline void ConcurrentCopying::Scan(mirror::Object* to_ref, size_t obj_size) {
 template <bool kNoUnEvac>
 inline void ConcurrentCopying::Process(mirror::Object* obj, MemberOffset offset) {
   // Cannot have `kNoUnEvac` when Generational CC collection is disabled.
-  DCHECK(!kNoUnEvac || use_generational_cc_);
+  DCHECK_IMPLIES(kNoUnEvac, use_generational_cc_);
   DCHECK_EQ(Thread::Current(), thread_running_gc_);
   mirror::Object* ref = obj->GetFieldObject<
       mirror::Object, kVerifyNone, kWithoutReadBarrier, false>(offset);
@@ -3830,8 +3813,7 @@ void ConcurrentCopying::DelayReferenceReferent(ObjPtr<mirror::Class> klass,
 void ConcurrentCopying::ProcessReferences(Thread* self) {
   // We don't really need to lock the heap bitmap lock as we use CAS to mark in bitmaps.
   WriterMutexLock mu(self, *Locks::heap_bitmap_lock_);
-  GetHeap()->GetReferenceProcessor()->ProcessReferences(
-      /*concurrent=*/ true, GetTimings(), GetCurrentIteration()->GetClearSoftReferences(), this);
+  GetHeap()->GetReferenceProcessor()->ProcessReferences(self, GetTimings());
 }
 
 void ConcurrentCopying::RevokeAllThreadLocalBuffers() {
