@@ -431,7 +431,6 @@ class InstructionCodeGeneratorARMVIXL : public InstructionCodeGenerator {
   void GenerateDivRemWithAnyConstant(HBinaryOperation* instruction);
   void GenerateDivRemConstantIntegral(HBinaryOperation* instruction);
   void HandleGoto(HInstruction* got, HBasicBlock* successor);
-  void GenerateMethodEntryExitHook(HInstruction* instruction);
 
   vixl::aarch32::MemOperand VecAddress(
       HVecMemoryOperation* instruction,
@@ -856,7 +855,7 @@ class CodeGeneratorARMVIXL : public CodeGenerator {
                                                   bool narrow) {
     CheckValidReg(base_reg);
     CheckValidReg(holder_reg);
-    DCHECK_IMPLIES(narrow, base_reg < 8u) << base_reg;
+    DCHECK(!narrow || base_reg < 8u) << base_reg;
     BakerReadBarrierWidth width =
         narrow ? BakerReadBarrierWidth::kNarrow : BakerReadBarrierWidth::kWide;
     return BakerReadBarrierKindField::Encode(BakerReadBarrierKind::kField) |
@@ -875,7 +874,7 @@ class CodeGeneratorARMVIXL : public CodeGenerator {
 
   static uint32_t EncodeBakerReadBarrierGcRootData(uint32_t root_reg, bool narrow) {
     CheckValidReg(root_reg);
-    DCHECK_IMPLIES(narrow, root_reg < 8u) << root_reg;
+    DCHECK(!narrow || root_reg < 8u) << root_reg;
     BakerReadBarrierWidth width =
         narrow ? BakerReadBarrierWidth::kNarrow : BakerReadBarrierWidth::kWide;
     return BakerReadBarrierKindField::Encode(BakerReadBarrierKind::kGcRoot) |

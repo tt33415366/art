@@ -156,6 +156,7 @@ static bool CanReferenceBootImageObjects(HInvoke* invoke, const CompilerOptions&
   }
   if (!compiler_options.IsBootImage() &&
       Runtime::Current()->GetHeap()->GetBootImageSpaces().empty()) {
+    DCHECK(compiler_options.IsJitCompiler());
     return false;  // Running without boot image, cannot use required boot image objects.
   }
   return true;

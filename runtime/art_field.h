@@ -51,7 +51,10 @@ class ArtField final {
     return declaring_class_.AddressWithoutBarrier();
   }
 
-  uint32_t GetAccessFlags() {
+  uint32_t GetAccessFlags() REQUIRES_SHARED(Locks::mutator_lock_) {
+    if (kIsDebugBuild) {
+      GetAccessFlagsDCheck();
+    }
     return access_flags_;
   }
 
@@ -87,6 +90,9 @@ class ArtField final {
 
   // Offset to field within an Object.
   MemberOffset GetOffset() REQUIRES_SHARED(Locks::mutator_lock_) {
+    if (kIsDebugBuild) {
+      GetOffsetDCheck();
+    }
     return MemberOffset(offset_);
   }
 
@@ -143,7 +149,6 @@ class ArtField final {
   template<bool kTransactionActive>
   void SetDouble(ObjPtr<mirror::Object> object, double d) REQUIRES_SHARED(Locks::mutator_lock_);
 
-  template<ReadBarrierOption kReadBarrierOption = kWithReadBarrier>
   ObjPtr<mirror::Object> GetObject(ObjPtr<mirror::Object> object)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -164,8 +169,7 @@ class ArtField final {
   void Set64(ObjPtr<mirror::Object> object, uint64_t new_value)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  template<class MirrorType = mirror::Object,
-           ReadBarrierOption kReadBarrierOption = kWithReadBarrier>
+  template<class MirrorType = mirror::Object>
   ObjPtr<MirrorType> GetObj(ObjPtr<mirror::Object> object)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -237,6 +241,9 @@ class ArtField final {
 
   ObjPtr<mirror::Class> ProxyFindSystemClass(const char* descriptor)
       REQUIRES_SHARED(Locks::mutator_lock_);
+
+  void GetAccessFlagsDCheck() REQUIRES_SHARED(Locks::mutator_lock_);
+  void GetOffsetDCheck() REQUIRES_SHARED(Locks::mutator_lock_);
 
   GcRoot<mirror::Class> declaring_class_;
 
