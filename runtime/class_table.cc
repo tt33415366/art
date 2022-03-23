@@ -30,11 +30,7 @@ ClassTable::ClassTable() : lock_("Class loader classes", kClassLoaderClassesLock
 
 void ClassTable::FreezeSnapshot() {
   WriterMutexLock mu(Thread::Current(), lock_);
-  // Propagate the min/max load factor from the old active set.
-  DCHECK(!classes_.empty());
-  const ClassSet& last_set = classes_.back();
-  ClassSet new_set(last_set.GetMinLoadFactor(), last_set.GetMaxLoadFactor());
-  classes_.push_back(std::move(new_set));
+  classes_.push_back(ClassSet());
 }
 
 ObjPtr<mirror::Class> ClassTable::UpdateClass(const char* descriptor,

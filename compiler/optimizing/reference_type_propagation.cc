@@ -147,7 +147,7 @@ void ReferenceTypePropagation::ValidateTypes() {
           } else if (instr->IsLoadClass()) {
             HLoadClass* cls = instr->AsLoadClass();
             DCHECK(cls->GetReferenceTypeInfo().IsExact());
-            DCHECK_IMPLIES(cls->GetLoadedClassRTI().IsValid(), cls->GetLoadedClassRTI().IsExact());
+            DCHECK(!cls->GetLoadedClassRTI().IsValid() || cls->GetLoadedClassRTI().IsExact());
           } else if (instr->IsNullCheck()) {
             DCHECK(instr->GetReferenceTypeInfo().IsEqual(instr->InputAt(0)->GetReferenceTypeInfo()))
                 << "NullCheck " << instr->GetReferenceTypeInfo()
@@ -155,11 +155,10 @@ void ReferenceTypePropagation::ValidateTypes() {
           }
         } else if (instr->IsInstanceOf()) {
           HInstanceOf* iof = instr->AsInstanceOf();
-          DCHECK_IMPLIES(iof->GetTargetClassRTI().IsValid(), iof->GetTargetClassRTI().IsExact());
+          DCHECK(!iof->GetTargetClassRTI().IsValid() || iof->GetTargetClassRTI().IsExact());
         } else if (instr->IsCheckCast()) {
           HCheckCast* check = instr->AsCheckCast();
-          DCHECK_IMPLIES(check->GetTargetClassRTI().IsValid(),
-                         check->GetTargetClassRTI().IsExact());
+          DCHECK(!check->GetTargetClassRTI().IsValid() || check->GetTargetClassRTI().IsExact());
         }
       }
     }
