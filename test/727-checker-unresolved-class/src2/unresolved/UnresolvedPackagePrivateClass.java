@@ -18,7 +18,7 @@ package unresolved;
 
 import getters.GetUnresolvedPackagePrivateClass;
 
-class UnresolvedPackagePrivateClass implements BcpExMarker {
+class UnresolvedPackagePrivateClass {
   public static void $noinline$main() {
     $noinline$testReferrersClass();
     $noinline$testInlinedReferrersClass();
