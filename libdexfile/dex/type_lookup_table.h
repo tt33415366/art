@@ -87,8 +87,6 @@ class TypeLookupTable {
   // Method returns length of binary data for the specified number of class definitions.
   static uint32_t RawDataLength(uint32_t num_class_defs);
 
-  void Dump(std::ostream& os) const;
-
  private:
   /**
    * To find element we need to compare strings.
@@ -147,7 +145,7 @@ class TypeLookupTable {
 
     uint32_t GetHashBits(uint32_t mask_bits) const {
       DCHECK_LE(mask_bits, 16u);
-      return static_cast<uint64_t>(data_) >> (2u * mask_bits);
+      return data_ >> (2u * mask_bits);
     }
 
     static uint32_t GetMask(uint32_t mask_bits) {

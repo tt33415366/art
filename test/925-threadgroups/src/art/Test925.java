@@ -47,7 +47,7 @@ public class Test925 {
     printThreadGroupInfo(curGroup);
     printThreadGroupInfo(rootGroup);
 
-    waitGroupChildren(rootGroup, 5 /* # daemons */, 30 /* timeout in seconds */);
+    waitGroupChildren(rootGroup, 6 /* # daemons */, 30 /* timeout in seconds */);
 
     checkChildren(curGroup);
 
@@ -90,27 +90,22 @@ public class Test925 {
     System.out.println("  " + threadGroupInfo[3]);  // Daemon
   }
 
-  private static ArrayList<Thread> filteredThread(Thread[] threads) {
-    ArrayList<Thread> list = new ArrayList<>(Arrays.asList(threads));
-
-    // Filter out JIT and reporting thread. They may or may not be there depending on configuration.
-    Iterator<Thread> it = list.iterator();
-    while (it.hasNext()) {
-      Thread t = it.next();
-      if (t.getName().startsWith("Jit thread pool worker") ||
-          t.getName().startsWith("Metrics Background Reporting Thread")) {
-        it.remove();
-      }
-    }
-    return list;
-  }
-
   private static void checkChildren(ThreadGroup tg) {
     Object[] data = getThreadGroupChildren(tg);
     Thread[] threads = (Thread[])data[0];
     ThreadGroup[] groups = (ThreadGroup[])data[1];
 
-    List<Thread> threadList = filteredThread(threads);
+    List<Thread> threadList = new ArrayList<>(Arrays.asList(threads));
+
+    // Filter out JIT thread. It may or may not be there depending on configuration.
+    Iterator<Thread> it = threadList.iterator();
+    while (it.hasNext()) {
+      Thread t = it.next();
+      if (t.getName().startsWith("Jit thread pool worker")) {
+        it.remove();
+        break;
+      }
+    }
 
     Collections.sort(threadList, THREAD_COMP);
 
@@ -129,7 +124,15 @@ public class Test925 {
     for (int i = 0; i <  timeoutS; i++) {
       Object[] data = getThreadGroupChildren(tg);
       Thread[] threads = (Thread[])data[0];
-      List<Thread> lthreads = filteredThread(threads);
+      List<Thread> lthreads = new ArrayList<>(Arrays.asList(threads));
+      Iterator<Thread> it = lthreads.iterator();
+      while (it.hasNext()) {
+        Thread t = it.next();
+        if (t.getName().startsWith("Jit thread pool worker")) {
+          it.remove();
+          break;
+        }
+      }
       if (lthreads.size() == expectedChildCount) {
         return;
       }
