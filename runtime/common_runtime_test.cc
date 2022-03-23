@@ -60,7 +60,6 @@
 #include "noop_compiler_callbacks.h"
 #include "profile/profile_compilation_info.h"
 #include "runtime-inl.h"
-#include "runtime_intrinsics.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread.h"
 #include "well_known_classes.h"
@@ -72,11 +71,7 @@ using android::base::StringPrintf;
 static bool unstarted_initialized_ = false;
 
 CommonRuntimeTestImpl::CommonRuntimeTestImpl()
-    : class_linker_(nullptr),
-      java_lang_dex_file_(nullptr),
-      boot_class_path_(),
-      callbacks_(),
-      use_boot_image_(false) {
+    : class_linker_(nullptr), java_lang_dex_file_(nullptr) {
 }
 
 CommonRuntimeTestImpl::~CommonRuntimeTestImpl() {
@@ -99,9 +94,6 @@ void CommonRuntimeTestImpl::SetUp() {
 
   options.push_back(std::make_pair(boot_class_path_string, nullptr));
   options.push_back(std::make_pair(boot_class_path_locations_string, nullptr));
-  if (use_boot_image_) {
-    options.emplace_back("-Ximage:" + GetImageLocation(), nullptr);
-  }
   options.push_back(std::make_pair("-Xcheck:jni", nullptr));
   options.push_back(std::make_pair(min_heap_string, nullptr));
   options.push_back(std::make_pair(max_heap_string, nullptr));
@@ -115,7 +107,7 @@ void CommonRuntimeTestImpl::SetUp() {
 
   SetUpRuntimeOptions(&options);
 
-  // Install compiler-callbacks if SetUpRuntimeOptions hasn't deleted them.
+  // Install compiler-callbacks if SetupRuntimeOptions hasn't deleted them.
   if (callbacks_.get() != nullptr) {
     options.push_back(std::make_pair("compilercallbacks", callbacks_.get()));
   }
@@ -131,7 +123,7 @@ void CommonRuntimeTestImpl::SetUp() {
 
   // Runtime::Create acquired the mutator_lock_ that is normally given away when we
   // Runtime::Start, give it away now and then switch to a more managable ScopedObjectAccess.
-  Thread::Current()->TransitionFromRunnableToSuspended(ThreadState::kNative);
+  Thread::Current()->TransitionFromRunnableToSuspended(kNative);
 
   // Get the boot class path from the runtime so it can be used in tests.
   boot_class_path_ = class_linker_->GetBootClassPath();
@@ -161,10 +153,8 @@ void CommonRuntimeTestImpl::FinalizeSetup() {
     runtime_->RunRootClinits(soa.Self());
   }
 
-  // We're back in native, take the opportunity to initialize well known classes and ensure
-  // intrinsics are initialized.
+  // We're back in native, take the opportunity to initialize well known classes.
   WellKnownClasses::Init(Thread::Current()->GetJniEnv());
-  InitializeIntrinsics();
 
   // Create the heap thread pool so that the GC runs in parallel for tests. Normally, the thread
   // pool is created by the runtime.
@@ -265,8 +255,7 @@ jobject
 CommonRuntimeTestImpl::LoadDexInWellKnownClassLoader(const std::vector<std::string>& dex_names,
                                                      jclass loader_class,
                                                      jobject parent_loader,
-                                                     jobject shared_libraries,
-                                                     jobject shared_libraries_after) {
+                                                     jobject shared_libraries) {
   std::vector<const DexFile*> class_path;
   for (const std::string& dex_name : dex_names) {
     std::vector<std::unique_ptr<const DexFile>> dex_files = OpenTestDexFiles(dex_name.c_str());
@@ -284,8 +273,7 @@ CommonRuntimeTestImpl::LoadDexInWellKnownClassLoader(const std::vector<std::stri
       class_path,
       loader_class,
       parent_loader,
-      shared_libraries,
-      shared_libraries_after);
+      shared_libraries);
 
   {
     // Verify we build the correct chain.
@@ -313,23 +301,19 @@ CommonRuntimeTestImpl::LoadDexInWellKnownClassLoader(const std::vector<std::stri
 
 jobject CommonRuntimeTestImpl::LoadDexInPathClassLoader(const std::string& dex_name,
                                                         jobject parent_loader,
-                                                        jobject shared_libraries,
-                                                        jobject shared_libraries_after) {
+                                                        jobject shared_libraries) {
   return LoadDexInPathClassLoader(std::vector<std::string>{ dex_name },
                                   parent_loader,
-                                  shared_libraries,
-                                  shared_libraries_after);
+                                  shared_libraries);
 }
 
 jobject CommonRuntimeTestImpl::LoadDexInPathClassLoader(const std::vector<std::string>& names,
                                                         jobject parent_loader,
-                                                        jobject shared_libraries,
-                                                        jobject shared_libraries_after) {
+                                                        jobject shared_libraries) {
   return LoadDexInWellKnownClassLoader(names,
                                        WellKnownClasses::dalvik_system_PathClassLoader,
                                        parent_loader,
-                                       shared_libraries,
-                                       shared_libraries_after);
+                                       shared_libraries);
 }
 
 jobject CommonRuntimeTestImpl::LoadDexInDelegateLastClassLoader(const std::string& dex_name,
@@ -403,7 +387,7 @@ void CommonRuntimeTestImpl::SetUpRuntimeOptionsForFillHeap(RuntimeOptions *optio
 void CommonRuntimeTestImpl::MakeInterpreted(ObjPtr<mirror::Class> klass) {
   PointerSize pointer_size = class_linker_->GetImagePointerSize();
   for (ArtMethod& method : klass->GetMethods(pointer_size)) {
-    Runtime::Current()->GetInstrumentation()->InitializeMethodsCode(&method, /*aot_code=*/ nullptr);
+    class_linker_->SetEntryPointsToInterpreter(&method);
   }
 }
 
@@ -457,7 +441,6 @@ bool CommonRuntimeTestImpl::CompileBootImage(const std::vector<std::string>& ext
     "-Xmx64m",
     "--runtime-arg",
     "-Xverify:softfail",
-    "--force-determinism",
   };
   CHECK_EQ(dex_files.size(), dex_locations.size());
   for (const std::string& dex_file : dex_files) {
