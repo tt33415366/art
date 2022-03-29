@@ -30,6 +30,8 @@ import com.android.tradefed.util.CommandResult;
 import java.util.concurrent.TimeUnit;
 
 public class CompOsTestUtils {
+    public static final String APEXDATA_DIR = "/data/misc/apexdata/com.android.compos";
+
     public static final String PENDING_ARTIFACTS_DIR =
             "/data/misc/apexdata/com.android.art/compos-pending";
 
@@ -66,10 +68,6 @@ public class CompOsTestUtils {
         TimeUnit.SECONDS.sleep(SECONDS_BEFORE_PROGRESS_CHECK);
         // The job runs asynchronously. To wait until it completes.
         waitForJobExit(VM_ODREFRESH_MAX_SECONDS - SECONDS_BEFORE_PROGRESS_CHECK);
-
-        // Checks the output validity, then store the hashes of pending files.
-        assertThat(mDevice.getChildren(PENDING_ARTIFACTS_DIR)).asList().containsAtLeast(
-                "cache-info.xml", "compos.info", "compos.info.signature");
     }
 
     public String checksumDirectoryContentPartial(String path) throws Exception {
