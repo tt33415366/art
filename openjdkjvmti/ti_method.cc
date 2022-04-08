@@ -190,8 +190,7 @@ jvmtiError MethodUtil::GetArgumentsSize(jvmtiEnv* env ATTRIBUTE_UNUSED,
     return ERR(NONE);
   }
 
-  DCHECK(art_method->HasCodeItem());
-  DCHECK_NE(art_method->GetCodeItem(), nullptr);
+  DCHECK_NE(art_method->GetCodeItemOffset(), 0u);
   *size_ptr = art_method->DexInstructionData().InsSize();
 
   return ERR(NONE);
@@ -307,8 +306,7 @@ jvmtiError MethodUtil::GetMaxLocals(jvmtiEnv* env ATTRIBUTE_UNUSED,
     return ERR(NONE);
   }
 
-  DCHECK(art_method->HasCodeItem());
-  DCHECK_NE(art_method->GetCodeItem(), nullptr);
+  DCHECK_NE(art_method->GetCodeItemOffset(), 0u);
   *max_ptr = art_method->DexInstructionData().RegistersSize();
 
   return ERR(NONE);
@@ -422,8 +420,7 @@ jvmtiError MethodUtil::GetMethodLocation(jvmtiEnv* env ATTRIBUTE_UNUSED,
     return ERR(NONE);
   }
 
-  DCHECK(art_method->HasCodeItem());
-  DCHECK_NE(art_method->GetCodeItem(), nullptr);
+  DCHECK_NE(art_method->GetCodeItemOffset(), 0u);
   *start_location_ptr = 0;
   *end_location_ptr = art_method->DexInstructions().InsnsSizeInCodeUnits() - 1;
 

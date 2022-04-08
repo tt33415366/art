@@ -143,7 +143,7 @@ public class SimdShort {
   }
 
   //
-  // Shift checks.
+  // Shift sanity.
   //
 
   static void sar31() {

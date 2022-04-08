@@ -219,12 +219,9 @@ public class Test1932 {
     controller1.waitForLockToBeHeld();
     controller1.DoWait();
     controller1.waitForNotifySleep();
-    try (AutoCloseable suppress = SuppressContention(controller2)) {
-      controller2.DoLock();
-      controller2.waitForLockToBeHeld();
-      controller2.DoNotifyAll();
-      // See comment in testWaitMonitorEnter.
-    }
+    controller2.DoLock();
+    controller2.waitForLockToBeHeld();
+    controller2.DoNotifyAll();
     controller2.DoUnlock();
     controller1.waitForLockToBeHeld();
     controller1.DoUnlock();
@@ -249,15 +246,9 @@ public class Test1932 {
     controller1.waitForLockToBeHeld();
     controller1.DoWait();
     controller1.waitForNotifySleep();
-    // We've seen extra messages about contended locking here. They're OK if e.g. controller1
-    // wakes up spuriously before the notification, which is allowed. But in the normal case,
-    // we should not see contended locking here. And the extra messages seem rare enough that
-    // we can tolerate the spurious failures to catch more bugs. See b/149308087.
-    try (AutoCloseable suppress = SuppressContention(controller2)) {
-      controller2.DoLock();
-      controller2.waitForLockToBeHeld();
-      controller2.DoNotifyAll();
-    }
+    controller2.DoLock();
+    controller2.waitForLockToBeHeld();
+    controller2.DoNotifyAll();
     controller2.DoUnlock();
     controller1.waitForLockToBeHeld();
     controller1.DoUnlock();
@@ -281,12 +272,9 @@ public class Test1932 {
     controller2.waitForLockToBeHeld();
     controller2.DoWait();
     controller2.waitForNotifySleep();
-    try (AutoCloseable suppress = SuppressContention(controller1)) {
-      controller1.DoLock();
-      controller1.waitForLockToBeHeld();
-      controller1.DoNotifyAll();
-      // See comment in testWaitMonitorEnter.
-    }
+    controller1.DoLock();
+    controller1.waitForLockToBeHeld();
+    controller1.DoNotifyAll();
     controller2.waitForLockToBeHeld();
     controller2.DoUnlock();
   }
@@ -319,7 +307,6 @@ public class Test1932 {
     controller1.DoLock();
     controller1.waitForLockToBeHeld();
     controller1.DoNotifyAll();
-    // See comment in testWaitMonitorEnter.
     controller1.DoUnlock();
     // Wait for controller3 to have locked.
     // We cannot use waitForLockToBeHeld since we could race with the HANDLER waitForLockToBeHeld
@@ -362,7 +349,6 @@ public class Test1932 {
     controller1.DoLock();
     controller1.waitForLockToBeHeld();
     controller1.DoNotifyAll();
-    // See comment in testWaitMonitorEnter.
     controller1.DoUnlock();
     controller2.waitForLockToBeHeld();
     controller2.DoUnlock();
@@ -432,7 +418,6 @@ public class Test1932 {
     controller2.DoLock();
     controller2.waitForLockToBeHeld();
     controller2.DoNotifyAll();
-    // See comment in testWaitMonitorEnter.
     controller2.DoUnlock();
     try {
       controller1.waitForLockToBeHeld();
@@ -609,22 +594,7 @@ public class Test1932 {
     }
   }
 
-  public static AutoCloseable SuppressContention(Monitors.LockController controller) {
-    if (CONTENTION_SUPPRESSED != null) {
-      throw new IllegalStateException("Only one contention suppression is possible at a time.");
-    }
-    CONTENTION_SUPPRESSED = controller;
-    return () -> {
-      CONTENTION_SUPPRESSED = null;
-    };
-  }
-
-  private static Monitors.LockController CONTENTION_SUPPRESSED = null;
-
   public static void handleMonitorEnter(Thread thd, Object lock) {
-    if (CONTENTION_SUPPRESSED != null && CONTENTION_SUPPRESSED.IsWorkerThread(thd)) {
-      return;
-    }
     System.out.println(thd.getName() + " contended-LOCKING " + lock);
     if (HANDLER != null) {
       HANDLER.handleMonitorEnter(thd, lock);
@@ -632,9 +602,6 @@ public class Test1932 {
   }
 
   public static void handleMonitorEntered(Thread thd, Object lock) {
-    if (CONTENTION_SUPPRESSED != null && CONTENTION_SUPPRESSED.IsWorkerThread(thd)) {
-      return;
-    }
     System.out.println(thd.getName() + " LOCKED " + lock);
     if (HANDLER != null) {
       HANDLER.handleMonitorEntered(thd, lock);

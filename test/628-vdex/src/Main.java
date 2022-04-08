@@ -16,6 +16,7 @@
 
 public class Main {
   Main() {
+    // Will be quickened with RETURN_VOID_NO_BARRIER.
   }
 
   public static void main(String[] args) {

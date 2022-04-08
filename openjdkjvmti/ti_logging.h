@@ -94,9 +94,6 @@ class LogUtil {
  public:
   static jvmtiError ClearLastError(jvmtiEnv* env);
   static jvmtiError GetLastError(jvmtiEnv* env, char** data);
-
-  static jvmtiError SetVerboseFlag(jvmtiEnv* env, jvmtiVerboseFlag flag, jboolean value);
-  static jvmtiError SetVerboseFlagExt(jvmtiEnv* env, const char* data, jboolean enable);
 };
 
 }  // namespace openjdkjvmti

@@ -20,25 +20,24 @@
 #include "jit/jit_code_cache.h"
 #include "jit/profiling_info.h"
 #include "mirror/class.h"
-#include "nativehelper/ScopedUtfChars.h"
 #include "oat_quick_method_header.h"
 #include "scoped_thread_state_change-inl.h"
 #include "stack_map.h"
 
 namespace art {
 
-static bool do_checks(ArtMethod* method, ScopedObjectAccess& soa)
-    REQUIRES_SHARED(Locks::mutator_lock_) {
+static void do_checks(jclass cls, const char* method_name) {
+  ScopedObjectAccess soa(Thread::Current());
+  ObjPtr<mirror::Class> klass = soa.Decode<mirror::Class>(cls);
   jit::Jit* jit = Runtime::Current()->GetJit();
   jit::JitCodeCache* code_cache = jit->GetCodeCache();
+  ArtMethod* method = klass->FindDeclaredDirectMethodByName(method_name, kRuntimePointerSize);
 
   OatQuickMethodHeader* header = nullptr;
   // Infinite loop... Test harness will have its own timeout.
   while (true) {
     const void* pc = method->GetEntryPointFromQuickCompiledCode();
-    if (code_cache->ContainsPc(pc) &&
-        !CodeInfo::IsBaseline(
-            OatQuickMethodHeader::FromEntryPoint(pc)->GetOptimizedCodeInfoPtr())) {
+    if (code_cache->ContainsPc(pc)) {
       header = OatQuickMethodHeader::FromEntryPoint(pc);
       break;
     } else {
@@ -47,36 +46,46 @@ static bool do_checks(ArtMethod* method, ScopedObjectAccess& soa)
       usleep(1000);
     }
     // Will either ensure it's compiled or do the compilation itself.
-    jit->CompileMethod(method, soa.Self(), CompilationKind::kOptimized, /*prejit=*/ false);
+    jit->CompileMethod(method, soa.Self(), /*baseline=*/ false, /*osr=*/ false, /*prejit=*/ false);
   }
 
   CodeInfo info(header);
-  return info.HasInlineInfo();
+  CHECK(info.HasInlineInfo()) << method->PrettyMethod();
 }
 
-extern "C" JNIEXPORT bool JNICALL Java_Main_ensureJittedAndPolymorphicInline566(JNIEnv* env,
-                                                                                jclass cls,
-                                                                                jstring method_name) {
+static void allocate_profiling_info(jclass cls, const char* method_name) {
+  ScopedObjectAccess soa(Thread::Current());
+  ObjPtr<mirror::Class> klass = soa.Decode<mirror::Class>(cls);
+  ArtMethod* method = klass->FindDeclaredDirectMethodByName(method_name, kRuntimePointerSize);
+  ProfilingInfo::Create(soa.Self(), method, /* retry_allocation */ true);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_Main_ensureProfilingInfo566(JNIEnv*, jclass cls) {
   jit::Jit* jit = Runtime::Current()->GetJit();
   if (jit == nullptr) {
-    return true;
+    return;
   }
 
-  // The test only works when we use tiered JIT.
-  if (jit->JitAtFirstUse()) {
-    return true;
+  allocate_profiling_info(cls, "$noinline$testInvokeVirtual");
+  allocate_profiling_info(cls, "$noinline$testInvokeInterface");
+  allocate_profiling_info(cls, "$noinline$testInlineToSameTarget");
+}
+
+extern "C" JNIEXPORT void JNICALL Java_Main_ensureJittedAndPolymorphicInline566(JNIEnv*, jclass cls) {
+  jit::Jit* jit = Runtime::Current()->GetJit();
+  if (jit == nullptr) {
+    return;
   }
 
-  ScopedObjectAccess soa(Thread::Current());
-  ScopedUtfChars chars(env, method_name);
-  ArtMethod* method = soa.Decode<mirror::Class>(cls)->FindDeclaredDirectMethodByName(
-      chars.c_str(), kRuntimePointerSize);
-
-  if (method == nullptr) {
-    return false;
+  if (kIsDebugBuild) {
+    // A debug build might often compile the methods without profiling informations filled.
+    return;
   }
 
-  return do_checks(method, soa);
+  do_checks(cls, "$noinline$testInvokeVirtual");
+  do_checks(cls, "$noinline$testInvokeInterface");
+  do_checks(cls, "$noinline$testInvokeInterface2");
+  do_checks(cls, "$noinline$testInlineToSameTarget");
 }
 
 }  // namespace art

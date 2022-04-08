@@ -53,7 +53,7 @@ template<typename Ass,
          typename FPReg,
          typename Imm,
          typename VecReg = NoVectorRegs>
-class AssemblerTest : public AssemblerTestBase {
+class AssemblerTest : public testing::Test {
  public:
   Ass* GetAssembler() {
     return assembler_.get();
@@ -683,6 +683,11 @@ class AssemblerTest : public AssemblerTestBase {
                                                                     bias);
   }
 
+  // This is intended to be run as a test.
+  bool CheckTools() {
+    return test_helper_->CheckTools();
+  }
+
   // The following functions are public so that TestFn can use them...
 
   // Returns a vector of address used by any of the repeat methods
@@ -733,14 +738,23 @@ class AssemblerTest : public AssemblerTestBase {
   AssemblerTest() {}
 
   void SetUp() override {
-    AssemblerTestBase::SetUp();
     allocator_.reset(new ArenaAllocator(&pool_));
     assembler_.reset(CreateAssembler(allocator_.get()));
+    test_helper_.reset(
+        new AssemblerTestInfrastructure(GetArchitectureString(),
+                                        GetAssemblerCmdName(),
+                                        GetAssemblerParameters(),
+                                        GetObjdumpCmdName(),
+                                        GetObjdumpParameters(),
+                                        GetDisassembleCmdName(),
+                                        GetDisassembleParameters(),
+                                        GetAssemblyHeader()));
+
     SetUpHelpers();
   }
 
   void TearDown() override {
-    AssemblerTestBase::TearDown();
+    test_helper_.reset();  // Clean up the helper.
     assembler_.reset();
     allocator_.reset();
   }
@@ -752,6 +766,38 @@ class AssemblerTest : public AssemblerTestBase {
 
   // Override this to set up any architecture-specific things, e.g., register vectors.
   virtual void SetUpHelpers() {}
+
+  // Get the typically used name for this architecture, e.g., aarch64, x86_64, ...
+  virtual std::string GetArchitectureString() = 0;
+
+  // Get the name of the assembler, e.g., "as" by default.
+  virtual std::string GetAssemblerCmdName() {
+    return "as";
+  }
+
+  // Switches to the assembler command. Default none.
+  virtual std::string GetAssemblerParameters() {
+    return "";
+  }
+
+  // Get the name of the objdump, e.g., "objdump" by default.
+  virtual std::string GetObjdumpCmdName() {
+    return "objdump";
+  }
+
+  // Switches to the objdump command. Default is " -h".
+  virtual std::string GetObjdumpParameters() {
+    return " -h";
+  }
+
+  // Get the name of the objdump, e.g., "objdump" by default.
+  virtual std::string GetDisassembleCmdName() {
+    return "objdump";
+  }
+
+  // Switches to the objdump command. As it's a binary, one needs to push the architecture and
+  // such to objdump, so it's architecture-specific and there is no default.
+  virtual std::string GetDisassembleParameters() = 0;
 
   // Create a couple of immediate values up to the number of bytes given.
   virtual std::vector<int64_t> CreateImmediateValues(size_t imm_bytes, bool as_uint = false) {
@@ -1483,6 +1529,11 @@ class AssemblerTest : public AssemblerTestBase {
     return sreg.str();
   }
 
+  // If the assembly file needs a header, return it in a sub-class.
+  virtual const char* GetAssemblyHeader() {
+    return nullptr;
+  }
+
   void WarnOnCombinations(size_t count) {
     if (count > kWarnManyCombinationsThreshold) {
       GTEST_LOG_(WARNING) << "Many combinations (" << count << "), test generation might be slow.";
@@ -1551,7 +1602,7 @@ class AssemblerTest : public AssemblerTestBase {
     MemoryRegion code(&(*data)[0], data->size());
     assembler_->FinalizeInstructions(code);
     Pad(*data);
-    Driver(*data, assembly_text, test_name);
+    test_helper_->Driver(*data, assembly_text, test_name);
   }
 
   static constexpr size_t kWarnManyCombinationsThreshold = 500;
@@ -1559,6 +1610,7 @@ class AssemblerTest : public AssemblerTestBase {
   MallocArenaPool pool_;
   std::unique_ptr<ArenaAllocator> allocator_;
   std::unique_ptr<Ass> assembler_;
+  std::unique_ptr<AssemblerTestInfrastructure> test_helper_;
 
   DISALLOW_COPY_AND_ASSIGN(AssemblerTest);
 };

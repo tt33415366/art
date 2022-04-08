@@ -59,7 +59,7 @@ public class Base {
     this(0.0, objectValue);
   }
 
-  Base(int intValue, long unused) {
+  Base(int intValue, long dummy) {
     this(intValue, 0.0, null);
   }
 

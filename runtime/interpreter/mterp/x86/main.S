@@ -448,6 +448,7 @@ ENTRY ExecuteMterpImpl
 /* Transfer stub to alternate interpreter */
     jmp     MterpFallback
 
+
 %def helpers():
     ENTRY MterpHelpers
 
@@ -792,9 +793,6 @@ SYMBOL(artMterpAsmInstructionEnd):
     .global SYMBOL(artMterpAsmInstructionStart)
 SYMBOL(artMterpAsmInstructionStart) = .L_op_nop
     .text
-
-%def default_helper_prefix():
-%  return "mterp_"
 
 %def opcode_start():
     ENTRY mterp_${opcode}

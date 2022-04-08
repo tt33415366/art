@@ -104,7 +104,6 @@ Class #0            -
       name          : '<init>'
       type          : '()V'
       access        : 0x10001 (PUBLIC CONSTRUCTOR)
-      method_idx    : 0
       code          -
       registers     : 1
       ins           : 1
@@ -121,7 +120,6 @@ Class #0            -
       name          : 'arrays'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 1
       code          -
       registers     : 3
       ins           : 0
@@ -151,7 +149,6 @@ Class #0            -
       name          : 'binary_ops'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 2
       code          -
       registers     : 3
       ins           : 0
@@ -199,7 +196,6 @@ Class #0            -
       name          : 'binary_ops_2addr'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 3
       code          -
       registers     : 2
       ins           : 0
@@ -247,7 +243,6 @@ Class #0            -
       name          : 'binary_ops_lit16'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 4
       code          -
       registers     : 2
       ins           : 0
@@ -271,7 +266,6 @@ Class #0            -
       name          : 'binary_ops_lit8'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 5
       code          -
       registers     : 2
       ins           : 0
@@ -298,7 +292,6 @@ Class #0            -
       name          : 'compares'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 6
       code          -
       registers     : 3
       ins           : 0
@@ -319,7 +312,6 @@ Class #0            -
       name          : 'conditionals'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 7
       code          -
       registers     : 2
       ins           : 0
@@ -347,7 +339,6 @@ Class #0            -
       name          : 'constants'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 8
       code          -
       registers     : 1
       ins           : 0
@@ -374,7 +365,6 @@ Class #0            -
       name          : 'misc'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 11
       code          -
       registers     : 5
       ins           : 0
@@ -407,7 +397,6 @@ Class #0            -
       name          : 'moves'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 12
       code          -
       registers     : 2
       ins           : 0
@@ -436,7 +425,6 @@ Class #0            -
       name          : 'packed_switch'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 13
       code          -
       registers     : 1
       ins           : 0
@@ -458,7 +446,6 @@ Class #0            -
       name          : 'return32'
       type          : '()I'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 14
       code          -
       registers     : 1
       ins           : 0
@@ -474,7 +461,6 @@ Class #0            -
       name          : 'return64'
       type          : '()I'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 15
       code          -
       registers     : 2
       ins           : 0
@@ -490,7 +476,6 @@ Class #0            -
       name          : 'return_object'
       type          : '()Ljava/lang/Object;'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 16
       code          -
       registers     : 1
       ins           : 0
@@ -506,7 +491,6 @@ Class #0            -
       name          : 'sparse_switch'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 17
       code          -
       registers     : 2
       ins           : 0
@@ -524,7 +508,6 @@ Class #0            -
       name          : 'static_fields'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 18
       code          -
       registers     : 1
       ins           : 0
@@ -554,7 +537,6 @@ Class #0            -
       name          : 'unary_ops'
       type          : '()V'
       access        : 0x0009 (PUBLIC STATIC)
-      method_idx    : 19
       code          -
       registers     : 2
       ins           : 0
@@ -592,7 +574,6 @@ Class #0            -
       name          : 'instance_fields'
       type          : '()V'
       access        : 0x0001 (PUBLIC)
-      method_idx    : 9
       code          -
       registers     : 2
       ins           : 1
@@ -622,7 +603,6 @@ Class #0            -
       name          : 'invokes'
       type          : '()V'
       access        : 0x0001 (PUBLIC)
-      method_idx    : 10
       code          -
       registers     : 5
       ins           : 1

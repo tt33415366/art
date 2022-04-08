@@ -57,7 +57,7 @@ enum ThreadState {
   kNative,                          // RUNNABLE       TS_RUNNING   running in a JNI native method
   kSuspended,                       // RUNNABLE       TS_RUNNING   suspended by GC or debugger
 };
-std::ostream& operator<<(std::ostream& os, ThreadState rhs);
+std::ostream& operator<<(std::ostream& os, const ThreadState& rhs);
 
 }  // namespace art
 

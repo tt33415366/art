@@ -46,9 +46,6 @@ class DexContainer {
     // Clear the container.
     virtual void Clear() = 0;
 
-    // Release the data, clearing the container contents.
-    virtual std::vector<uint8_t> ReleaseData() = 0;
-
     // Returns the end of the memory region.
     uint8_t* End() {
       return Begin() + Size();
@@ -74,12 +71,6 @@ class DexContainer {
 
     void Clear() override {
       data_.clear();
-    }
-
-    std::vector<uint8_t> ReleaseData() override {
-      std::vector<uint8_t> temp;
-      temp.swap(data_);
-      return temp;
     }
 
    private:

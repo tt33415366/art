@@ -78,4 +78,4 @@ to a mode that requires inter-instruction checking, rIBASE is changed
 to altHandlerTable.  Note that this change is not immediate.  What is actually
 changed is the value of curHandlerTable - which is part of the interpBreak
 structure.  Rather than explicitly check for changes, each thread will
-unconditionally refresh rIBASE at backward branches, exception throws and returns.
+blindly refresh rIBASE at backward branches, exception throws and returns.

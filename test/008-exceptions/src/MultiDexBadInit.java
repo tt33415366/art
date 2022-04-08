@@ -15,7 +15,7 @@
  */
 
 class MultiDexBadInit {
-    static int intField;
+    static int dummy;
     static {
         System.out.println("MultiDexBadInit Static Init");
         if (true) {

@@ -142,7 +142,7 @@ public class SimdByte {
   }
 
   //
-  // Shift checks.
+  // Shift sanity.
   //
 
   static void sar31() {

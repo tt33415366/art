@@ -28,8 +28,6 @@ namespace mirror {
 // C++ mirror of java.lang.reflect.Proxy.
 class MANAGED Proxy final : public Object {
  private:
-  MIRROR_CLASS("Ljava/lang/reflect/Proxy;");
-
   HeapReference<Object> h_;
 
   friend struct art::ProxyOffsets;  // for verifying offset information

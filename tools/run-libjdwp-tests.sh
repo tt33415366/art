@@ -40,7 +40,6 @@ debug="no"
 has_variant="no"
 has_mode="no"
 mode="target"
-has_gcstress="no"
 has_timeout="no"
 has_verbose="no"
 # The bitmap of log messages in libjdwp. See list in the help message for more
@@ -88,9 +87,6 @@ while true; do
   elif [[ $1 == --variant=* ]]; then
     has_variant="yes"
     shift
-  elif [[ $1 == *gcstress ]]; then
-    has_gcstress="yes"
-    shift
   elif [[ "$1" == "" ]]; then
     break
   else
@@ -110,12 +106,11 @@ fi
 if [[ "$has_timeout" = "no" ]]; then
   # Double the timeout to 20 seconds
   args+=(--test-timeout-ms)
-  if [[ "$has_verbose" = "yes" || "$has_gcstress" = "yes" ]]; then
-    # Extra time if verbose or gcstress is set since those can be
-    # quite heavy.
-    args+=(300000)
-  else
+  if [[ "$has_verbose" = "no" ]]; then
     args+=(20000)
+  else
+    # Even more time if verbose is set since those can be quite heavy.
+    args+=(200000)
   fi
 fi
 

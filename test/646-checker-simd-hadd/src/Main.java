@@ -22,6 +22,5 @@ public class Main {
     HaddByte.main();
     HaddShort.main();
     HaddChar.main();
-    HaddOther.main();
   }
 }

@@ -17,7 +17,6 @@
 #include "optimization.h"
 
 #ifdef ART_ENABLE_CODEGEN_arm
-#include "critical_native_abi_fixup_arm.h"
 #include "instruction_simplifier_arm.h"
 #endif
 #ifdef ART_ENABLE_CODEGEN_arm64
@@ -49,6 +48,7 @@
 #include "instruction_simplifier.h"
 #include "intrinsics.h"
 #include "licm.h"
+#include "load_store_analysis.h"
 #include "load_store_elimination.h"
 #include "loop_optimization.h"
 #include "scheduler.h"
@@ -66,6 +66,8 @@ const char* OptimizationPassName(OptimizationPass pass) {
       return SideEffectsAnalysis::kSideEffectsAnalysisPassName;
     case OptimizationPass::kInductionVarAnalysis:
       return HInductionVarAnalysis::kInductionPassName;
+    case OptimizationPass::kLoadStoreAnalysis:
+      return LoadStoreAnalysis::kLoadStoreAnalysisPassName;
     case OptimizationPass::kGlobalValueNumbering:
       return GVNOptimization::kGlobalValueNumberingPassName;
     case OptimizationPass::kInvariantCodeMotion:
@@ -84,7 +86,6 @@ const char* OptimizationPassName(OptimizationPass pass) {
       return HInliner::kInlinerPassName;
     case OptimizationPass::kSelectGenerator:
       return HSelectGenerator::kSelectGeneratorPassName;
-    case OptimizationPass::kAggressiveInstructionSimplifier:
     case OptimizationPass::kInstructionSimplifier:
       return InstructionSimplifier::kInstructionSimplifierPassName;
     case OptimizationPass::kCHAGuardOptimization:
@@ -98,8 +99,6 @@ const char* OptimizationPassName(OptimizationPass pass) {
 #ifdef ART_ENABLE_CODEGEN_arm
     case OptimizationPass::kInstructionSimplifierArm:
       return arm::InstructionSimplifierArm::kInstructionSimplifierArmPassName;
-    case OptimizationPass::kCriticalNativeAbiFixupArm:
-      return arm::CriticalNativeAbiFixupArm::kCriticalNativeAbiFixupArmPassName;
 #endif
 #ifdef ART_ENABLE_CODEGEN_arm64
     case OptimizationPass::kInstructionSimplifierArm64:
@@ -139,6 +138,7 @@ OptimizationPass OptimizationPassByName(const std::string& pass_name) {
   X(OptimizationPass::kInliner);
   X(OptimizationPass::kInstructionSimplifier);
   X(OptimizationPass::kInvariantCodeMotion);
+  X(OptimizationPass::kLoadStoreAnalysis);
   X(OptimizationPass::kLoadStoreElimination);
   X(OptimizationPass::kLoopOptimization);
   X(OptimizationPass::kScheduling);
@@ -146,7 +146,6 @@ OptimizationPass OptimizationPassByName(const std::string& pass_name) {
   X(OptimizationPass::kSideEffectsAnalysis);
 #ifdef ART_ENABLE_CODEGEN_arm
   X(OptimizationPass::kInstructionSimplifierArm);
-  X(OptimizationPass::kCriticalNativeAbiFixupArm);
 #endif
 #ifdef ART_ENABLE_CODEGEN_arm64
   X(OptimizationPass::kInstructionSimplifierArm64);
@@ -168,7 +167,8 @@ ArenaVector<HOptimization*> ConstructOptimizations(
     HGraph* graph,
     OptimizingCompilerStats* stats,
     CodeGenerator* codegen,
-    const DexCompilationUnit& dex_compilation_unit) {
+    const DexCompilationUnit& dex_compilation_unit,
+    VariableSizedHandleScope* handles) {
   ArenaVector<HOptimization*> optimizations(allocator->Adapter());
 
   // Some optimizations require SideEffectsAnalysis or HInductionVarAnalysis
@@ -176,6 +176,7 @@ ArenaVector<HOptimization*> ConstructOptimizations(
   // name list or fails fatally if no such analysis can be found.
   SideEffectsAnalysis* most_recent_side_effects = nullptr;
   HInductionVarAnalysis* most_recent_induction = nullptr;
+  LoadStoreAnalysis* most_recent_lsa = nullptr;
 
   // Loop over the requested optimizations.
   for (size_t i = 0; i < length; i++) {
@@ -196,6 +197,9 @@ ArenaVector<HOptimization*> ConstructOptimizations(
       case OptimizationPass::kInductionVarAnalysis:
         opt = most_recent_induction = new (allocator) HInductionVarAnalysis(graph, pass_name);
         break;
+      case OptimizationPass::kLoadStoreAnalysis:
+        opt = most_recent_lsa = new (allocator) LoadStoreAnalysis(graph, pass_name);
+        break;
       //
       // Passes that need prior analysis.
       //
@@ -210,12 +214,17 @@ ArenaVector<HOptimization*> ConstructOptimizations(
       case OptimizationPass::kLoopOptimization:
         CHECK(most_recent_induction != nullptr);
         opt = new (allocator) HLoopOptimization(
-            graph, *codegen, most_recent_induction, stats, pass_name);
+            graph, &codegen->GetCompilerOptions(), most_recent_induction, stats, pass_name);
         break;
       case OptimizationPass::kBoundsCheckElimination:
         CHECK(most_recent_side_effects != nullptr && most_recent_induction != nullptr);
         opt = new (allocator) BoundsCheckElimination(
             graph, *most_recent_side_effects, most_recent_induction, pass_name);
+        break;
+      case OptimizationPass::kLoadStoreElimination:
+        CHECK(most_recent_side_effects != nullptr && most_recent_induction != nullptr);
+        opt = new (allocator) LoadStoreElimination(
+            graph, *most_recent_side_effects, *most_recent_lsa, stats, pass_name);
         break;
       //
       // Regular passes.
@@ -234,6 +243,7 @@ ArenaVector<HOptimization*> ConstructOptimizations(
                                        codegen,
                                        dex_compilation_unit,    // outer_compilation_unit
                                        dex_compilation_unit,    // outermost_compilation_unit
+                                       handles,
                                        stats,
                                        accessor.RegistersSize(),
                                        /* total_number_of_instructions= */ 0,
@@ -243,17 +253,10 @@ ArenaVector<HOptimization*> ConstructOptimizations(
         break;
       }
       case OptimizationPass::kSelectGenerator:
-        opt = new (allocator) HSelectGenerator(graph, stats, pass_name);
+        opt = new (allocator) HSelectGenerator(graph, handles, stats, pass_name);
         break;
       case OptimizationPass::kInstructionSimplifier:
         opt = new (allocator) InstructionSimplifier(graph, codegen, stats, pass_name);
-        break;
-      case OptimizationPass::kAggressiveInstructionSimplifier:
-        opt = new (allocator) InstructionSimplifier(graph,
-                                                    codegen,
-                                                    stats,
-                                                    pass_name,
-                                                    /* use_all_optimizations_ = */ true);
         break;
       case OptimizationPass::kCHAGuardOptimization:
         opt = new (allocator) CHAGuardOptimization(graph, pass_name);
@@ -263,9 +266,6 @@ ArenaVector<HOptimization*> ConstructOptimizations(
         break;
       case OptimizationPass::kConstructorFenceRedundancyElimination:
         opt = new (allocator) ConstructorFenceRedundancyElimination(graph, stats, pass_name);
-        break;
-      case OptimizationPass::kLoadStoreElimination:
-        opt = new (allocator) LoadStoreElimination(graph, stats, pass_name);
         break;
       case OptimizationPass::kScheduling:
         opt = new (allocator) HInstructionScheduling(
@@ -278,10 +278,6 @@ ArenaVector<HOptimization*> ConstructOptimizations(
       case OptimizationPass::kInstructionSimplifierArm:
         DCHECK(alt_name == nullptr) << "arch-specific pass does not support alternative name";
         opt = new (allocator) arm::InstructionSimplifierArm(graph, stats);
-        break;
-      case OptimizationPass::kCriticalNativeAbiFixupArm:
-        DCHECK(alt_name == nullptr) << "arch-specific pass does not support alternative name";
-        opt = new (allocator) arm::CriticalNativeAbiFixupArm(graph, stats);
         break;
 #endif
 #ifdef ART_ENABLE_CODEGEN_arm64
@@ -315,7 +311,7 @@ ArenaVector<HOptimization*> ConstructOptimizations(
 
     // Add each next optimization to result vector.
     CHECK(opt != nullptr);
-    DCHECK_STREQ(pass_name, opt->GetPassName());  // Consistency check.
+    DCHECK_STREQ(pass_name, opt->GetPassName());  // sanity
     optimizations.push_back(opt);
   }
 

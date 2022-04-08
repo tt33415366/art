@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include "base/file_utils.h"
 #include "class_loader_utils.h"
 #include "jni.h"
 #include "nativehelper/scoped_utf_chars.h"
@@ -82,27 +81,25 @@ extern "C" JNIEXPORT bool JNICALL Java_Main_hasVdexFile(JNIEnv*,
   StackHandleScope<1> hs(soa.Self());
   Handle<mirror::ClassLoader> h_loader = hs.NewHandle(soa.Decode<mirror::ClassLoader>(loader));
 
-  std::vector<const DexFile*> dex_files;
+  std::vector<const DexFile::Header*> dex_headers;
   VisitClassLoaderDexFiles(
       soa,
       h_loader,
       [&](const DexFile* dex_file) {
-        dex_files.push_back(dex_file);
+        dex_headers.push_back(&dex_file->GetHeader());
         return true;
       });
 
-  std::string dex_location = dex_files[0]->GetLocation();
-  std::string odex_filename;
+  uint32_t location_checksum;
+  std::string dex_location;
+  std::string vdex_filename;
   std::string error_msg;
-  if (!OatFileAssistant::DexLocationToOdexFilename(dex_location,
-                                                   kRuntimeISA,
-                                                   &odex_filename,
-                                                   &error_msg)) {
-    LOG(WARNING) << "Could not get odex filename for " << dex_location << ": " << error_msg;
-    return false;
-  }
-
-  return OS::FileExists(GetVdexFilename(odex_filename).c_str());
+  return OatFileAssistant::AnonymousDexVdexLocation(dex_headers,
+                                                    kRuntimeISA,
+                                                    &location_checksum,
+                                                    &dex_location,
+                                                    &vdex_filename) &&
+         OS::FileExists(vdex_filename.c_str());
 }
 
 extern "C" JNIEXPORT jboolean JNICALL Java_Main_isBackedByOatFile(JNIEnv*,
@@ -161,7 +158,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_Main_areClassesPreverified(JNIEnv*,
 
       ClassStatus oat_file_class_status(ClassStatus::kNotReady);
       bool is_preverified = class_linker->VerifyClassUsingOatFile(
-          soa.Self(), *dex_file, h_class, oat_file_class_status);
+          *dex_file, h_class.Get(), oat_file_class_status);
 
       if (is_first) {
         all_preverified = is_preverified;

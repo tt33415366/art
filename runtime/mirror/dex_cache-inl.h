@@ -63,11 +63,12 @@ inline T* DexCachePair<T>::GetObjectForIndex(uint32_t idx) {
 }
 
 template <typename T>
-inline void NativeDexCachePair<T>::Initialize(std::atomic<NativeDexCachePair<T>>* dex_cache) {
+inline void NativeDexCachePair<T>::Initialize(std::atomic<NativeDexCachePair<T>>* dex_cache,
+                                              PointerSize pointer_size) {
   NativeDexCachePair<T> first_elem;
   first_elem.object = nullptr;
   first_elem.index = InvalidIndexForSlot(0);
-  DexCache::SetNativePair(dex_cache, 0, first_elem);
+  DexCache::SetNativePairPtrSize(dex_cache, 0, first_elem, pointer_size);
 }
 
 inline uint32_t DexCache::ClassSize(PointerSize pointer_size) {
@@ -243,15 +244,29 @@ inline uint32_t DexCache::FieldSlotIndex(uint32_t field_idx) {
   return slot_idx;
 }
 
-inline ArtField* DexCache::GetResolvedField(uint32_t field_idx) {
-  auto pair = GetNativePair(GetResolvedFields(), FieldSlotIndex(field_idx));
+inline ArtField* DexCache::GetResolvedField(uint32_t field_idx, PointerSize ptr_size) {
+  DCHECK_EQ(Runtime::Current()->GetClassLinker()->GetImagePointerSize(), ptr_size);
+  auto pair = GetNativePairPtrSize(GetResolvedFields(), FieldSlotIndex(field_idx), ptr_size);
   return pair.GetObjectForIndex(field_idx);
 }
 
-inline void DexCache::SetResolvedField(uint32_t field_idx, ArtField* field) {
+inline void DexCache::SetResolvedField(uint32_t field_idx, ArtField* field, PointerSize ptr_size) {
+  DCHECK_EQ(Runtime::Current()->GetClassLinker()->GetImagePointerSize(), ptr_size);
   DCHECK(field != nullptr);
   FieldDexCachePair pair(field, field_idx);
-  SetNativePair(GetResolvedFields(), FieldSlotIndex(field_idx), pair);
+  SetNativePairPtrSize(GetResolvedFields(), FieldSlotIndex(field_idx), pair, ptr_size);
+}
+
+inline void DexCache::ClearResolvedField(uint32_t field_idx, PointerSize ptr_size) {
+  DCHECK_EQ(Runtime::Current()->GetClassLinker()->GetImagePointerSize(), ptr_size);
+  uint32_t slot_idx = FieldSlotIndex(field_idx);
+  auto* resolved_fields = GetResolvedFields();
+  // This is racy but should only be called from the single-threaded ImageWriter.
+  DCHECK(Runtime::Current()->IsAotCompiler());
+  if (GetNativePairPtrSize(resolved_fields, slot_idx, ptr_size).index == field_idx) {
+    FieldDexCachePair cleared(nullptr, FieldDexCachePair::InvalidIndexForSlot(slot_idx));
+    SetNativePairPtrSize(resolved_fields, slot_idx, cleared, ptr_size);
+  }
 }
 
 inline uint32_t DexCache::MethodSlotIndex(uint32_t method_idx) {
@@ -261,21 +276,38 @@ inline uint32_t DexCache::MethodSlotIndex(uint32_t method_idx) {
   return slot_idx;
 }
 
-inline ArtMethod* DexCache::GetResolvedMethod(uint32_t method_idx) {
-  auto pair = GetNativePair(GetResolvedMethods(), MethodSlotIndex(method_idx));
+inline ArtMethod* DexCache::GetResolvedMethod(uint32_t method_idx, PointerSize ptr_size) {
+  DCHECK_EQ(Runtime::Current()->GetClassLinker()->GetImagePointerSize(), ptr_size);
+  auto pair = GetNativePairPtrSize(GetResolvedMethods(), MethodSlotIndex(method_idx), ptr_size);
   return pair.GetObjectForIndex(method_idx);
 }
 
-inline void DexCache::SetResolvedMethod(uint32_t method_idx, ArtMethod* method) {
+inline void DexCache::SetResolvedMethod(uint32_t method_idx,
+                                        ArtMethod* method,
+                                        PointerSize ptr_size) {
+  DCHECK_EQ(Runtime::Current()->GetClassLinker()->GetImagePointerSize(), ptr_size);
   DCHECK(method != nullptr);
   MethodDexCachePair pair(method, method_idx);
-  SetNativePair(GetResolvedMethods(), MethodSlotIndex(method_idx), pair);
+  SetNativePairPtrSize(GetResolvedMethods(), MethodSlotIndex(method_idx), pair, ptr_size);
+}
+
+inline void DexCache::ClearResolvedMethod(uint32_t method_idx, PointerSize ptr_size) {
+  DCHECK_EQ(Runtime::Current()->GetClassLinker()->GetImagePointerSize(), ptr_size);
+  uint32_t slot_idx = MethodSlotIndex(method_idx);
+  auto* resolved_methods = GetResolvedMethods();
+  // This is racy but should only be called from the single-threaded ImageWriter.
+  DCHECK(Runtime::Current()->IsAotCompiler());
+  if (GetNativePairPtrSize(resolved_methods, slot_idx, ptr_size).index == method_idx) {
+    MethodDexCachePair cleared(nullptr, MethodDexCachePair::InvalidIndexForSlot(slot_idx));
+    SetNativePairPtrSize(resolved_methods, slot_idx, cleared, ptr_size);
+  }
 }
 
 template <typename T>
-NativeDexCachePair<T> DexCache::GetNativePair(std::atomic<NativeDexCachePair<T>>* pair_array,
-                                              size_t idx) {
-  if (kRuntimePointerSize == PointerSize::k64) {
+NativeDexCachePair<T> DexCache::GetNativePairPtrSize(std::atomic<NativeDexCachePair<T>>* pair_array,
+                                                     size_t idx,
+                                                     PointerSize ptr_size) {
+  if (ptr_size == PointerSize::k64) {
     auto* array = reinterpret_cast<std::atomic<ConversionPair64>*>(pair_array);
     ConversionPair64 value = AtomicLoadRelaxed16B(&array[idx]);
     return NativeDexCachePair<T>(reinterpret_cast64<T*>(value.first),
@@ -288,10 +320,11 @@ NativeDexCachePair<T> DexCache::GetNativePair(std::atomic<NativeDexCachePair<T>>
 }
 
 template <typename T>
-void DexCache::SetNativePair(std::atomic<NativeDexCachePair<T>>* pair_array,
-                             size_t idx,
-                             NativeDexCachePair<T> pair) {
-  if (kRuntimePointerSize == PointerSize::k64) {
+void DexCache::SetNativePairPtrSize(std::atomic<NativeDexCachePair<T>>* pair_array,
+                                    size_t idx,
+                                    NativeDexCachePair<T> pair,
+                                    PointerSize ptr_size) {
+  if (ptr_size == PointerSize::k64) {
     auto* array = reinterpret_cast<std::atomic<ConversionPair64>*>(pair_array);
     ConversionPair64 v(reinterpret_cast64<uint64_t>(pair.object), pair.index);
     AtomicStoreRelease16B(&array[idx], v);

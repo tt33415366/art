@@ -17,7 +17,7 @@
 #ifndef ART_LIBNATIVELOADER_NATIVE_LOADER_NAMESPACE_H_
 #define ART_LIBNATIVELOADER_NATIVE_LOADER_NAMESPACE_H_
 
-#if defined(ART_TARGET_ANDROID)
+#if defined(__ANDROID__)
 
 #include <string>
 #include <variant>
@@ -42,7 +42,7 @@ struct NativeLoaderNamespace {
                                               const std::string& search_paths,
                                               const std::string& permitted_paths,
                                               const NativeLoaderNamespace* parent, bool is_shared,
-                                              bool is_exempt_list_enabled,
+                                              bool is_greylist_enabled,
                                               bool also_used_as_anonymous);
 
   NativeLoaderNamespace(NativeLoaderNamespace&&) = default;
@@ -55,11 +55,7 @@ struct NativeLoaderNamespace {
   std::string name() const { return name_; }
   bool IsBridged() const { return raw_.index() == 1; }
 
-  // Creates a link from this namespace to target for the ":"-separated list of
-  // libraries in shared_libs. If target is nullptr it creates a link to the
-  // default namespace.
-  Result<void> Link(const NativeLoaderNamespace* target, const std::string& shared_libs) const;
-
+  Result<void> Link(const NativeLoaderNamespace& target, const std::string& shared_libs) const;
   Result<void*> Load(const char* lib_name) const;
 
   static Result<NativeLoaderNamespace> GetExportedNamespace(const std::string& name,
@@ -77,6 +73,6 @@ struct NativeLoaderNamespace {
 };
 
 }  // namespace android
-#endif  // #if defined(ART_TARGET_ANDROID)
+#endif  // #if defined(__ANDROID__)
 
 #endif  // ART_LIBNATIVELOADER_NATIVE_LOADER_NAMESPACE_H_

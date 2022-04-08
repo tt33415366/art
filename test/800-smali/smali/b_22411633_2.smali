@@ -28,7 +28,7 @@
 
 :LabelMergeObject
 
-       # Arbitrary work to separate blocks. At this point, v4 is of type Reference<Object>.
+       # Dummy work to separate blocks. At this point, v4 is of type Reference<Object>.
        add-int/lit16 v3, v3, 1
 
 :LabelMerge

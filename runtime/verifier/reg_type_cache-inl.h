@@ -17,9 +17,8 @@
 #ifndef ART_RUNTIME_VERIFIER_REG_TYPE_CACHE_INL_H_
 #define ART_RUNTIME_VERIFIER_REG_TYPE_CACHE_INL_H_
 
-#include "base/bit_vector-inl.h"
 #include "class_linker.h"
-#include "class_root-inl.h"
+#include "class_root.h"
 #include "mirror/class-inl.h"
 #include "mirror/method_handle_impl.h"
 #include "mirror/method_type.h"

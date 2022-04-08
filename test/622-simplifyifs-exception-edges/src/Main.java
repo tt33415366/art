@@ -39,5 +39,5 @@ public class Main {
     }
 
     // Workaround for non-zero field ids offset in dex file with no fields. Bug: 18051191
-    static final boolean PLACEHOLDER = false;
+    static final boolean dummy = false;
 }

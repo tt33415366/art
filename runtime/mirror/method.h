@@ -30,9 +30,7 @@ class Class;
 // C++ mirror of java.lang.reflect.Method.
 class MANAGED Method : public Executable {
  public:
-  MIRROR_CLASS("Ljava/lang/reflect/Method;");
-
-  template <PointerSize kPointerSize>
+  template <PointerSize kPointerSize, bool kTransactionActive>
   static ObjPtr<Method> CreateFromArtMethod(Thread* self, ArtMethod* method)
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!Roles::uninterruptible_);
 
@@ -43,9 +41,7 @@ class MANAGED Method : public Executable {
 // C++ mirror of java.lang.reflect.Constructor.
 class MANAGED Constructor: public Executable {
  public:
-  MIRROR_CLASS("Ljava/lang/reflect/Constructor;");
-
-  template <PointerSize kPointerSize>
+  template <PointerSize kPointerSize, bool kTransactionActive>
   static ObjPtr<Constructor> CreateFromArtMethod(Thread* self, ArtMethod* method)
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!Roles::uninterruptible_);
 

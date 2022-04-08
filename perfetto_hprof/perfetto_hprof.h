@@ -35,7 +35,7 @@ enum class State {
   kEnd,
 };
 
-std::ostream& operator<<(std::ostream& os, State state);
+std::ostream& operator<<(std::ostream&, const State&);
 
 }  // namespace perfetto_hprof
 

@@ -327,9 +327,6 @@ public class Test993 {
   }
 
   public static void run() throws Exception {
-    run(false);
-  }
-  public static void run(boolean test_BCP_private) throws Exception {
     // Set up breakpoints
     Breakpoint.stopBreakpointWatch(Thread.currentThread());
     Breakpoint.startBreakpointWatch(
@@ -339,7 +336,7 @@ public class Test993 {
         Thread.currentThread());
 
     runMethodTests();
-    runBCPMethodTests(test_BCP_private);
+    runBCPMethodTests();
     runConstructorTests();
 
     Breakpoint.stopBreakpointWatch(Thread.currentThread());
@@ -374,14 +371,12 @@ public class Test993 {
   // These test to make sure we are able to break on functions that might have been quickened or
   // inlined from the boot-image. These were all chosen for being in the bootclasspath, not being
   // long enough to prevent inlining, and not being used for the testing framework.
-  public static void runBCPMethodTests(boolean test_BCP_private) throws Exception {
+  public static void runBCPMethodTests() throws Exception {
     // The methods we will be breaking on.
-    Method bcp_private_method =
-        test_BCP_private ? Duration.class.getDeclaredMethod("toBigDecimalSeconds") : null;
+    Method bcp_private_method = Duration.class.getDeclaredMethod("toSeconds");
     Method bcp_virtual_method = Optional.class.getDeclaredMethod("isPresent");
     Method bcp_static_method = Optional.class.getDeclaredMethod("empty");
-    Method bcp_private_static_method =
-        test_BCP_private ? Random.class.getDeclaredMethod("seedUniquifier") : null;
+    Method bcp_private_static_method = Random.class.getDeclaredMethod("seedUniquifier");
 
     // Some constructors we will break on.
     Constructor<?> bcp_stack_constructor = Stack.class.getConstructor();
@@ -425,31 +420,27 @@ public class Test993 {
     runTestGroups("bcp static invoke", static_invokes, static_breakpoints);
 
     // Static private class function
-    if (test_BCP_private) {
-      Runnable[] private_static_invokes = new Runnable[] {
-        new InvokeNativeLong(bcp_private_static_method, null),
+    Runnable[] private_static_invokes = new Runnable[] {
+      new InvokeNativeLong(bcp_private_static_method, null),
 
-        new InvokeDirect("Random::seedUniquifier", () -> { new Random(); }),
-      };
-      Breakpoint.Manager.BP[] private_static_breakpoints = new Breakpoint.Manager.BP[] {
-        BP(bcp_private_static_method)
-      };
-      runTestGroups("bcp private static invoke", private_static_invokes, private_static_breakpoints);
-    }
+      new InvokeDirect("Random::seedUniquifier", () -> { new Random(); }),
+    };
+    Breakpoint.Manager.BP[] private_static_breakpoints = new Breakpoint.Manager.BP[] {
+      BP(bcp_private_static_method)
+    };
+    runTestGroups("bcp private static invoke", private_static_invokes, private_static_breakpoints);
 
     // private class method
-    if (test_BCP_private) {
-      Duration test_duration = Duration.ofDays(14);
-      Runnable[] private_invokes = new Runnable[] {
-        new InvokeNativeObject(bcp_private_method, test_duration),
+    Duration test_duration = Duration.ofDays(14);
+    Runnable[] private_invokes = new Runnable[] {
+      new InvokeNativeObject(bcp_private_method, test_duration),
 
-        new InvokeDirect("Duration::toBigDecimalSeconds", () -> { test_duration.multipliedBy(2); }),
-      };
-      Breakpoint.Manager.BP[] private_breakpoints = new Breakpoint.Manager.BP[] {
-        BP(bcp_private_method)
-      };
-      runTestGroups("bcp private invoke", private_invokes, private_breakpoints);
-    }
+      new InvokeDirect("Duration::toSeconds", () -> { test_duration.multipliedBy(2); }),
+    };
+    Breakpoint.Manager.BP[] private_breakpoints = new Breakpoint.Manager.BP[] {
+      BP(bcp_private_method)
+    };
+    runTestGroups("bcp private invoke", private_invokes, private_breakpoints);
 
     // class method
     Runnable[] public_invokes = new Runnable[] {

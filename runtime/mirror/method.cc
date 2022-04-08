@@ -17,7 +17,7 @@
 #include "method.h"
 
 #include "art_method.h"
-#include "class_root-inl.h"
+#include "class_root.h"
 #include "mirror/class-alloc-inl.h"
 #include "mirror/object-inl.h"
 #include "obj_ptr-inl.h"
@@ -25,35 +25,43 @@
 namespace art {
 namespace mirror {
 
-template <PointerSize kPointerSize>
+template <PointerSize kPointerSize, bool kTransactionActive>
 ObjPtr<Method> Method::CreateFromArtMethod(Thread* self, ArtMethod* method) {
   DCHECK(!method->IsConstructor()) << method->PrettyMethod();
   ObjPtr<Method> ret = ObjPtr<Method>::DownCast(GetClassRoot<Method>()->AllocObject(self));
   if (LIKELY(ret != nullptr)) {
-    ret->InitializeFromArtMethod<kPointerSize>(method);
+    ret->Executable::CreateFromArtMethod<kPointerSize, kTransactionActive>(method);
   }
   return ret;
 }
 
-template ObjPtr<Method> Method::CreateFromArtMethod<PointerSize::k32>(
+template ObjPtr<Method> Method::CreateFromArtMethod<PointerSize::k32, false>(
     Thread* self, ArtMethod* method);
-template ObjPtr<Method> Method::CreateFromArtMethod<PointerSize::k64>(
+template ObjPtr<Method> Method::CreateFromArtMethod<PointerSize::k32, true>(
+    Thread* self, ArtMethod* method);
+template ObjPtr<Method> Method::CreateFromArtMethod<PointerSize::k64, false>(
+    Thread* self, ArtMethod* method);
+template ObjPtr<Method> Method::CreateFromArtMethod<PointerSize::k64, true>(
     Thread* self, ArtMethod* method);
 
-template <PointerSize kPointerSize>
+template <PointerSize kPointerSize, bool kTransactionActive>
 ObjPtr<Constructor> Constructor::CreateFromArtMethod(Thread* self, ArtMethod* method) {
   DCHECK(method->IsConstructor()) << method->PrettyMethod();
   ObjPtr<Constructor> ret =
       ObjPtr<Constructor>::DownCast(GetClassRoot<Constructor>()->AllocObject(self));
   if (LIKELY(ret != nullptr)) {
-    ret->InitializeFromArtMethod<kPointerSize>(method);
+    ret->Executable::CreateFromArtMethod<kPointerSize, kTransactionActive>(method);
   }
   return ret;
 }
 
-template ObjPtr<Constructor> Constructor::CreateFromArtMethod<PointerSize::k32>(
+template ObjPtr<Constructor> Constructor::CreateFromArtMethod<PointerSize::k32, false>(
     Thread* self, ArtMethod* method);
-template ObjPtr<Constructor> Constructor::CreateFromArtMethod<PointerSize::k64>(
+template ObjPtr<Constructor> Constructor::CreateFromArtMethod<PointerSize::k32, true>(
+    Thread* self, ArtMethod* method);
+template ObjPtr<Constructor> Constructor::CreateFromArtMethod<PointerSize::k64, false>(
+    Thread* self, ArtMethod* method);
+template ObjPtr<Constructor> Constructor::CreateFromArtMethod<PointerSize::k64, true>(
     Thread* self, ArtMethod* method);
 
 }  // namespace mirror

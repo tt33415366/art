@@ -55,10 +55,6 @@ void JitCompiler::ParseCompilerOptions() {
       UNREACHABLE();
     }
   }
-  // Set to appropriate JIT compiler type.
-  compiler_options_->compiler_type_ = runtime->IsZygote()
-      ? CompilerOptions::CompilerType::kSharedCodeJitCompiler
-      : CompilerOptions::CompilerType::kJitCompiler;
   // JIT is never PIC, no matter what the runtime compiler options specify.
   compiler_options_->SetNonPic();
 
@@ -110,6 +106,8 @@ void JitCompiler::ParseCompilerOptions() {
     instruction_set_features = InstructionSetFeatures::FromCppDefines();
   }
   compiler_options_->instruction_set_features_ = std::move(instruction_set_features);
+  compiler_options_->compiling_with_core_image_ =
+      CompilerOptions::IsCoreImageFilename(runtime->GetImageLocation());
 
   if (compiler_options_->GetGenerateDebugInfo()) {
     jit_logger_.reset(new JitLogger());
@@ -165,10 +163,10 @@ JitCompiler::~JitCompiler() {
 }
 
 bool JitCompiler::CompileMethod(
-    Thread* self, JitMemoryRegion* region, ArtMethod* method, CompilationKind compilation_kind) {
+    Thread* self, JitMemoryRegion* region, ArtMethod* method, bool baseline, bool osr) {
   SCOPED_TRACE << "JIT compiling "
                << method->PrettyMethod()
-               << " (kind=" << compilation_kind << ")";
+               << " (baseline=" << baseline << ", osr=" << osr << ")";
 
   DCHECK(!method->IsProxyMethod());
   DCHECK(method->GetDeclaringClass()->IsResolved());
@@ -181,20 +179,16 @@ bool JitCompiler::CompileMethod(
   // Do the compilation.
   bool success = false;
   {
-    TimingLogger::ScopedTiming t2(compilation_kind == CompilationKind::kOsr
-                                      ? "Compiling OSR"
-                                      : compilation_kind == CompilationKind::kOptimized
-                                          ? "Compiling optimized"
-                                          : "Compiling baseline",
-                                  &logger);
+    TimingLogger::ScopedTiming t2("Compiling", &logger);
     JitCodeCache* const code_cache = runtime->GetJit()->GetCodeCache();
-    metrics::AutoTimer timer{runtime->GetMetrics()->JitMethodCompileTotalTime()};
+    uint64_t start_ns = NanoTime();
     success = compiler_->JitCompile(
-        self, code_cache, region, method, compilation_kind, jit_logger_.get());
-    uint64_t duration_us = timer.Stop();
-    VLOG(jit) << "Compilation of " << method->PrettyMethod() << " took "
-              << PrettyDuration(UsToNs(duration_us));
-    runtime->GetMetrics()->JitMethodCompileCount()->AddOne();
+        self, code_cache, region, method, baseline, osr, jit_logger_.get());
+    uint64_t duration_ns = NanoTime() - start_ns;
+    VLOG(jit) << "Compilation of "
+              << method->PrettyMethod()
+              << " took "
+              << PrettyDuration(duration_ns);
   }
 
   // Trim maps to reduce memory usage.

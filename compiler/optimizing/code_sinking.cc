@@ -58,8 +58,8 @@ static bool IsInterestingInstruction(HInstruction* instruction) {
     }
   }
 
-  // Check allocations and strings first, as they can throw, but it is safe to move them.
-  if (instruction->IsNewInstance() || instruction->IsNewArray() || instruction->IsLoadString()) {
+  // Check allocations first, as they can throw, but it is safe to move them.
+  if (instruction->IsNewInstance() || instruction->IsNewArray()) {
     return true;
   }
 
@@ -107,7 +107,6 @@ static bool IsInterestingInstruction(HInstruction* instruction) {
   // hard to test, as LSE removes them.
   if (instruction->IsStaticFieldGet() ||
       instruction->IsInstanceFieldGet() ||
-      instruction->IsPredicatedInstanceFieldGet() ||
       instruction->IsArrayGet()) {
     return false;
   }

@@ -20,7 +20,6 @@
 
 #include <sys/types.h>
 #include <unistd.h>
-#include <iomanip>
 
 #include "unwindstack/Regs.h"
 #include "unwindstack/RegsGetLocal.h"
@@ -44,29 +43,23 @@ namespace art {
 // gcstress this isn't a huge deal.
 #if defined(__linux__)
 
-// Strict integrity check of the backtrace:
-// All methods must have a name, all the way to "main".
-static constexpr bool kStrictUnwindChecks = true;
-
 struct UnwindHelper : public TLSData {
   static constexpr const char* kTlsKey = "UnwindHelper::kTlsKey";
 
   explicit UnwindHelper(size_t max_depth)
-      : arch_(unwindstack::Regs::CurrentArch()),
-        memory_(unwindstack::Memory::CreateProcessMemoryThreadCached(getpid())),
-        jit_(unwindstack::CreateJitDebug(arch_, memory_)),
-        dex_(unwindstack::CreateDexFiles(arch_, memory_)),
+      : memory_(unwindstack::Memory::CreateProcessMemory(getpid())),
+        jit_(memory_),
+        dex_(memory_),
         unwinder_(max_depth, &maps_, memory_) {
     CHECK(maps_.Parse());
-    unwinder_.SetArch(arch_);
-    unwinder_.SetJitDebug(jit_.get());
-    unwinder_.SetDexFiles(dex_.get());
-    unwinder_.SetResolveNames(kStrictUnwindChecks);
+    unwinder_.SetJitDebug(&jit_, unwindstack::Regs::CurrentArch());
+    unwinder_.SetDexFiles(&dex_, unwindstack::Regs::CurrentArch());
+    unwinder_.SetResolveNames(false);
     unwindstack::Elf::SetCachingEnabled(true);
   }
 
   // Reparse process mmaps to detect newly loaded libraries.
-  bool Reparse(bool* any_changed) { return maps_.Reparse(any_changed); }
+  bool Reparse() { return maps_.Reparse(); }
 
   static UnwindHelper* Get(Thread* self, size_t max_depth) {
     UnwindHelper* tls = reinterpret_cast<UnwindHelper*>(self->GetCustomTLS(kTlsKey));
@@ -81,38 +74,24 @@ struct UnwindHelper : public TLSData {
 
  private:
   unwindstack::LocalUpdatableMaps maps_;
-  unwindstack::ArchEnum arch_;
   std::shared_ptr<unwindstack::Memory> memory_;
-  std::unique_ptr<unwindstack::JitDebug> jit_;
-  std::unique_ptr<unwindstack::DexFiles> dex_;
+  unwindstack::JitDebug jit_;
+  unwindstack::DexFiles dex_;
   unwindstack::Unwinder unwinder_;
 };
 
 void BacktraceCollector::Collect() {
-  unwindstack::Unwinder* unwinder = UnwindHelper::Get(Thread::Current(), max_depth_)->Unwinder();
-  if (!CollectImpl(unwinder)) {
-    // Reparse process mmaps to detect newly loaded libraries and retry,
-    // but only if any maps changed (we don't want to hide racy failures).
-    bool any_changed;
-    UnwindHelper::Get(Thread::Current(), max_depth_)->Reparse(&any_changed);
-    if (!any_changed || !CollectImpl(unwinder)) {
-      if (kStrictUnwindChecks) {
-        std::vector<unwindstack::FrameData>& frames = unwinder->frames();
-        LOG(ERROR) << "Failed to unwind stack (error " << unwinder->LastErrorCodeString() << "):";
-        for (auto it = frames.begin(); it != frames.end(); it++) {
-          if (it == frames.begin() || std::prev(it)->map_name != it->map_name) {
-            LOG(ERROR) << " in " << it->map_name.c_str();
-          }
-          LOG(ERROR) << " pc " << std::setw(8) << std::setfill('0') << std::hex <<
-            it->rel_pc << " " << it->function_name.c_str();
-        }
-        LOG(FATAL);
-      }
+  if (!CollectImpl()) {
+    // Reparse process mmaps to detect newly loaded libraries and retry.
+    UnwindHelper::Get(Thread::Current(), max_depth_)->Reparse();
+    if (!CollectImpl()) {
+      // Failed to unwind stack. Ignore for now.
     }
   }
 }
 
-bool BacktraceCollector::CollectImpl(unwindstack::Unwinder* unwinder) {
+bool BacktraceCollector::CollectImpl() {
+  unwindstack::Unwinder* unwinder = UnwindHelper::Get(Thread::Current(), max_depth_)->Unwinder();
   std::unique_ptr<unwindstack::Regs> regs(unwindstack::Regs::CreateFromLocal());
   RegsGetLocal(regs.get());
   unwinder->SetRegs(regs.get());
@@ -125,28 +104,18 @@ bool BacktraceCollector::CollectImpl(unwindstack::Unwinder* unwinder) {
       out_frames_[num_frames_++] = static_cast<uintptr_t>(it->pc);
 
       // Expected early end: Instrumentation breaks unwinding (b/138296821).
-      // Inexact compare because the unwinder does not give us exact return address,
-      // but rather it tries to guess the address of the preceding call instruction.
-      size_t exit_pc = reinterpret_cast<size_t>(GetQuickInstrumentationExitPc());
-      if (exit_pc - 4 <= it->pc && it->pc <= exit_pc) {
+      size_t align = GetInstructionSetAlignment(kRuntimeISA);
+      if (RoundUp(it->pc, align) == reinterpret_cast<uintptr_t>(GetQuickInstrumentationExitPc())) {
         return true;
-      }
-
-      if (kStrictUnwindChecks) {
-        if (it->function_name.empty()) {
-          return false;
-        }
-        if (it->function_name == "main" ||
-            it->function_name == "start_thread" ||
-            it->function_name == "__start_thread") {
-          return true;
-        }
       }
     }
   }
 
-  unwindstack::ErrorCode error = unwinder->LastErrorCode();
-  return error == unwindstack::ERROR_NONE || error == unwindstack::ERROR_MAX_FRAMES_EXCEEDED;
+  if (unwinder->LastErrorCode() == unwindstack::ERROR_INVALID_MAP) {
+    return false;
+  }
+
+  return true;
 }
 
 #else

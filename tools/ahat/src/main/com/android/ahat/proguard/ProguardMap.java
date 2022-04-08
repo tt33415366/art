@@ -232,15 +232,8 @@ public class ProguardMap {
 
       // After the class line comes zero or more field/method lines of the form:
       //   '    type clearName -> obfuscatedName'
-      //   '# comment line'
       line = reader.readLine();
-      while (line != null && (line.startsWith("    ") || line.startsWith("#"))) {
-        // Comment lines start with '#' and may occur anywhere in the file.
-        // Skip over them.
-        if (line.startsWith("#")) {
-          line = reader.readLine();
-          continue;
-        }
+      while (line != null && line.startsWith("    ")) {
         String trimmed = line.trim();
         int ws = trimmed.indexOf(' ');
         sep = trimmed.indexOf(" -> ");

@@ -24,7 +24,6 @@
 #include <android-base/logging.h>
 
 #include "base/arena_containers.h"
-#include "base/bit_utils_iterator.h"
 #include "base/macros.h"
 #include "dwarf/register.h"
 #include "offsets.h"
@@ -99,28 +98,6 @@ class Arm64Assembler final : public Assembler {
   void SpillRegisters(vixl::aarch64::CPURegList registers, int offset);
   void UnspillRegisters(vixl::aarch64::CPURegList registers, int offset);
 
-  // A helper to save/restore a list of ZRegisters to a specified stack offset location.
-  template <bool is_save>
-  void SaveRestoreZRegisterList(uint32_t vreg_bit_vector, int64_t stack_offset) {
-    if (vreg_bit_vector == 0) {
-      return;
-    }
-    vixl::aarch64::UseScratchRegisterScope temps(GetVIXLAssembler());
-    vixl::aarch64::Register temp = temps.AcquireX();
-    vixl_masm_.Add(temp, vixl::aarch64::sp, stack_offset);
-    size_t slot_no = 0;
-    for (uint32_t i : LowToHighBits(vreg_bit_vector)) {
-      if (is_save) {
-        vixl_masm_.Str(vixl::aarch64::ZRegister(i),
-                       vixl::aarch64::SVEMemOperand(temp, slot_no, vixl::aarch64::SVE_MUL_VL));
-      } else {
-        vixl_masm_.Ldr(vixl::aarch64::ZRegister(i),
-                       vixl::aarch64::SVEMemOperand(temp, slot_no, vixl::aarch64::SVE_MUL_VL));
-      }
-      slot_no++;
-    }
-  }
-
   // Jump to address (not setting link register)
   void JumpTo(ManagedRegister m_base, Offset offs, ManagedRegister m_scratch);
 
@@ -147,17 +124,10 @@ class Arm64Assembler final : public Assembler {
   void GenerateMarkingRegisterCheck(vixl::aarch64::Register temp, int code = 0);
 
   void Bind(Label* label ATTRIBUTE_UNUSED) override {
-    UNIMPLEMENTED(FATAL) << "Do not use Bind(Label*) for ARM64";
+    UNIMPLEMENTED(FATAL) << "Do not use Bind for ARM64";
   }
   void Jump(Label* label ATTRIBUTE_UNUSED) override {
-    UNIMPLEMENTED(FATAL) << "Do not use Jump(Label*) for ARM64";
-  }
-
-  void Bind(vixl::aarch64::Label* label) {
-    vixl_masm_.Bind(label);
-  }
-  void Jump(vixl::aarch64::Label* label) {
-    vixl_masm_.B(label);
+    UNIMPLEMENTED(FATAL) << "Do not use Jump for ARM64";
   }
 
   static vixl::aarch64::Register reg_x(int code) {
@@ -167,7 +137,7 @@ class Arm64Assembler final : public Assembler {
     } else if (code == XZR) {
       return vixl::aarch64::xzr;
     }
-    return vixl::aarch64::XRegister(code);
+    return vixl::aarch64::Register::GetXRegFromCode(code);
   }
 
   static vixl::aarch64::Register reg_w(int code) {
@@ -177,15 +147,15 @@ class Arm64Assembler final : public Assembler {
     } else if (code == WZR) {
       return vixl::aarch64::wzr;
     }
-    return vixl::aarch64::WRegister(code);
+    return vixl::aarch64::Register::GetWRegFromCode(code);
   }
 
   static vixl::aarch64::VRegister reg_d(int code) {
-    return vixl::aarch64::DRegister(code);
+    return vixl::aarch64::VRegister::GetDRegFromCode(code);
   }
 
   static vixl::aarch64::VRegister reg_s(int code) {
-    return vixl::aarch64::SRegister(code);
+    return vixl::aarch64::VRegister::GetSRegFromCode(code);
   }
 
  private:

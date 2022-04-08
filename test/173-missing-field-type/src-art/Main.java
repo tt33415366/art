@@ -14,47 +14,21 @@
  * limitations under the License.
  */
 
-import java.lang.reflect.InvocationTargetException;
 
 public class Main {
     public static void main(String[] args) throws Throwable {
-        // Class BadField is defined in BadField.smali.
-        Class<?> c = Class.forName("BadField");
-
-        // Storing null is OK.
-        c.getMethod("storeStaticNull").invoke(null);
-        c.getMethod("storeInstanceNull").invoke(null);
-
-        // Storing anything else should throw an exception.
-        testStoreObject(c, "storeStaticObject");
-        testStoreObject(c, "storeInstanceObject");
-
-        // Loading is OK.
-        c = Class.forName("BadFieldGet");
-        testLoadObject(c, "loadStatic");
-    }
-
-    public static void testLoadObject(Class<?> c, String methodName) throws Throwable {
-      c.getMethod(methodName).invoke(null);
-    }
-
-    public static void testStoreObject(Class<?> c, String methodName) throws Throwable {
         try {
-          c.getMethod(methodName).invoke(null);
-          throw new Error("Expected NoClassDefFoundError");
-        } catch (InvocationTargetException expected) {
-          Throwable e = expected.getCause();
-          if (e instanceof NoClassDefFoundError) {
+            // Class BadField is defined in BadField.smali.
+            Class<?> c = Class.forName("BadField");
+            System.out.println("Not reached");
+            c.newInstance();
+        } catch (NoClassDefFoundError expected) {
             // The NoClassDefFoundError is for the field widget in class BadField.
-            if (!e.getMessage().equals("Failed resolution of: LWidget;")) {
-                throw new Error("Unexpected " + e);
+            if (expected.getMessage().equals("Failed resolution of: LWidget;")) {
+                System.out.println("passed");
+            } else {
+                System.out.println("failed: " + expected.getMessage());
             }
-          } else {
-            throw new Error("Unexpected " + e);
-          }
         }
-    }
-
-    private static void privateMethod() {
     }
 }

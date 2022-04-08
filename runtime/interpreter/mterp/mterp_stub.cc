@@ -26,7 +26,7 @@ namespace interpreter {
  * are still correct.
  */
 void CheckMterpAsmConstants() {
-  // Nothing to check when mterp is not implemented.
+  // Dummy version when mterp not implemented.
 }
 
 void InitMterpTls(Thread* self) {

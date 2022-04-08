@@ -421,13 +421,13 @@ jvmtiError DeoptManager::AddDeoptimizeThreadMethods(art::ScopedObjectAccessUnche
   if (target->IncrementForceInterpreterCount() == 1) {
     struct DeoptClosure : public art::Closure {
      public:
-      explicit DeoptClosure(DeoptManager* manager) : manager_(manager) {}
+      explicit DeoptClosure(DeoptManager* man) : man_(man) {}
       void Run(art::Thread* self) override REQUIRES_SHARED(art::Locks::mutator_lock_) {
-        manager_->DeoptimizeThread(self);
+        man_->DeoptimizeThread(self);
       }
 
      private:
-      DeoptManager* manager_;
+      DeoptManager* man_;
     };
     DeoptClosure c(this);
     target->RequestSynchronousCheckpoint(&c);

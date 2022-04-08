@@ -18,7 +18,6 @@
 #define ART_LIBDEXFILE_DEX_DEX_FILE_H_
 
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -78,14 +77,14 @@ class DexFile {
   static constexpr size_t kDexVersionLen = 4;
 
   // First Dex format version enforcing class definition ordering rules.
-  static constexpr uint32_t kClassDefinitionOrderEnforcedVersion = 37;
+  static const uint32_t kClassDefinitionOrderEnforcedVersion = 37;
 
   static constexpr size_t kSha1DigestSize = 20;
   static constexpr uint32_t kDexEndianConstant = 0x12345678;
 
   // The value of an invalid index.
-  static constexpr uint16_t kDexNoIndex16 = 0xFFFF;
-  static constexpr uint32_t kDexNoIndex32 = 0xFFFFFFFF;
+  static const uint16_t kDexNoIndex16 = 0xFFFF;
+  static const uint32_t kDexNoIndex32 = 0xFFFFFFFF;
 
   // Raw header_item.
   struct Header {
@@ -272,9 +271,6 @@ class DexFile {
   const dex::StringId* FindStringId(const char* string) const;
 
   const dex::TypeId* FindTypeId(const char* string) const;
-  const dex::TypeId* FindTypeId(std::string_view string) const {
-    return FindTypeId(std::string(string).c_str());
-  }
 
   // Returns the number of type identifiers in the .dex file.
   uint32_t NumTypeIds() const {
@@ -334,13 +330,6 @@ class DexFile {
                                   const dex::StringId& name,
                                   const dex::TypeId& type) const;
 
-  // Return the code-item offset associated with the class and method or nullopt
-  // if the method does not exist or has no code.
-  std::optional<uint32_t> GetCodeItemOffset(const dex::ClassDef& class_def,
-                                            uint32_t dex_method_idx) const;
-
-  // Return the code-item offset associated with the class and method or
-  // LOG(FATAL) if the method does not exist or has no code.
   uint32_t FindCodeItemOffset(const dex::ClassDef& class_def,
                               uint32_t dex_method_idx) const;
 
@@ -381,10 +370,6 @@ class DexFile {
                                     const dex::StringId& name,
                                     const dex::ProtoId& signature) const;
 
-  const dex::MethodId* FindMethodIdByIndex(dex::TypeIndex declaring_klass,
-                                           dex::StringIndex name,
-                                           dex::ProtoIndex signature) const;
-
   // Returns the declaring class descriptor string of a method id.
   const char* GetMethodDeclaringClassDescriptor(const dex::MethodId& method_id) const;
 
@@ -402,7 +387,6 @@ class DexFile {
   // Returns the name of a method id.
   const char* GetMethodName(const dex::MethodId& method_id) const;
   const char* GetMethodName(const dex::MethodId& method_id, uint32_t* utf_length) const;
-  const char* GetMethodName(uint32_t idx) const;
   const char* GetMethodName(uint32_t idx, uint32_t* utf_length) const;
 
   // Returns the shorty of a method by its index.
@@ -738,7 +722,7 @@ class DexFile {
   }
 
   // Used by oat writer.
-  void SetOatDexFile(const OatDexFile* oat_dex_file) const {
+  void SetOatDexFile(OatDexFile* oat_dex_file) const {
     oat_dex_file_ = oat_dex_file;
   }
 
@@ -762,18 +746,12 @@ class DexFile {
   // when computing the adler32 checksum of the entire file.
   static constexpr uint32_t kNumNonChecksumBytes = OFFSETOF_MEMBER(DexFile::Header, signature_);
 
-  // Appends a human-readable form of the method at an index.
-  void AppendPrettyMethod(uint32_t method_idx, bool with_signature, std::string* result) const;
+  // Returns a human-readable form of the method at an index.
+  std::string PrettyMethod(uint32_t method_idx, bool with_signature = true) const;
   // Returns a human-readable form of the field at an index.
   std::string PrettyField(uint32_t field_idx, bool with_type = true) const;
   // Returns a human-readable form of the type at an index.
   std::string PrettyType(dex::TypeIndex type_idx) const;
-
-  ALWAYS_INLINE std::string PrettyMethod(uint32_t method_idx, bool with_signature = true) const {
-    std::string result;
-    AppendPrettyMethod(method_idx, with_signature, &result);
-    return result;
-  }
 
   // Not virtual for performance reasons.
   ALWAYS_INLINE bool IsCompactDexFile() const {
@@ -811,7 +789,7 @@ class DexFile {
 
  protected:
   // First Dex format version supporting default methods.
-  static constexpr uint32_t kDefaultMethodsVersion = 37;
+  static const uint32_t kDefaultMethodsVersion = 37;
 
   DexFile(const uint8_t* base,
           size_t size,
@@ -985,7 +963,7 @@ class EncodedArrayValueIterator {
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(EncodedArrayValueIterator);
 };
-std::ostream& operator<<(std::ostream& os, EncodedArrayValueIterator::ValueType code);
+std::ostream& operator<<(std::ostream& os, const EncodedArrayValueIterator::ValueType& code);
 
 class EncodedStaticFieldValueIterator : public EncodedArrayValueIterator {
  public:
@@ -998,6 +976,7 @@ class EncodedStaticFieldValueIterator : public EncodedArrayValueIterator {
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(EncodedStaticFieldValueIterator);
 };
+std::ostream& operator<<(std::ostream& os, const EncodedStaticFieldValueIterator::ValueType& code);
 
 class CallSiteArrayValueIterator : public EncodedArrayValueIterator {
  public:
@@ -1012,6 +991,7 @@ class CallSiteArrayValueIterator : public EncodedArrayValueIterator {
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(CallSiteArrayValueIterator);
 };
+std::ostream& operator<<(std::ostream& os, const CallSiteArrayValueIterator::ValueType& code);
 
 }  // namespace art
 

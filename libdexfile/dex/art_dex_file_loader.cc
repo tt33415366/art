@@ -86,7 +86,6 @@ static constexpr OatDexFile* kNoOatDexFile = nullptr;
 
 bool ArtDexFileLoader::GetMultiDexChecksums(const char* filename,
                                             std::vector<uint32_t>* checksums,
-                                            std::vector<std::string>* dex_locations,
                                             std::string* error_msg,
                                             int zip_fd,
                                             bool* zip_file_only_contains_uncompressed_dex) const {
@@ -114,8 +113,8 @@ bool ArtDexFileLoader::GetMultiDexChecksums(const char* filename,
       return false;
     }
 
-    uint32_t idx = 0;
-    std::string zip_entry_name = GetMultiDexClassesDexName(idx);
+    uint32_t i = 0;
+    std::string zip_entry_name = GetMultiDexClassesDexName(i++);
     std::unique_ptr<ZipEntry> zip_entry(zip_archive->Find(zip_entry_name.c_str(), error_msg));
     if (zip_entry.get() == nullptr) {
       *error_msg = StringPrintf("Zip archive '%s' doesn't contain %s (error msg: %s)", filename,
@@ -135,8 +134,7 @@ bool ArtDexFileLoader::GetMultiDexChecksums(const char* filename,
         }
       }
       checksums->push_back(zip_entry->GetCrc32());
-      dex_locations->push_back(GetMultiDexLocation(idx, filename));
-      zip_entry_name = GetMultiDexClassesDexName(++idx);
+      zip_entry_name = GetMultiDexClassesDexName(i++);
       zip_entry.reset(zip_archive->Find(zip_entry_name.c_str(), error_msg));
     } while (zip_entry.get() != nullptr);
     return true;
@@ -250,18 +248,6 @@ bool ArtDexFileLoader::Open(int fd,
     return false;
   }
   return OpenWithMagic(magic, fd, location, verify, verify_checksum, error_msg, dex_files);
-}
-
-bool ArtDexFileLoader::Open(const char* filename,
-                            int fd,
-                            const std::string& location,
-                            bool verify,
-                            bool verify_checksum,
-                            std::string* error_msg,
-                            std::vector<std::unique_ptr<const DexFile>>* dex_files) const {
-  return fd == -1
-      ? Open(filename, location, verify, verify_checksum, error_msg, dex_files)
-      : Open(fd, location, verify, verify_checksum, error_msg, dex_files);
 }
 
 bool ArtDexFileLoader::OpenWithMagic(uint32_t magic,
@@ -430,10 +416,6 @@ std::unique_ptr<const DexFile> ArtDexFileLoader::OpenOneDexFileFromZip(
       }
     }
   }
-
-  ScopedTrace map_extract_trace(StringPrintf("Mapped=%s Extracted=%s",
-      map.IsValid() ? "true" : "false",
-      map.IsValid() ? "false" : "true"));  // this is redundant but much easier to read in traces.
 
   if (!map.IsValid()) {
     // Default path for compressed ZIP entries,

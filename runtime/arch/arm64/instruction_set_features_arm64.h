@@ -21,9 +21,6 @@
 
 namespace art {
 
-// SVE is currently not enabled.
-static constexpr bool kArm64AllowSVE = false;
-
 class Arm64InstructionSetFeatures;
 using Arm64FeaturesUniquePtr = std::unique_ptr<const Arm64InstructionSetFeatures>;
 
@@ -49,9 +46,6 @@ class Arm64InstructionSetFeatures final : public InstructionSetFeatures {
   // Use assembly tests of the current runtime (ie kRuntimeISA) to determine the
   // InstructionSetFeatures. This works around kernel bugs in AT_HWCAP and /proc/cpuinfo.
   static Arm64FeaturesUniquePtr FromAssembly();
-
-  // Use external cpu_features library.
-  static Arm64FeaturesUniquePtr FromCpuFeatures();
 
   bool Equals(const InstructionSetFeatures* other) const override;
 
@@ -97,12 +91,7 @@ class Arm64InstructionSetFeatures final : public InstructionSetFeatures {
   }
 
   bool HasSVE() const {
-    return kArm64AllowSVE && has_sve_;
-  }
-
-  size_t GetSVEVectorLength() const {
-    // TODO: support SVE vector length detection.
-    return kArm64DefaultSVEVectorLength;
+    return has_sve_;
   }
 
   virtual ~Arm64InstructionSetFeatures() {}

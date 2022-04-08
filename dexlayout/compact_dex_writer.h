@@ -37,7 +37,8 @@ class CompactDexWriter : public DexWriter {
    public:
     static const uint32_t kDidNotDedupe = 0;
 
-    explicit Deduper(DexContainer::Section* section);
+    // if not enabled, Dedupe will always return kDidNotDedupe.
+    explicit Deduper(bool enabled, DexContainer::Section* section);
 
     // Deduplicate a blob of data that has been written to mem_map.
     // Returns the offset of the deduplicated data or kDidNotDedupe did deduplication did not occur.
@@ -84,6 +85,8 @@ class CompactDexWriter : public DexWriter {
       };
     };
 
+    const bool enabled_;
+
     // Dedupe map.
     std::unordered_map<HashedMemoryRange,
                        uint32_t,
@@ -122,10 +125,11 @@ class CompactDexWriter : public DexWriter {
     }
 
    private:
-    Container();
+    explicit Container(bool dedupe_code_items);
 
     VectorSection main_section_;
     VectorSection data_section_;
+    Deduper code_item_dedupe_;
     Deduper data_item_dedupe_;
 
     friend class CompactDexWriter;
@@ -169,6 +173,8 @@ class CompactDexWriter : public DexWriter {
   uint32_t owned_data_begin_ = 0u;
   uint32_t owned_data_end_ = 0u;
 
+  // State for where we are deduping.
+  Deduper* code_item_dedupe_ = nullptr;
   Deduper* data_item_dedupe_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(CompactDexWriter);

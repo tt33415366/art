@@ -1,1 +1,1 @@
-Check for isStructurallyModifiable.
+Sanity check for isStructurallyModifiable.

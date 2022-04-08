@@ -901,16 +901,16 @@ const RegType& RegType::Merge(const RegType& incoming_type,
       // Record the dependency that both `GetClass()` and `incoming_type.GetClass()`
       // are assignable to `join_class`. The `verifier` is null during unit tests.
       if (verifier != nullptr) {
-        VerifierDeps::MaybeRecordAssignability(verifier->GetVerifierDeps(),
-                                               verifier->GetDexFile(),
-                                               verifier->GetClassDef(),
+        VerifierDeps::MaybeRecordAssignability(verifier->GetDexFile(),
                                                join_class,
-                                               GetClass());
-        VerifierDeps::MaybeRecordAssignability(verifier->GetVerifierDeps(),
-                                               verifier->GetDexFile(),
-                                               verifier->GetClassDef(),
+                                               GetClass(),
+                                               /* is_strict= */ true,
+                                               /* is_assignable= */ true);
+        VerifierDeps::MaybeRecordAssignability(verifier->GetDexFile(),
                                                join_class,
-                                               incoming_type.GetClass());
+                                               incoming_type.GetClass(),
+                                               /* is_strict= */ true,
+                                               /* is_assignable= */ true);
       }
       if (GetClass() == join_class && !IsPreciseReference()) {
         return *this;

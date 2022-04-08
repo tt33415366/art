@@ -12,15 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {
-    // See: http://go/android-license-faq
-    // A large-scale-change added 'default_applicable_licenses' to import
-    // all of the 'license_kinds' from "art_license"
-    // to get the below license kinds:
-    //   SPDX-license-identifier-Apache-2.0
-    default_applicable_licenses: ["art_license"],
-}
-
 art_cc_defaults {
     name: "libart-dexlayout-defaults",
     defaults: ["art_defaults"],
@@ -56,12 +47,12 @@ art_cc_defaults {
             ],
         },
     },
-    shared_libs: ["libz"],
+    static_libs: ["libz"],
 }
 
 cc_defaults {
     name: "libart-dexlayout_static_base_defaults",
-    whole_static_libs: [
+    static_libs: [
         "libbase",
         "libz",
     ],
@@ -104,7 +95,7 @@ art_cc_library {
         },
     },
     apex_available: [
-        "com.android.art",
+        "com.android.art.release",
         "com.android.art.debug",
     ],
 }
@@ -117,7 +108,7 @@ cc_defaults {
         "libdexfile_static_defaults",
         "libprofile_static_defaults",
     ],
-    whole_static_libs: ["libart-dexlayout"],
+    static_libs: ["libart-dexlayout"],
 }
 
 art_cc_library {
@@ -151,10 +142,6 @@ art_cc_library {
     },
     apex_available: [
         "com.android.art.debug",
-        // TODO(b/183882457): This lib doesn't go into com.android.art, but
-        // apex_available lists need to be the same for internal libs to avoid
-        // stubs, and this depends on libdexfiled.
-        "com.android.art",
     ],
 }
 
@@ -166,7 +153,7 @@ cc_defaults {
         "libdexfiled_static_defaults",
         "libprofiled_static_defaults",
     ],
-    whole_static_libs: ["libartd-dexlayout"],
+    static_libs: ["libartd-dexlayout"],
 }
 
 cc_defaults {
@@ -189,7 +176,7 @@ art_cc_binary {
         "libart-dexlayout",
     ],
     apex_available: [
-        "com.android.art",
+        "com.android.art.release",
         "com.android.art.debug",
     ],
 }
@@ -242,18 +229,7 @@ art_cc_test {
         "libprofiled",
         "libartd-dexlayout",
     ],
-    data: [
-        ":art-gtest-jars-ManyMethods",
-    ],
     srcs: ["dexlayout_test.cc"],
-    target: {
-        host: {
-            required: [
-                "dexdump",
-                "dexlayoutd",
-            ],
-        },
-    },
 }
 
 art_cc_binary {
@@ -277,7 +253,7 @@ art_cc_binary {
         },
     },
     apex_available: [
-        "com.android.art",
+        "com.android.art.release",
         "com.android.art.debug",
     ],
 }
@@ -289,9 +265,4 @@ art_cc_test {
         "art_gtest_defaults",
     ],
     srcs: ["dexdiag_test.cc"],
-    target: {
-        host: {
-            required: ["dexdiag"],
-        },
-    },
 }

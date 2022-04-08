@@ -64,9 +64,7 @@ public class Main {
   /// CHECK:                Throw
   /// CHECK: end_block
   public void doit1(int[] a) {
-    // Being in the boot image means we know the load string cannot throw. Create one that is
-    // unlikely to be there to ensure we handle that case.
-    String par = "stringUnlikelyToBeInBootImage";
+    String par = "a";
     if (a == null)
       throw new Error("you are null: " + par);
     for (int i = 0; i < a.length; i++) {
@@ -81,7 +79,7 @@ public class Main {
   /// CHECK:                If [<<Tst>>]
   /// CHECK: end_block
   /// CHECK: begin_block
-  /// CHECK:                InvokeStaticOrDirect [{{l\d+}},<<Str>>] method_name:Main.doThrow
+  /// CHECK:                InvokeVirtual [{{l\d+}},<<Str>>] method_name:Main.doThrow
   /// CHECK: end_block
   //
   /// CHECK-START: void Main.doit2(int[]) code_sinking (after)
@@ -91,12 +89,10 @@ public class Main {
   /// CHECK: end_block
   /// CHECK: begin_block
   /// CHECK:   <<Str:l\d+>> LoadString
-  /// CHECK:                InvokeStaticOrDirect [{{l\d+}},<<Str>>] method_name:Main.doThrow
+  /// CHECK:                InvokeVirtual [{{l\d+}},<<Str>>] method_name:Main.doThrow
   /// CHECK: end_block
   public void doit2(int[] a) {
-    // Being in the boot image means we know the load string cannot throw. Create one that is
-    // unlikely to be there to ensure we handle that case.
-    String par = "stringUnlikelyToBeInBootImage";
+    String par = "a";
     if (a == null)
       doThrow(par);
     for (int i = 0; i < a.length; i++) {
@@ -126,9 +122,7 @@ public class Main {
   /// CHECK:                Throw
   /// CHECK: end_block
   public void doit3(int[] a) {
-    // Being in the boot image means we know the load string cannot throw. Create one that is
-    // unlikely to be there to ensure we handle that case.
-    String par = "stringUnlikelyToBeInBootImage";
+    String par = "a";
     checkNotNullDirect(a, par);
     for (int i = 0; i < a.length; i++) {
       a[i] = 3;
@@ -142,7 +136,7 @@ public class Main {
   /// CHECK:                If [<<Tst>>]
   /// CHECK: end_block
   /// CHECK: begin_block
-  /// CHECK:                InvokeStaticOrDirect [{{l\d+}},<<Str>>] method_name:Main.doThrow
+  /// CHECK:                InvokeVirtual [{{l\d+}},<<Str>>] method_name:Main.doThrow
   /// CHECK: end_block
   //
   /// CHECK-START: void Main.doit4(int[]) code_sinking (after)
@@ -152,12 +146,10 @@ public class Main {
   /// CHECK: end_block
   /// CHECK: begin_block
   /// CHECK:   <<Str:l\d+>> LoadString
-  /// CHECK:                InvokeStaticOrDirect [{{l\d+}},<<Str>>] method_name:Main.doThrow
+  /// CHECK:                InvokeVirtual [{{l\d+}},<<Str>>] method_name:Main.doThrow
   /// CHECK: end_block
   public void doit4(int[] a) {
-    // Being in the boot image means we know the load string cannot throw. Create one that is
-    // unlikely to be there to ensure we handle that case.
-    String par = "stringUnlikelyToBeInBootImage";
+    String par = "a";
     checkNotNullSplit(a, par);
     for (int i = 0; i < a.length; i++) {
       a[i] = 4;

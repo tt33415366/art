@@ -37,7 +37,6 @@ class Libraries;
 class ParsedOptions;
 class Runtime;
 struct RuntimeArgumentMap;
-class ScopedObjectAccess;
 
 class JavaVMExt;
 // Hook definition for runtime plugins.
@@ -263,9 +262,6 @@ class JavaVMExt : public JavaVM {
   size_t enable_allocation_tracking_delta_;
   std::atomic<bool> allocation_tracking_enabled_;
   std::atomic<bool> old_allocation_tracking_state_;
-
-  friend IndirectReferenceTable* GetIndirectReferenceTable(ScopedObjectAccess& soa,
-                                                           IndirectRefKind kind);
 
   DISALLOW_COPY_AND_ASSIGN(JavaVMExt);
 };

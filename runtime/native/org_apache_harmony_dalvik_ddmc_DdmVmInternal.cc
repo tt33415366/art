@@ -33,16 +33,21 @@
 
 namespace art {
 
-static void DdmVmInternal_setRecentAllocationsTrackingEnabled(JNIEnv*, jclass, jboolean enable) {
+static Thread* GetSelf(JNIEnv* env) {
+  return static_cast<JNIEnvExt*>(env)->GetSelf();
+}
+
+static void DdmVmInternal_enableRecentAllocations(JNIEnv*, jclass, jboolean enable) {
   Dbg::SetAllocTrackingEnabled(enable);
 }
 
-static void DdmVmInternal_setThreadNotifyEnabled(JNIEnv*, jclass, jboolean enable) {
-  Dbg::DdmSetThreadNotification(enable);
+static jbyteArray DdmVmInternal_getRecentAllocations(JNIEnv* env, jclass) {
+  ScopedFastNativeObjectAccess soa(env);
+  return Dbg::GetRecentAllocations();
 }
 
-static Thread* GetSelf(JNIEnv* env) {
-  return static_cast<JNIEnvExt*>(env)->GetSelf();
+static jboolean DdmVmInternal_getRecentAllocationStatus(JNIEnv*, jclass) {
+  return Runtime::Current()->GetHeap()->IsAllocTrackingEnabled();
 }
 
 /*
@@ -55,7 +60,7 @@ static jobjectArray DdmVmInternal_getStackTraceById(JNIEnv* env, jclass, jint th
   if (static_cast<uint32_t>(thin_lock_id) == self->GetThreadId()) {
     // No need to suspend ourself to build stacktrace.
     ScopedObjectAccess soa(env);
-    jobject internal_trace = self->CreateInternalStackTrace(soa);
+    jobject internal_trace = self->CreateInternalStackTrace<false>(soa);
     trace = Thread::InternalStackTraceToStackTraceElementArray(soa, internal_trace);
   } else {
     ThreadList* thread_list = Runtime::Current()->GetThreadList();
@@ -73,7 +78,7 @@ static jobjectArray DdmVmInternal_getStackTraceById(JNIEnv* env, jclass, jint th
     if (thread != nullptr) {
       {
         ScopedObjectAccess soa(env);
-        jobject internal_trace = thread->CreateInternalStackTrace(soa);
+        jobject internal_trace = thread->CreateInternalStackTrace<false>(soa);
         trace = Thread::InternalStackTraceToStackTraceElementArray(soa, internal_trace);
       }
       // Restart suspended thread.
@@ -209,11 +214,28 @@ static jbyteArray DdmVmInternal_getThreadStats(JNIEnv* env, jclass) {
   return result;
 }
 
+static jboolean DdmVmInternal_heapInfoNotify(JNIEnv* env, jclass, jint when) {
+  ScopedFastNativeObjectAccess soa(env);
+  return Dbg::DdmHandleHpifChunk(static_cast<Dbg::HpifWhen>(when));
+}
+
+static jboolean DdmVmInternal_heapSegmentNotify(JNIEnv*, jclass, jint when, jint what, jboolean native) {
+  return Dbg::DdmHandleHpsgNhsgChunk(static_cast<Dbg::HpsgWhen>(when), static_cast<Dbg::HpsgWhat>(what), native);
+}
+
+static void DdmVmInternal_threadNotify(JNIEnv*, jclass, jboolean enable) {
+  Dbg::DdmSetThreadNotification(enable);
+}
+
 static JNINativeMethod gMethods[] = {
-  NATIVE_METHOD(DdmVmInternal, setRecentAllocationsTrackingEnabled, "(Z)V"),
-  NATIVE_METHOD(DdmVmInternal, setThreadNotifyEnabled, "(Z)V"),
+  NATIVE_METHOD(DdmVmInternal, enableRecentAllocations, "(Z)V"),
+  FAST_NATIVE_METHOD(DdmVmInternal, getRecentAllocations, "()[B"),
+  FAST_NATIVE_METHOD(DdmVmInternal, getRecentAllocationStatus, "()Z"),
   NATIVE_METHOD(DdmVmInternal, getStackTraceById, "(I)[Ljava/lang/StackTraceElement;"),
   NATIVE_METHOD(DdmVmInternal, getThreadStats, "()[B"),
+  FAST_NATIVE_METHOD(DdmVmInternal, heapInfoNotify, "(I)Z"),
+  NATIVE_METHOD(DdmVmInternal, heapSegmentNotify, "(IIZ)Z"),
+  NATIVE_METHOD(DdmVmInternal, threadNotify, "(Z)V"),
 };
 
 void register_org_apache_harmony_dalvik_ddmc_DdmVmInternal(JNIEnv* env) {

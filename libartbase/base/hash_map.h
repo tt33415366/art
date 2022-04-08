@@ -23,76 +23,53 @@
 
 namespace art {
 
-template <typename Key, typename Value, typename HashFn>
-class HashMapHashWrapper {
+template <typename Fn>
+class HashMapWrapper {
  public:
-  size_t operator()(const Key& key) const {
-    return hash_fn_(key);
-  }
-
+  // Hash function.
+  template <class Key, class Value>
   size_t operator()(const std::pair<Key, Value>& pair) const {
-    return hash_fn_(pair.first);
+    return fn_(pair.first);
   }
-
- private:
-  HashFn hash_fn_;
-};
-
-template <typename Key, typename Value, typename PredFn>
-class HashMapPredWrapper {
- public:
+  template <class Key>
+  size_t operator()(const Key& key) const {
+    return fn_(key);
+  }
+  template <class Key, class Value>
   bool operator()(const std::pair<Key, Value>& a, const std::pair<Key, Value>& b) const {
-    return pred_fn_(a.first, b.first);
+    return fn_(a.first, b.first);
   }
-
-  template <typename Element>
+  template <class Key, class Value, class Element>
   bool operator()(const std::pair<Key, Value>& a, const Element& element) const {
-    return pred_fn_(a.first, element);
+    return fn_(a.first, element);
   }
 
  private:
-  PredFn pred_fn_;
-};
-
-template <typename Key, typename Value>
-class DefaultMapEmptyFn {
- public:
-  void MakeEmpty(std::pair<Key, Value>& item) const {
-    item = std::pair<Key, Value>();
-  }
-  bool IsEmpty(const std::pair<Key, Value>& item) const {
-    return item.first == Key();
-  }
+  Fn fn_;
 };
 
 template <class Key,
           class Value,
-          class EmptyFn = DefaultMapEmptyFn<Key, Value>,
+          class EmptyFn,
           class HashFn = DefaultHashFn<Key>,
           class Pred = DefaultPred<Key>,
           class Alloc = std::allocator<std::pair<Key, Value>>>
 class HashMap : public HashSet<std::pair<Key, Value>,
                                EmptyFn,
-                               HashMapHashWrapper<Key, Value, HashFn>,
-                               HashMapPredWrapper<Key, Value, Pred>,
+                               HashMapWrapper<HashFn>,
+                               HashMapWrapper<Pred>,
                                Alloc> {
  private:
   using Base = HashSet<std::pair<Key, Value>,
                        EmptyFn,
-                       HashMapHashWrapper<Key, Value, HashFn>,
-                       HashMapPredWrapper<Key, Value, Pred>,
+                       HashMapWrapper<HashFn>,
+                       HashMapWrapper<Pred>,
                        Alloc>;
 
  public:
-  // Inherit constructors.
-  using Base::Base;
-
-  // Used to insert a new mapping.
-  typename Base::iterator Overwrite(const Key& k, const Value& v) {
-    auto res = Base::insert({ k, v }).first;
-    *res = { k, v };
-    return res;
-  }
+  HashMap() : Base() { }
+  explicit HashMap(const Alloc& alloc)
+      : Base(alloc) { }
 };
 
 }  // namespace art

@@ -85,22 +85,12 @@ static inline void StoreTypeInBss(ArtMethod* outer_method,
   DCHECK(dex_file != nullptr);
   const OatDexFile* oat_dex_file = dex_file->GetOatDexFile();
   if (oat_dex_file != nullptr) {
-    auto store = [=](const IndexBssMapping* mapping) REQUIRES_SHARED(Locks::mutator_lock_) {
-      size_t bss_offset = IndexBssMappingLookup::GetBssOffset(mapping,
-                                                              type_idx.index_,
-                                                              dex_file->NumTypeIds(),
-                                                              sizeof(GcRoot<mirror::Class>));
-      if (bss_offset != IndexBssMappingLookup::npos) {
-        StoreObjectInBss(outer_method, oat_dex_file->GetOatFile(), bss_offset, resolved_type);
-      }
-    };
-    store(oat_dex_file->GetTypeBssMapping());
-    if (resolved_type->IsPublic()) {
-      store(oat_dex_file->GetPublicTypeBssMapping());
-    }
-    if (resolved_type->IsPublic() ||
-        resolved_type->GetClassLoader() == outer_method->GetClassLoader()) {
-      store(oat_dex_file->GetPackageTypeBssMapping());
+    size_t bss_offset = IndexBssMappingLookup::GetBssOffset(oat_dex_file->GetTypeBssMapping(),
+                                                            type_idx.index_,
+                                                            dex_file->NumTypeIds(),
+                                                            sizeof(GcRoot<mirror::Class>));
+    if (bss_offset != IndexBssMappingLookup::npos) {
+      StoreObjectInBss(outer_method, oat_dex_file->GetOatFile(), bss_offset, resolved_type);
     }
   }
 }
@@ -190,9 +180,7 @@ extern "C" mirror::Class* artResolveTypeAndVerifyAccessFromCode(uint32_t type_id
                                                         self,
                                                         /* can_run_clinit= */ false,
                                                         /* verify_access= */ true);
-  if (LIKELY(result != nullptr) && CanReferenceBss(caller_and_outer.outer_method, caller)) {
-    StoreTypeInBss(caller_and_outer.outer_method, dex::TypeIndex(type_idx), result);
-  }
+  // Do not StoreTypeInBss(); access check entrypoint is never used together with .bss.
   return result.Ptr();
 }
 

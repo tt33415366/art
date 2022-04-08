@@ -90,7 +90,8 @@ public class Main {
   /// CHECK-NEXT: ArrayLength
   /// CHECK-NEXT: BelowOrEqual
   //
-  /// CHECK:      Return
+  /// CHECK:      ArrayGet loop:none
+  /// CHECK-NEXT: Return
   static double $noinline$test02(double a[], int n) {
     double b[] = new double[n];
     a[0] = a[0] / 2;
@@ -102,7 +103,7 @@ public class Main {
       b[i] += a[i];
     }
 
-    norma = a[0]; // ArrayGet should be removed by LSE.
+    norma = a[0];
     return norma;
   }
 
@@ -144,27 +145,19 @@ public class Main {
   // Check LSE eliminates VecLoad.
   //
   /// CHECK-START-ARM64: double[] Main.$noinline$test04(int) load_store_elimination (before)
-  /// CHECK:        VecStore
-  /// CHECK:        VecLoad
-  /// CHECK:        VecAdd
-  /// CHECK:        VecStore
-  /// CHECK:        Add
-  /// CHECK:        Goto loop:{{B\d+}}
+  /// CHECK:             VecStore
+  /// CHECK-NEXT:        VecLoad
+  /// CHECK-NEXT:        VecAdd
+  /// CHECK-NEXT:        VecStore
+  /// CHECK-NEXT:        Add
+  /// CHECK-NEXT:        Goto loop:{{B\d+}}
 
   /// CHECK-START-ARM64: double[] Main.$noinline$test04(int) load_store_elimination (after)
-  /// CHECK-IF:     not hasIsaFeature("sve")
-  //
-  //      In NEON case there is a post-loop which prevents the store to be removed.
-  ///     CHECK:        VecStore
-  //
-  /// CHECK-FI:
-  //
-  /// CHECK:        VecAdd
-  /// CHECK:        VecStore
-  /// CHECK:        Add
-  /// CHECK:        Goto loop:{{B\d+}}
-  //
-  /// CHECK-NOT:    VecStore
+  /// CHECK:             VecStore
+  /// CHECK-NEXT:        VecAdd
+  /// CHECK-NEXT:        VecStore
+  /// CHECK-NEXT:        Add
+  /// CHECK-NEXT:        Goto loop:{{B\d+}}
   static double[] $noinline$test04(int n) {
     double a[] = new double[n];
     double b[] = new double[n];
@@ -186,26 +179,18 @@ public class Main {
   // Check LSE eliminates VecLoad.
   //
   /// CHECK-START-ARM64: double[] Main.$noinline$test05(int) load_store_elimination (before)
-  /// CHECK:        VecStore
-  /// CHECK:        VecLoad
-  /// CHECK:        VecStore
-  /// CHECK:        VecStore
-  /// CHECK:        Add
-  /// CHECK:        Goto loop:{{B\d+}}
+  /// CHECK:             VecStore
+  /// CHECK-NEXT:        VecLoad
+  /// CHECK-NEXT:        VecStore
+  /// CHECK-NEXT:        VecStore
+  /// CHECK-NEXT:        Add
+  /// CHECK-NEXT:        Goto loop:{{B\d+}}
 
   /// CHECK-START-ARM64: double[] Main.$noinline$test05(int) load_store_elimination (after)
-  /// CHECK-IF:     not hasIsaFeature("sve")
-  //
-  //      In NEON case there is a post-loop which prevents the store to be removed.
-  ///     CHECK:        VecStore
-  //
-  /// CHECK-FI:
-  //
-  /// CHECK:        VecStore
-  /// CHECK:        Add
-  /// CHECK:        Goto loop:{{B\d+}}
-  //
-  /// CHECK-NOT:    VecStore
+  /// CHECK:             VecStore
+  /// CHECK-NEXT:        VecStore
+  /// CHECK-NEXT:        Add
+  /// CHECK-NEXT:        Goto loop:{{B\d+}}
   static double[] $noinline$test05(int n) {
     double a[] = new double[n];
     double b[] = new double[n];
@@ -228,30 +213,29 @@ public class Main {
   // Check LSE eliminates VecLoad and ArrayGet in case of singletons and default values.
   //
   /// CHECK-START-ARM64: double[] Main.$noinline$test06(int) load_store_elimination (before)
-  /// CHECK:        BoundsCheck loop:none
-  /// CHECK:        ArrayGet
-  /// CHECK:        Add
-  /// CHECK:        ArrayLength
+  /// CHECK:             BoundsCheck loop:none
+  /// CHECK-NEXT:        ArrayGet
+  /// CHECK-NEXT:        Add
+  /// CHECK-NEXT:        ArrayLength
   //
-  /// CHECK:        VecLoad loop:{{B\d+}}
-  /// CHECK:        VecStore
-  /// CHECK:        VecLoad
-  /// CHECK:        VecLoad
-  /// CHECK:        VecAdd
-  /// CHECK:        VecAdd
-  /// CHECK:        VecStore
+  /// CHECK:             VecLoad loop:{{B\d+}}
+  /// CHECK-NEXT:        VecStore
+  /// CHECK-NEXT:        VecLoad
+  /// CHECK-NEXT:        VecLoad
+  /// CHECK-NEXT:        VecAdd
+  /// CHECK-NEXT:        VecAdd
+  /// CHECK-NEXT:        VecStore
 
   /// CHECK-START-ARM64: double[] Main.$noinline$test06(int) load_store_elimination (after)
-  /// CHECK:        BoundsCheck loop:none
-  /// CHECK:        Add
-  /// CHECK:        ArrayLength
+  /// CHECK:             BoundsCheck loop:none
+  /// CHECK-NEXT:        Add
+  /// CHECK-NEXT:        ArrayLength
   //
-  /// CHECK:        VecLoad loop:{{B\d+}}
-  /// CHECK:        VecAdd
-  /// CHECK:        VecAdd
-  /// CHECK:        VecStore
-  //
-  /// CHECK-NOT:    VecStore
+  /// CHECK:             VecLoad loop:{{B\d+}}
+  /// CHECK-NEXT:        VecStore
+  /// CHECK-NEXT:        VecAdd
+  /// CHECK-NEXT:        VecAdd
+  /// CHECK-NEXT:        VecStore
   static double[] $noinline$test06(int n) {
     double a[] = new double[n];
     double b[] = new double[n];

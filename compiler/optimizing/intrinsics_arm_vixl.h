@@ -47,7 +47,7 @@ class IntrinsicLocationsBuilderARMVIXL final : public IntrinsicVisitor {
 
  private:
   ArenaAllocator* const allocator_;
-  CodeGeneratorARMVIXL* const codegen_;
+  CodeGenerator* const codegen_;
   ArmVIXLAssembler* const assembler_;
   const ArmInstructionSetFeatures& features_;
 

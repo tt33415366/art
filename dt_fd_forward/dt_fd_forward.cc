@@ -52,8 +52,6 @@
 
 #include <base/strlcpy.h>
 
-#include "fd_transport.h"
-
 namespace dt_fd_forward {
 
 // Helper that puts line-number in error message.
@@ -289,11 +287,6 @@ static void SendAcceptMessage(int fd) {
   TEMP_FAILURE_RETRY(send(fd, kAcceptMessage, sizeof(kAcceptMessage), MSG_EOR));
 }
 
-static void SendHandshakeCompleteMessage(int fd) {
-  TEMP_FAILURE_RETRY(
-      send(fd, kHandshakeCompleteMessage, sizeof(kHandshakeCompleteMessage), MSG_EOR));
-}
-
 IOResult FdForwardTransport::ReceiveFdsFromSocket(bool* do_handshake) {
   union {
     cmsghdr cm;
@@ -409,8 +402,6 @@ jdwpTransportError FdForwardTransport::Accept() {
         continue;
       }
     }
-    // Tell everyone we have finished the handshake.
-    SendHandshakeCompleteMessage(close_notify_fd_);
     break;
   }
   CHECK(ChangeState(TransportState::kOpening, TransportState::kOpen));

@@ -58,17 +58,7 @@ public class SimdLong {
   //  Not directly supported for longs.
   //
   /// CHECK-START-ARM64: void SimdLong.mul(long) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
-  //
-  ///     CHECK-DAG: VecLoad  loop:<<Loop:B\d+>> outer_loop:none
-  ///     CHECK-DAG: VecMul   loop:<<Loop>>      outer_loop:none
-  ///     CHECK-DAG: VecStore loop:<<Loop>>      outer_loop:none
-  //
-  /// CHECK-ELSE:
-  //
-  ///     CHECK-NOT: VecMul
-  //
-  /// CHECK-FI:
+  /// CHECK-NOT: VecMul
   static void mul(long x) {
     for (int i = 0; i < 128; i++)
       a[i] *= x;
@@ -154,7 +144,7 @@ public class SimdLong {
   }
 
   //
-  // Shift checks.
+  // Shift sanity.
   //
 
   // Expose constants to optimizing compiler, but not to front-end.
@@ -173,17 +163,8 @@ public class SimdLong {
   /// CHECK-DAG:              ArraySet [{{l\d+}},{{i\d+}},<<Get>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void SimdLong.shr64() loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
-  //
-  ///     CHECK-DAG: <<Get:d\d+>> VecLoad                                       loop:<<Loop:B\d+>> outer_loop:none
-  ///     CHECK-DAG:              VecStore [{{l\d+}},{{i\d+}},<<Get>>,{{j\d+}}] loop:<<Loop>>      outer_loop:none
-  //
-  /// CHECK-ELSE:
-  //
-  ///     CHECK-DAG: <<Get:d\d+>> VecLoad                              loop:<<Loop:B\d+>> outer_loop:none
-  ///     CHECK-DAG:              VecStore [{{l\d+}},{{i\d+}},<<Get>>] loop:<<Loop>>      outer_loop:none
-  //
-  /// CHECK-FI:
+  /// CHECK-DAG: <<Get:d\d+>> VecLoad                              loop:<<Loop:B\d+>> outer_loop:none
+  /// CHECK-DAG:              VecStore [{{l\d+}},{{i\d+}},<<Get>>] loop:<<Loop>>      outer_loop:none
   static void shr64() {
     // TODO: remove a[i] = a[i] altogether?
     for (int i = 0; i < 128; i++)
@@ -204,19 +185,9 @@ public class SimdLong {
   //
   /// CHECK-START-ARM64: void SimdLong.shr65() loop_optimization (after)
   /// CHECK-DAG: <<Dist:i\d+>> IntConstant 1                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
-  //
-  ///     CHECK-DAG: <<Get:d\d+>>  VecLoad                                        loop:<<Loop:B\d+>> outer_loop:none
-  ///     CHECK-DAG: <<UShr:d\d+>> VecUShr [<<Get>>,<<Dist>>,{{j\d+}}]            loop:<<Loop>>      outer_loop:none
-  ///     CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<UShr>>,{{j\d+}}] loop:<<Loop>>      outer_loop:none
-  //
-  /// CHECK-ELSE:
-  //
-  ///     CHECK-DAG: <<Get:d\d+>>  VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
-  ///     CHECK-DAG: <<UShr:d\d+>> VecUShr [<<Get>>,<<Dist>>]            loop:<<Loop>>      outer_loop:none
-  ///     CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<UShr>>] loop:<<Loop>>      outer_loop:none
-  //
-  /// CHECK-FI:
+  /// CHECK-DAG: <<Get:d\d+>>  VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
+  /// CHECK-DAG: <<UShr:d\d+>> VecUShr [<<Get>>,<<Dist>>]            loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<UShr>>] loop:<<Loop>>      outer_loop:none
   static void shr65() {
     for (int i = 0; i < 128; i++)
       a[i] >>>= $opt$inline$IntConstant65();  // 1, since & 63
@@ -236,19 +207,9 @@ public class SimdLong {
   //
   /// CHECK-START-ARM64: void SimdLong.shrMinus254() loop_optimization (after)
   /// CHECK-DAG: <<Dist:i\d+>> IntConstant 2                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
-  //
-  ///     CHECK-DAG: <<Get:d\d+>>  VecLoad                                        loop:<<Loop:B\d+>> outer_loop:none
-  ///     CHECK-DAG: <<UShr:d\d+>> VecUShr [<<Get>>,<<Dist>>,{{j\d+}}]            loop:<<Loop>>      outer_loop:none
-  ///     CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<UShr>>,{{j\d+}}] loop:<<Loop>>      outer_loop:none
-  //
-  /// CHECK-ELSE:
-  //
-  ///     CHECK-DAG: <<Get:d\d+>>  VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
-  ///     CHECK-DAG: <<UShr:d\d+>> VecUShr [<<Get>>,<<Dist>>]            loop:<<Loop>>      outer_loop:none
-  ///     CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<UShr>>] loop:<<Loop>>      outer_loop:none
-  //
-  /// CHECK-FI:
+  /// CHECK-DAG: <<Get:d\d+>>  VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
+  /// CHECK-DAG: <<UShr:d\d+>> VecUShr [<<Get>>,<<Dist>>]            loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<UShr>>] loop:<<Loop>>      outer_loop:none
   static void shrMinus254() {
     for (int i = 0; i < 128; i++)
       a[i] >>>= $opt$inline$IntConstantMinus254();  // 2, since & 63

@@ -543,8 +543,7 @@ void ClassHierarchyAnalysis::InitSingleImplementationFlag(Handle<mirror::Class> 
       // Abstract method starts with single-implementation flag set and null
       // implementation method.
       method->SetHasSingleImplementation(true);
-      DCHECK(!method->HasCodeItem()) << method->PrettyMethod();
-      DCHECK(method->GetSingleImplementation(pointer_size) == nullptr) << method->PrettyMethod();
+      DCHECK(method->GetSingleImplementation(pointer_size) == nullptr);
     }
   // Default conflicting methods cannot be treated with single implementations,
   // as we need to call them (and not inline them) in case of ICCE.

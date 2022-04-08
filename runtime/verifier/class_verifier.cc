@@ -113,7 +113,6 @@ FailureKind ClassVerifier::ReverifyClass(Thread* self,
   };
   DelayedVerifyCallback dvc;
   FailureKind res = CommonVerifyClass(self,
-                                      /*verifier_deps=*/nullptr,
                                       h_klass.Get(),
                                       /*callbacks=*/nullptr,
                                       &dvc,
@@ -129,7 +128,6 @@ FailureKind ClassVerifier::ReverifyClass(Thread* self,
 }
 
 FailureKind ClassVerifier::VerifyClass(Thread* self,
-                                       VerifierDeps* verifier_deps,
                                        ObjPtr<mirror::Class> klass,
                                        CompilerCallbacks* callbacks,
                                        bool allow_soft_failures,
@@ -141,7 +139,6 @@ FailureKind ClassVerifier::VerifyClass(Thread* self,
   }
   StandardVerifyCallback svc;
   return CommonVerifyClass(self,
-                           verifier_deps,
                            klass,
                            callbacks,
                            &svc,
@@ -152,7 +149,6 @@ FailureKind ClassVerifier::VerifyClass(Thread* self,
 }
 
 FailureKind ClassVerifier::CommonVerifyClass(Thread* self,
-                                             VerifierDeps* verifier_deps,
                                              ObjPtr<mirror::Class> klass,
                                              CompilerCallbacks* callbacks,
                                              VerifierCallback* verifier_callback,
@@ -188,7 +184,6 @@ FailureKind ClassVerifier::CommonVerifyClass(Thread* self,
   Handle<mirror::DexCache> dex_cache(hs.NewHandle(klass->GetDexCache()));
   Handle<mirror::ClassLoader> class_loader(hs.NewHandle(klass->GetClassLoader()));
   return VerifyClass(self,
-                     verifier_deps,
                      &dex_file,
                      dex_cache,
                      class_loader,
@@ -203,7 +198,6 @@ FailureKind ClassVerifier::CommonVerifyClass(Thread* self,
 
 
 FailureKind ClassVerifier::VerifyClass(Thread* self,
-                                       VerifierDeps* verifier_deps,
                                        const DexFile* dex_file,
                                        Handle<mirror::DexCache> dex_cache,
                                        Handle<mirror::ClassLoader> class_loader,
@@ -215,7 +209,6 @@ FailureKind ClassVerifier::VerifyClass(Thread* self,
                                        std::string* error) {
   StandardVerifyCallback svc;
   return VerifyClass(self,
-                     verifier_deps,
                      dex_file,
                      dex_cache,
                      class_loader,
@@ -229,7 +222,6 @@ FailureKind ClassVerifier::VerifyClass(Thread* self,
 }
 
 FailureKind ClassVerifier::VerifyClass(Thread* self,
-                                       VerifierDeps* verifier_deps,
                                        const DexFile* dex_file,
                                        Handle<mirror::DexCache> dex_cache,
                                        Handle<mirror::ClassLoader> class_loader,
@@ -250,7 +242,6 @@ FailureKind ClassVerifier::VerifyClass(Thread* self,
 
   ClassAccessor accessor(*dex_file, class_def);
   SCOPED_TRACE << "VerifyClass " << PrettyDescriptor(accessor.GetDescriptor());
-  metrics::AutoTimer timer{GetMetrics()->ClassVerificationTotalTime()};
 
   int64_t previous_method_idx[2] = { -1, -1 };
   MethodVerifier::FailureData failure_data;
@@ -281,7 +272,6 @@ FailureKind ClassVerifier::VerifyClass(Thread* self,
         MethodVerifier::VerifyMethod(self,
                                      linker,
                                      Runtime::Current()->GetArenaPool(),
-                                     verifier_deps,
                                      method_idx,
                                      dex_file,
                                      dex_cache,
@@ -313,11 +303,6 @@ FailureKind ClassVerifier::VerifyClass(Thread* self,
     }
     failure_data.Merge(result);
   }
-  uint64_t elapsed_time_microseconds = timer.Stop();
-  VLOG(verifier) << "VerifyClass took " << PrettyDuration(UsToNs(elapsed_time_microseconds))
-                 << ", class: " << PrettyDescriptor(dex_file->GetClassDescriptor(class_def));
-
-  GetMetrics()->ClassVerificationCount()->AddOne();
 
   if (failure_data.kind == FailureKind::kNoFailure) {
     return FailureKind::kNoFailure;

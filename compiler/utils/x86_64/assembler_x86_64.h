@@ -743,7 +743,6 @@ class X86_64Assembler final : public Assembler {
   void andq(CpuRegister dst, const Immediate& imm);
   void andq(CpuRegister dst, CpuRegister src);
   void andq(CpuRegister reg, const Address& address);
-  void andw(const Address& address, const Immediate& imm);
 
   void orl(CpuRegister dst, const Immediate& imm);
   void orl(CpuRegister dst, CpuRegister src);
@@ -783,8 +782,6 @@ class X86_64Assembler final : public Assembler {
 
   void idivl(CpuRegister reg);
   void idivq(CpuRegister reg);
-  void divl(CpuRegister reg);
-  void divq(CpuRegister reg);
 
   void imull(CpuRegister dst, CpuRegister src);
   void imull(CpuRegister reg, const Immediate& imm);

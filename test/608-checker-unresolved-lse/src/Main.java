@@ -14,7 +14,10 @@
  * limitations under the License.
  */
 
-public class Main {
+// We make Main extend an unresolved super class. This will lead to an
+// unresolved access to Foo.field, as we won't know if Main can access
+// a package private field.
+public class Main extends MissingSuperClass {
 
   public static void main(String[] args) {
     instanceFieldTest();
@@ -22,7 +25,10 @@ public class Main {
     instanceFieldTest2();
   }
 
-  /// CHECK-START: void Main.instanceFieldTest() load_store_elimination (before)
+  /// CHECK-START: void Main.instanceFieldTest() inliner (before)
+  /// CHECK-NOT:    InstanceFieldSet
+
+  /// CHECK-START: void Main.instanceFieldTest() inliner (after)
   /// CHECK:        InstanceFieldSet
   /// CHECK:        UnresolvedInstanceFieldGet
 
@@ -36,15 +42,17 @@ public class Main {
   /// CHECK:        InstanceFieldSet
   /// CHECK:        UnresolvedInstanceFieldGet
   public static void instanceFieldTest() {
-    SubFoo sf = new SubFoo();
-    Foo f = sf;
-    f.iField = 42;
-    if (sf.iField != 42) {
+    Foo f = new Foo();
+    if (f.iField != 42) {
       throw new Error("Expected 42, got " + f.iField);
     }
   }
 
-  /// CHECK-START: void Main.instanceFieldTest2() load_store_elimination (before)
+  /// CHECK-START: void Main.instanceFieldTest2() inliner (before)
+  /// CHECK-NOT:    InstanceFieldSet
+  /// CHECK-NOT:    InstanceFieldGet
+
+  /// CHECK-START: void Main.instanceFieldTest2() inliner (after)
   /// CHECK:        InstanceFieldSet
   /// CHECK:        InstanceFieldGet
   /// CHECK:        UnresolvedInstanceFieldSet
@@ -61,18 +69,19 @@ public class Main {
   /// CHECK:        UnresolvedInstanceFieldSet
   /// CHECK:        InstanceFieldGet
   public static void instanceFieldTest2() {
-    SubFoo sf = new SubFoo();
-    Foo f = sf;
-    f.iField = 42;
-    int a = f.iField;
-    sf.iField = 43;
-    a = f.iField;
+    Foo f = new Foo();
+    int a = f.$inline$GetInstanceField();
+    f.iField = 43;
+    a = f.$inline$GetInstanceField();
     if (a != 43) {
       throw new Error("Expected 43, got " + a);
     }
   }
 
-  /// CHECK-START: void Main.staticFieldTest() load_store_elimination (before)
+  /// CHECK-START: void Main.staticFieldTest() inliner (before)
+  /// CHECK-NOT:    StaticFieldSet
+
+  /// CHECK-START: void Main.staticFieldTest() inliner (after)
   /// CHECK:        StaticFieldSet
   /// CHECK:        StaticFieldSet
   /// CHECK:        UnresolvedStaticFieldGet
@@ -81,21 +90,37 @@ public class Main {
   /// CHECK:        StaticFieldSet
   /// CHECK:        UnresolvedStaticFieldGet
   public static void staticFieldTest() {
-    Foo.sField = 42;
-    Foo.sField = 43;
-    if (SubFoo.sField != 43) {
-      throw new Error("Expected 43, got " + SubFoo.sField);
+    // Ensure Foo is initialized.
+    Foo f = new Foo();
+    f.$inline$StaticSet42();
+    f.$inline$StaticSet43();
+    if (Foo.sField != 43) {
+      throw new Error("Expected 43, got " + Foo.sField);
     }
   }
 }
 
 class Foo {
-  public int iField;
-  public static int sField;
-}
+  // field needs to be package-private to make the access in Main.main
+  // unresolved.
+  int iField;
+  static int sField;
 
-// We make SubFoo implement an unresolved interface, so the SubFoo
-// shall be unresolved and all field accesses through SubFoo shall
-// yield unresolved field access HIR.
-class SubFoo extends Foo implements MissingInterface {
+  public void $inline$StaticSet42() {
+    sField = 42;
+  }
+
+  public void $inline$StaticSet43() {
+    sField = 43;
+  }
+
+  public int $inline$GetInstanceField() {
+    return iField;
+  }
+
+  // Constructor needs to be public to get it resolved in Main.main
+  // and therefore inlined.
+  public Foo() {
+    iField = 42;
+  }
 }

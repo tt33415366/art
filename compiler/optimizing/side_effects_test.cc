@@ -42,7 +42,7 @@ static const DataType::Type kTestTypes[] = {
 // Helper methods.
 //
 
-void testWriteAndReadEffects(SideEffects write, SideEffects read) {
+void testWriteAndReadSanity(SideEffects write, SideEffects read) {
   EXPECT_FALSE(write.DoesNothing());
   EXPECT_FALSE(read.DoesNothing());
 
@@ -67,7 +67,7 @@ void testWriteAndReadEffects(SideEffects write, SideEffects read) {
 }
 
 void testWriteAndReadDependence(SideEffects write, SideEffects read) {
-  testWriteAndReadEffects(write, read);
+  testWriteAndReadSanity(write, read);
 
   // Dependence only in one direction.
   EXPECT_FALSE(write.MayDependOn(read));
@@ -75,7 +75,7 @@ void testWriteAndReadDependence(SideEffects write, SideEffects read) {
 }
 
 void testNoWriteAndReadDependence(SideEffects write, SideEffects read) {
-  testWriteAndReadEffects(write, read);
+  testWriteAndReadSanity(write, read);
 
   // No dependence in any direction.
   EXPECT_FALSE(write.MayDependOn(read));

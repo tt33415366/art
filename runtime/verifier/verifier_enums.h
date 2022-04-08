@@ -33,11 +33,10 @@ enum class VerifyMode : int8_t {
 enum class FailureKind {
   kNoFailure,
   kAccessChecksFailure,
-  kTypeChecksFailure,
   kSoftFailure,
   kHardFailure,
 };
-std::ostream& operator<<(std::ostream& os, FailureKind rhs);
+std::ostream& operator<<(std::ostream& os, const FailureKind& rhs);
 
 // How to log hard failures during verification.
 enum class HardFailLogMode {
@@ -63,7 +62,7 @@ enum MethodType {
   METHOD_INTERFACE,   // interface
   METHOD_POLYMORPHIC  // polymorphic
 };
-std::ostream& operator<<(std::ostream& os, MethodType rhs);
+std::ostream& operator<<(std::ostream& os, const MethodType& rhs);
 
 /*
  * An enumeration of problems that can turn up during verification.
@@ -80,7 +79,7 @@ enum VerifyError : uint32_t {
                                              // runtime.
 
   VERIFY_ERROR_NO_CLASS =          1 << 2,   // NoClassDefFoundError.
-  VERIFY_ERROR_UNRESOLVED_TYPE_CHECK = 1 << 3,   // Missing class for doing a type check
+  VERIFY_ERROR_NO_FIELD =          1 << 3,   // NoSuchFieldError.
   VERIFY_ERROR_NO_METHOD =         1 << 4,   // NoSuchMethodError.
   VERIFY_ERROR_ACCESS_CLASS =      1 << 5,   // IllegalAccessError.
   VERIFY_ERROR_ACCESS_FIELD =      1 << 6,   // IllegalAccessError.
@@ -102,7 +101,7 @@ enum VerifyError : uint32_t {
                                              // code. May be removed once the compiler handles
                                              // unreachable code correctly.
 };
-std::ostream& operator<<(std::ostream& os, VerifyError rhs);
+std::ostream& operator<<(std::ostream& os, const VerifyError& rhs);
 
 }  // namespace verifier
 }  // namespace art

@@ -14,14 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Inputs:
-# $1: Test's expected standard output
-# $2: Test's actual standard output
-# $3: Test's expected standard error
-# $4: Test's actual standard error
-
 # Strip any JNI registration error messages
-sed -e '/java_vm_ext/d' -e '/jni_internal.cc/d' "$4" > "$4.tmp"
+sed -e '/java_vm_ext/d' -e '/jni_internal.cc/d' "$2" > "$2.tmp"
 
-diff --strip-trailing-cr -q "$1" "$2" >/dev/null \
-  && diff --strip-trailing-cr -q "$3" "$4.tmp" >/dev/null
+diff --strip-trailing-cr -q "$1" "$2.tmp" >/dev/null

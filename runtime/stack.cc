@@ -30,7 +30,6 @@
 #include "entrypoints/runtime_asm_entrypoints.h"
 #include "gc/space/image_space.h"
 #include "gc/space/space-inl.h"
-#include "interpreter/mterp/nterp.h"
 #include "interpreter/shadow_frame-inl.h"
 #include "jit/jit.h"
 #include "jit/jit_code_cache.h"
@@ -150,11 +149,19 @@ ObjPtr<mirror::Object> StackVisitor::GetThisObject() const {
     return nullptr;
   } else if (m->IsNative()) {
     if (cur_quick_frame_ != nullptr) {
-      // The `this` reference is stored in the first out vreg in the caller's frame.
-      const size_t frame_size = GetCurrentQuickFrameInfo().FrameSizeInBytes();
-      auto* stack_ref = reinterpret_cast<StackReference<mirror::Object>*>(
-          reinterpret_cast<uint8_t*>(cur_quick_frame_) + frame_size + sizeof(ArtMethod*));
-      return stack_ref->AsMirrorPtr();
+      HandleScope* hs;
+      if (cur_oat_quick_method_header_ != nullptr) {
+        hs = reinterpret_cast<HandleScope*>(
+            reinterpret_cast<char*>(cur_quick_frame_) + sizeof(ArtMethod*));
+      } else {
+        // GenericJNI frames have the HandleScope under the managed frame.
+        uint32_t shorty_len;
+        const char* shorty = m->GetShorty(&shorty_len);
+        const size_t num_handle_scope_references =
+            /* this */ 1u + std::count(shorty + 1, shorty + shorty_len, 'L');
+        hs = GetGenericJniHandleScope(cur_quick_frame_, num_handle_scope_references);
+      }
+      return hs->GetReference(0);
     } else {
       return cur_shadow_frame_->GetVRegReference(0);
     }
@@ -233,7 +240,7 @@ bool StackVisitor::GetVReg(ArtMethod* m,
         uint32_t val2 = *val;
         // The caller already known the register location, so we can use the faster overload
         // which does not decode the stack maps.
-        result = GetVRegFromOptimizedCode(location.value(), val);
+        result = GetVRegFromOptimizedCode(location.value(), kind, val);
         // Compare to the slower overload.
         DCHECK_EQ(result, GetVRegFromOptimizedCode(m, vreg, kind, &val2));
         DCHECK_EQ(*val, val2);
@@ -261,9 +268,7 @@ bool StackVisitor::GetVReg(ArtMethod* m,
   }
 }
 
-bool StackVisitor::GetVRegFromOptimizedCode(ArtMethod* m,
-                                            uint16_t vreg,
-                                            VRegKind kind,
+bool StackVisitor::GetVRegFromOptimizedCode(ArtMethod* m, uint16_t vreg, VRegKind kind,
                                             uint32_t* val) const {
   DCHECK_EQ(m, GetMethod());
   // Can't be null or how would we compile its instructions?
@@ -303,7 +308,7 @@ bool StackVisitor::GetVRegFromOptimizedCode(ArtMethod* m,
       if (kind == kReferenceVReg && !(register_mask & (1 << reg))) {
         return false;
       }
-      return GetRegisterIfAccessible(reg, location_kind, val);
+      return GetRegisterIfAccessible(reg, kind, val);
     }
     case DexRegisterLocation::Kind::kInRegisterHigh:
     case DexRegisterLocation::Kind::kInFpuRegister:
@@ -312,7 +317,7 @@ bool StackVisitor::GetVRegFromOptimizedCode(ArtMethod* m,
         return false;
       }
       uint32_t reg = dex_register_map[vreg].GetMachineRegister();
-      return GetRegisterIfAccessible(reg, location_kind, val);
+      return GetRegisterIfAccessible(reg, kind, val);
     }
     case DexRegisterLocation::Kind::kConstant: {
       uint32_t result = dex_register_map[vreg].GetConstant();
@@ -330,7 +335,9 @@ bool StackVisitor::GetVRegFromOptimizedCode(ArtMethod* m,
   }
 }
 
-bool StackVisitor::GetVRegFromOptimizedCode(DexRegisterLocation location, uint32_t* val) const {
+bool StackVisitor::GetVRegFromOptimizedCode(DexRegisterLocation location,
+                                            VRegKind kind,
+                                            uint32_t* val) const {
   switch (location.GetKind()) {
     case DexRegisterLocation::Kind::kInvalid:
       break;
@@ -343,7 +350,7 @@ bool StackVisitor::GetVRegFromOptimizedCode(DexRegisterLocation location, uint32
     case DexRegisterLocation::Kind::kInRegisterHigh:
     case DexRegisterLocation::Kind::kInFpuRegister:
     case DexRegisterLocation::Kind::kInFpuRegisterHigh:
-      return GetRegisterIfAccessible(location.GetMachineRegister(), location.GetKind(), val);
+      return GetRegisterIfAccessible(location.GetMachineRegister(), kind, val);
     case DexRegisterLocation::Kind::kConstant:
       *val = location.GetConstant();
       return true;
@@ -354,18 +361,13 @@ bool StackVisitor::GetVRegFromOptimizedCode(DexRegisterLocation location, uint32
   UNREACHABLE();
 }
 
-bool StackVisitor::GetRegisterIfAccessible(uint32_t reg,
-                                           DexRegisterLocation::Kind location_kind,
-                                           uint32_t* val) const {
-  const bool is_float = (location_kind == DexRegisterLocation::Kind::kInFpuRegister) ||
-                        (location_kind == DexRegisterLocation::Kind::kInFpuRegisterHigh);
+bool StackVisitor::GetRegisterIfAccessible(uint32_t reg, VRegKind kind, uint32_t* val) const {
+  const bool is_float = (kind == kFloatVReg) || (kind == kDoubleLoVReg) || (kind == kDoubleHiVReg);
 
   if (kRuntimeISA == InstructionSet::kX86 && is_float) {
     // X86 float registers are 64-bit and each XMM register is provided as two separate
     // 32-bit registers by the context.
-    reg = (location_kind == DexRegisterLocation::Kind::kInFpuRegisterHigh)
-        ? (2 * reg + 1)
-        : (2 * reg);
+    reg = (kind == kDoubleHiVReg) ? (2 * reg + 1) : (2 * reg);
   }
 
   if (!IsAccessibleRegister(reg, is_float)) {
@@ -374,10 +376,14 @@ bool StackVisitor::GetRegisterIfAccessible(uint32_t reg,
   uintptr_t ptr_val = GetRegister(reg, is_float);
   const bool target64 = Is64BitInstructionSet(kRuntimeISA);
   if (target64) {
-    const bool is_high = (location_kind == DexRegisterLocation::Kind::kInRegisterHigh) ||
-                         (location_kind == DexRegisterLocation::Kind::kInFpuRegisterHigh);
+    const bool wide_lo = (kind == kLongLoVReg) || (kind == kDoubleLoVReg);
+    const bool wide_hi = (kind == kLongHiVReg) || (kind == kDoubleHiVReg);
     int64_t value_long = static_cast<int64_t>(ptr_val);
-    ptr_val = static_cast<uintptr_t>(is_high ? High32Bits(value_long) : Low32Bits(value_long));
+    if (wide_lo) {
+      ptr_val = static_cast<uintptr_t>(Low32Bits(value_long));
+    } else if (wide_hi) {
+      ptr_val = static_cast<uintptr_t>(High32Bits(value_long));
+    }
   }
   *val = ptr_val;
   return true;
@@ -440,6 +446,25 @@ bool StackVisitor::GetVRegPairFromOptimizedCode(ArtMethod* m, uint16_t vreg,
     *val = (static_cast<uint64_t>(high_32bits) << 32) | static_cast<uint64_t>(low_32bits);
   }
   return success;
+}
+
+bool StackVisitor::GetRegisterPairIfAccessible(uint32_t reg_lo, uint32_t reg_hi,
+                                               VRegKind kind_lo, uint64_t* val) const {
+  const bool is_float = (kind_lo == kDoubleLoVReg);
+  if (!IsAccessibleRegister(reg_lo, is_float) || !IsAccessibleRegister(reg_hi, is_float)) {
+    return false;
+  }
+  uintptr_t ptr_val_lo = GetRegister(reg_lo, is_float);
+  uintptr_t ptr_val_hi = GetRegister(reg_hi, is_float);
+  bool target64 = Is64BitInstructionSet(kRuntimeISA);
+  if (target64) {
+    int64_t value_long_lo = static_cast<int64_t>(ptr_val_lo);
+    int64_t value_long_hi = static_cast<int64_t>(ptr_val_hi);
+    ptr_val_lo = static_cast<uintptr_t>(Low32Bits(value_long_lo));
+    ptr_val_hi = static_cast<uintptr_t>(High32Bits(value_long_hi));
+  }
+  *val = (static_cast<uint64_t>(ptr_val_hi) << 32) | static_cast<uint32_t>(ptr_val_lo);
+  return true;
 }
 
 ShadowFrame* StackVisitor::PrepareSetVReg(ArtMethod* m, uint16_t vreg, bool wide) {
@@ -687,7 +712,7 @@ static void AssertPcIsWithinQuickCode(ArtMethod* method, uintptr_t pc)
       << " code_size=" << code_size;
 }
 
-void StackVisitor::ValidateFrame() const {
+void StackVisitor::SanityCheckFrame() const {
   if (kIsDebugBuild) {
     ArtMethod* method = GetMethod();
     ObjPtr<mirror::Class> declaring_class = method->GetDeclaringClass();
@@ -703,8 +728,8 @@ void StackVisitor::ValidateFrame() const {
     LinearAlloc* const linear_alloc = runtime->GetLinearAlloc();
     if (!linear_alloc->Contains(method)) {
       // Check class linker linear allocs.
-      // We get the canonical method as copied methods may have been allocated
-      // by a different class loader.
+      // We get the canonical method as copied methods may have their declaring
+      // class from another class loader.
       const PointerSize ptrSize = runtime->GetClassLinker()->GetImagePointerSize();
       ArtMethod* canonical = method->GetCanonicalMethod(ptrSize);
       ObjPtr<mirror::Class> klass = canonical->GetDeclaringClass();
@@ -732,7 +757,7 @@ void StackVisitor::ValidateFrame() const {
     }
     if (cur_quick_frame_ != nullptr) {
       AssertPcIsWithinQuickCode(method, cur_quick_frame_pc_);
-      // Frame consistency checks.
+      // Frame sanity.
       size_t frame_size = GetCurrentQuickFrameInfo().FrameSizeInBytes();
       CHECK_NE(frame_size, 0u);
       // For compiled code, we could try to have a rough guess at an upper size we expect
@@ -741,7 +766,7 @@ void StackVisitor::ValidateFrame() const {
       // 2 words HandleScope overhead
       // 3+3 register spills
       // const size_t kMaxExpectedFrameSize = (256 + 2 + 3 + 3) * sizeof(word);
-      const size_t kMaxExpectedFrameSize = interpreter::kNterpMaxFrame;
+      const size_t kMaxExpectedFrameSize = interpreter::kMaxNterpFrame;
       CHECK_LE(frame_size, kMaxExpectedFrameSize) << method->PrettyMethod();
       size_t return_pc_offset = GetCurrentQuickFrameInfo().GetReturnPcOffset();
       CHECK_LT(return_pc_offset, frame_size);
@@ -860,7 +885,7 @@ void StackVisitor::WalkStack(bool include_transitions) {
           cur_oat_quick_method_header_ = method->GetOatQuickMethodHeader(cur_quick_frame_pc_);
         }
         header_retrieved = false;  // Force header retrieval in next iteration.
-        ValidateFrame();
+        SanityCheckFrame();
 
         if ((walk_kind_ == StackWalkKind::kIncludeInlinedFrames)
             && (cur_oat_quick_method_header_ != nullptr)
@@ -954,7 +979,7 @@ void StackVisitor::WalkStack(bool include_transitions) {
       cur_oat_quick_method_header_ = nullptr;
     } else if (cur_shadow_frame_ != nullptr) {
       do {
-        ValidateFrame();
+        SanityCheckFrame();
         bool should_continue = VisitFrame();
         if (UNLIKELY(!should_continue)) {
           return;

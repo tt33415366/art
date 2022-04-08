@@ -1342,7 +1342,7 @@ public class Main {
     } catch (WrongMethodTypeException expected) {
     }
 
-    // Checks on other array types.
+    // Sanity checks on other array types.
 
     MethodHandle target = MethodHandles.lookup().findStatic(
         Main.class, "collectBoolean",

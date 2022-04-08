@@ -106,9 +106,8 @@ TEST_F(IndirectReferenceTableTest, BasicTest) {
   // Table should be empty now.
   EXPECT_EQ(0U, irt.Capacity());
 
-  // Check that the entry off the end of the list is not valid.
-  // (CheckJNI shall abort for such entries.)
-  EXPECT_FALSE(irt.IsValidReference(iref0, &error_msg));
+  // Get invalid entry (off the end of the list).
+  EXPECT_TRUE(irt.Get(iref0) == nullptr);
 
   // Add three, remove in the opposite order.
   iref0 = irt.Add(cookie, obj0.Get(), &error_msg);
@@ -146,8 +145,8 @@ TEST_F(IndirectReferenceTableTest, BasicTest) {
   ASSERT_FALSE(irt.Remove(cookie, iref1));
   CheckDump(&irt, 2, 2);
 
-  // Check that the reference to the hole is not valid.
-  EXPECT_FALSE(irt.IsValidReference(iref1, &error_msg));
+  // Get invalid entry (from hole).
+  EXPECT_TRUE(irt.Get(iref1) == nullptr);
 
   ASSERT_TRUE(irt.Remove(cookie, iref2));
   CheckDump(&irt, 1, 1);
@@ -228,12 +227,15 @@ TEST_F(IndirectReferenceTableTest, BasicTest) {
   ASSERT_EQ(0U, irt.Capacity()) << "temporal del not empty";
   CheckDump(&irt, 0, 0);
 
-  // Stale reference is not valid.
+  // null isn't a valid iref.
+  ASSERT_TRUE(irt.Get(nullptr) == nullptr);
+
+  // Stale lookup.
   iref0 = irt.Add(cookie, obj0.Get(), &error_msg);
   EXPECT_TRUE(iref0 != nullptr);
   CheckDump(&irt, 1, 1);
   ASSERT_TRUE(irt.Remove(cookie, iref0));
-  EXPECT_FALSE(irt.IsValidReference(iref0, &error_msg)) << "stale lookup succeeded";
+  EXPECT_TRUE(irt.Get(iref0) == nullptr) << "stale lookup succeeded";
   CheckDump(&irt, 0, 0);
 
   // Test table resizing.
@@ -320,7 +322,7 @@ TEST_F(IndirectReferenceTableTest, Holes) {
 
     // Must not have filled the previous hole.
     EXPECT_EQ(irt.Capacity(), 4u);
-    EXPECT_FALSE(irt.IsValidReference(iref1, &error_msg));
+    EXPECT_TRUE(irt.Get(iref1) == nullptr);
     CheckDump(&irt, 3, 3);
 
     UNUSED(iref0, iref1, iref2, iref3);
@@ -355,7 +357,7 @@ TEST_F(IndirectReferenceTableTest, Holes) {
     IndirectRef iref4 = irt.Add(cookie1, obj4.Get(), &error_msg);
 
     EXPECT_EQ(irt.Capacity(), 2u);
-    EXPECT_FALSE(irt.IsValidReference(iref2, &error_msg));
+    EXPECT_TRUE(irt.Get(iref2) == nullptr);
     CheckDump(&irt, 2, 2);
 
     UNUSED(iref0, iref1, iref2, iref3, iref4);
@@ -395,7 +397,7 @@ TEST_F(IndirectReferenceTableTest, Holes) {
     IndirectRef iref4 = irt.Add(cookie1, obj4.Get(), &error_msg);
 
     EXPECT_EQ(irt.Capacity(), 3u);
-    EXPECT_FALSE(irt.IsValidReference(iref1, &error_msg));
+    EXPECT_TRUE(irt.Get(iref1) == nullptr);
     CheckDump(&irt, 3, 3);
 
     UNUSED(iref0, iref1, iref2, iref3, iref4);
@@ -437,7 +439,7 @@ TEST_F(IndirectReferenceTableTest, Holes) {
     IndirectRef iref5 = irt.Add(cookie1, obj4.Get(), &error_msg);
 
     EXPECT_EQ(irt.Capacity(), 2u);
-    EXPECT_FALSE(irt.IsValidReference(iref3, &error_msg));
+    EXPECT_TRUE(irt.Get(iref3) == nullptr);
     CheckDump(&irt, 2, 2);
 
     UNUSED(iref0, iref1, iref2, iref3, iref4, iref5);
@@ -477,7 +479,7 @@ TEST_F(IndirectReferenceTableTest, Holes) {
     IndirectRef iref4 = irt.Add(cookie1, obj3.Get(), &error_msg);
 
     EXPECT_EQ(irt.Capacity(), 2u);
-    EXPECT_FALSE(irt.IsValidReference(iref3, &error_msg));
+    EXPECT_TRUE(irt.Get(iref3) == nullptr);
     CheckDump(&irt, 2, 2);
 
     UNUSED(iref0, iref1, iref2, iref3, iref4);

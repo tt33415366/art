@@ -202,8 +202,7 @@ inline void Thread::TransitionToSuspendedAndRunCheckpoints(ThreadState new_state
     new_state_and_flags.as_struct.flags = old_state_and_flags.as_struct.flags;
     new_state_and_flags.as_struct.state = new_state;
 
-    // CAS the value, ensuring that prior memory operations are visible to any thread
-    // that observes that we are suspended.
+    // CAS the value with a memory ordering.
     bool done =
         tls32_.state_and_flags.as_atomic_int.CompareAndSetWeakRelease(old_state_and_flags.as_int,
                                                                         new_state_and_flags.as_int);

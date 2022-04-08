@@ -38,266 +38,266 @@ public class Linking {
 
 // INSTANCE FIELD GET
 
-class LinkFieldGetSdk {
+class LinkFieldGetWhitelist {
   public static int access() {
-    return new ParentClass().fieldPublicSdk;
+    return new ParentClass().fieldPublicWhitelist;
   }
 }
 
-class LinkFieldGetUnsupported {
+class LinkFieldGetLightGreylist {
   public static int access() {
-    return new ParentClass().fieldPublicUnsupported;
+    return new ParentClass().fieldPublicLightGreylist;
   }
 }
 
-class LinkFieldGetConditionallyBlocked {
+class LinkFieldGetDarkGreylist {
   public static int access() {
-    return new ParentClass().fieldPublicConditionallyBlocked;
+    return new ParentClass().fieldPublicDarkGreylist;
   }
 }
 
-class LinkFieldGetBlocklist {
+class LinkFieldGetBlacklist {
   public static int access() {
-    return new ParentClass().fieldPublicBlocklist;
+    return new ParentClass().fieldPublicBlacklist;
   }
 }
 
-class LinkFieldGetBlocklistAndCorePlatformApi {
+class LinkFieldGetBlacklistAndCorePlatformApi {
   public static int access() {
-    return new ParentClass().fieldPublicBlocklistAndCorePlatformApi;
+    return new ParentClass().fieldPublicBlacklistAndCorePlatformApi;
   }
 }
 
 // INSTANCE FIELD SET
 
-class LinkFieldSetSdk {
+class LinkFieldSetWhitelist {
   public static void access(int x) {
     // Need to use a different field from the getter to bypass DexCache.
-    new ParentClass().fieldPublicSdkB = x;
+    new ParentClass().fieldPublicWhitelistB = x;
   }
 }
 
-class LinkFieldSetUnsupported {
+class LinkFieldSetLightGreylist {
   public static void access(int x) {
     // Need to use a different field from the getter to bypass DexCache.
-    new ParentClass().fieldPublicUnsupportedB = x;
+    new ParentClass().fieldPublicLightGreylistB = x;
   }
 }
 
-class LinkFieldSetConditionallyBlocked {
+class LinkFieldSetDarkGreylist {
   public static void access(int x) {
     // Need to use a different field from the getter to bypass DexCache.
-    new ParentClass().fieldPublicConditionallyBlockedB = x;
+    new ParentClass().fieldPublicDarkGreylistB = x;
   }
 }
 
-class LinkFieldSetBlocklist {
+class LinkFieldSetBlacklist {
   public static void access(int x) {
     // Need to use a different field from the getter to bypass DexCache.
-    new ParentClass().fieldPublicBlocklistB = x;
+    new ParentClass().fieldPublicBlacklistB = x;
   }
 }
 
-class LinkFieldSetBlocklistAndCorePlatformApi {
+class LinkFieldSetBlacklistAndCorePlatformApi {
   public static void access(int x) {
     // Need to use a different field from the getter to bypass DexCache.
-    new ParentClass().fieldPublicBlocklistAndCorePlatformApiB = x;
+    new ParentClass().fieldPublicBlacklistAndCorePlatformApiB = x;
   }
 }
 
 // STATIC FIELD GET
 
-class LinkFieldGetStaticSdk {
+class LinkFieldGetStaticWhitelist {
   public static int access() {
-    return ParentClass.fieldPublicStaticSdk;
+    return ParentClass.fieldPublicStaticWhitelist;
   }
 }
 
-class LinkFieldGetStaticUnsupported {
+class LinkFieldGetStaticLightGreylist {
   public static int access() {
-    return ParentClass.fieldPublicStaticUnsupported;
+    return ParentClass.fieldPublicStaticLightGreylist;
   }
 }
 
-class LinkFieldGetStaticConditionallyBlocked {
+class LinkFieldGetStaticDarkGreylist {
   public static int access() {
-    return ParentClass.fieldPublicStaticConditionallyBlocked;
+    return ParentClass.fieldPublicStaticDarkGreylist;
   }
 }
 
-class LinkFieldGetStaticBlocklist {
+class LinkFieldGetStaticBlacklist {
   public static int access() {
-    return ParentClass.fieldPublicStaticBlocklist;
+    return ParentClass.fieldPublicStaticBlacklist;
   }
 }
 
-class LinkFieldGetStaticBlocklistAndCorePlatformApi {
+class LinkFieldGetStaticBlacklistAndCorePlatformApi {
   public static int access() {
-    return ParentClass.fieldPublicStaticBlocklistAndCorePlatformApi;
+    return ParentClass.fieldPublicStaticBlacklistAndCorePlatformApi;
   }
 }
 
 // STATIC FIELD SET
 
-class LinkFieldSetStaticSdk {
+class LinkFieldSetStaticWhitelist {
   public static void access(int x) {
     // Need to use a different field from the getter to bypass DexCache.
-    ParentClass.fieldPublicStaticSdkB = x;
+    ParentClass.fieldPublicStaticWhitelistB = x;
   }
 }
 
-class LinkFieldSetStaticUnsupported {
+class LinkFieldSetStaticLightGreylist {
   public static void access(int x) {
     // Need to use a different field from the getter to bypass DexCache.
-    ParentClass.fieldPublicStaticUnsupportedB = x;
+    ParentClass.fieldPublicStaticLightGreylistB = x;
   }
 }
 
-class LinkFieldSetStaticConditionallyBlocked {
+class LinkFieldSetStaticDarkGreylist {
   public static void access(int x) {
     // Need to use a different field from the getter to bypass DexCache.
-    ParentClass.fieldPublicStaticConditionallyBlockedB = x;
+    ParentClass.fieldPublicStaticDarkGreylistB = x;
   }
 }
 
-class LinkFieldSetStaticBlocklist {
+class LinkFieldSetStaticBlacklist {
   public static void access(int x) {
     // Need to use a different field from the getter to bypass DexCache.
-    ParentClass.fieldPublicStaticBlocklistB = x;
+    ParentClass.fieldPublicStaticBlacklistB = x;
   }
 }
 
-class LinkFieldSetStaticBlocklistAndCorePlatformApi {
+class LinkFieldSetStaticBlacklistAndCorePlatformApi {
   public static void access(int x) {
     // Need to use a different field from the getter to bypass DexCache.
-    ParentClass.fieldPublicStaticBlocklistAndCorePlatformApiB = x;
+    ParentClass.fieldPublicStaticBlacklistAndCorePlatformApiB = x;
   }
 }
 
 // INVOKE INSTANCE METHOD
 
-class LinkMethodSdk {
+class LinkMethodWhitelist {
   public static int access() {
-    return new ParentClass().methodPublicSdk();
+    return new ParentClass().methodPublicWhitelist();
   }
 }
 
-class LinkMethodUnsupported {
+class LinkMethodLightGreylist {
   public static int access() {
-    return new ParentClass().methodPublicUnsupported();
+    return new ParentClass().methodPublicLightGreylist();
   }
 }
 
-class LinkMethodConditionallyBlocked {
+class LinkMethodDarkGreylist {
   public static int access() {
-    return new ParentClass().methodPublicConditionallyBlocked();
+    return new ParentClass().methodPublicDarkGreylist();
   }
 }
 
-class LinkMethodBlocklist {
+class LinkMethodBlacklist {
   public static int access() {
-    return new ParentClass().methodPublicBlocklist();
+    return new ParentClass().methodPublicBlacklist();
   }
 }
 
-class LinkMethodBlocklistAndCorePlatformApi {
+class LinkMethodBlacklistAndCorePlatformApi {
   public static int access() {
-    return new ParentClass().methodPublicBlocklistAndCorePlatformApi();
+    return new ParentClass().methodPublicBlacklistAndCorePlatformApi();
   }
 }
 
 // INVOKE INSTANCE INTERFACE METHOD
 
-class LinkMethodInterfaceSdk {
+class LinkMethodInterfaceWhitelist {
   public static int access() {
-    return SampleClass.getInterfaceInstance().methodPublicSdk();
+    return DummyClass.getInterfaceInstance().methodPublicWhitelist();
   }
 }
 
-class LinkMethodInterfaceUnsupported {
+class LinkMethodInterfaceLightGreylist {
   public static int access() {
-    return SampleClass.getInterfaceInstance().methodPublicUnsupported();
+    return DummyClass.getInterfaceInstance().methodPublicLightGreylist();
   }
 }
 
-class LinkMethodInterfaceConditionallyBlocked {
+class LinkMethodInterfaceDarkGreylist {
   public static int access() {
-    return SampleClass.getInterfaceInstance().methodPublicConditionallyBlocked();
+    return DummyClass.getInterfaceInstance().methodPublicDarkGreylist();
   }
 }
 
-class LinkMethodInterfaceBlocklist {
+class LinkMethodInterfaceBlacklist {
   public static int access() {
-    return SampleClass.getInterfaceInstance().methodPublicBlocklist();
+    return DummyClass.getInterfaceInstance().methodPublicBlacklist();
   }
 }
 
-class LinkMethodInterfaceBlocklistAndCorePlatformApi {
+class LinkMethodInterfaceBlacklistAndCorePlatformApi {
   public static int access() {
-    return SampleClass.getInterfaceInstance().methodPublicBlocklistAndCorePlatformApi();
+    return DummyClass.getInterfaceInstance().methodPublicBlacklistAndCorePlatformApi();
   }
 }
 
 // INVOKE STATIC METHOD
 
-class LinkMethodStaticSdk {
+class LinkMethodStaticWhitelist {
   public static int access() {
-    return ParentClass.methodPublicStaticSdk();
+    return ParentClass.methodPublicStaticWhitelist();
   }
 }
 
-class LinkMethodStaticUnsupported {
+class LinkMethodStaticLightGreylist {
   public static int access() {
-    return ParentClass.methodPublicStaticUnsupported();
+    return ParentClass.methodPublicStaticLightGreylist();
   }
 }
 
-class LinkMethodStaticConditionallyBlocked {
+class LinkMethodStaticDarkGreylist {
   public static int access() {
-    return ParentClass.methodPublicStaticConditionallyBlocked();
+    return ParentClass.methodPublicStaticDarkGreylist();
   }
 }
 
-class LinkMethodStaticBlocklist {
+class LinkMethodStaticBlacklist {
   public static int access() {
-    return ParentClass.methodPublicStaticBlocklist();
+    return ParentClass.methodPublicStaticBlacklist();
   }
 }
 
-class LinkMethodStaticBlocklistAndCorePlatformApi {
+class LinkMethodStaticBlacklistAndCorePlatformApi {
   public static int access() {
-    return ParentClass.methodPublicStaticBlocklistAndCorePlatformApi();
+    return ParentClass.methodPublicStaticBlacklistAndCorePlatformApi();
   }
 }
 
 // INVOKE INTERFACE STATIC METHOD
 
-class LinkMethodInterfaceStaticSdk {
+class LinkMethodInterfaceStaticWhitelist {
   public static int access() {
-    return ParentInterface.methodPublicStaticSdk();
+    return ParentInterface.methodPublicStaticWhitelist();
   }
 }
 
-class LinkMethodInterfaceStaticUnsupported {
+class LinkMethodInterfaceStaticLightGreylist {
   public static int access() {
-    return ParentInterface.methodPublicStaticUnsupported();
+    return ParentInterface.methodPublicStaticLightGreylist();
   }
 }
 
-class LinkMethodInterfaceStaticConditionallyBlocked {
+class LinkMethodInterfaceStaticDarkGreylist {
   public static int access() {
-    return ParentInterface.methodPublicStaticConditionallyBlocked();
+    return ParentInterface.methodPublicStaticDarkGreylist();
   }
 }
 
-class LinkMethodInterfaceStaticBlocklist {
+class LinkMethodInterfaceStaticBlacklist {
   public static int access() {
-    return ParentInterface.methodPublicStaticBlocklist();
+    return ParentInterface.methodPublicStaticBlacklist();
   }
 }
 
-class LinkMethodInterfaceStaticBlocklistAndCorePlatformApi {
+class LinkMethodInterfaceStaticBlacklistAndCorePlatformApi {
   public static int access() {
-    return ParentInterface.methodPublicStaticBlocklistAndCorePlatformApi();
+    return ParentInterface.methodPublicStaticBlacklistAndCorePlatformApi();
   }
 }

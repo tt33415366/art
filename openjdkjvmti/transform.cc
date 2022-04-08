@@ -68,6 +68,7 @@
 #include "ti_redefine.h"
 #include "ti_logging.h"
 #include "transform.h"
+#include "utils/dex_cache_arrays_layout-inl.h"
 
 namespace openjdkjvmti {
 

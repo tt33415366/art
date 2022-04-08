@@ -21,7 +21,7 @@
 #include <vector>
 
 #include "class_linker.h"
-#include "class_root-inl.h"
+#include "class_root.h"
 #include "jni.h"
 #include "jni/jni_internal.h"
 #include "mirror/class.h"

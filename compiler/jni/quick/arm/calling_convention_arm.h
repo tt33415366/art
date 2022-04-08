@@ -29,26 +29,22 @@ class ArmManagedRuntimeCallingConvention final : public ManagedRuntimeCallingCon
       : ManagedRuntimeCallingConvention(is_static,
                                         is_synchronized,
                                         shorty,
-                                        PointerSize::k32),
-        gpr_index_(1u),  // Skip r0 for ArtMethod*
-        float_index_(0u),
-        double_index_(0u) {}
+                                        PointerSize::k32) {}
   ~ArmManagedRuntimeCallingConvention() override {}
   // Calling convention
   ManagedRegister ReturnRegister() override;
-  void ResetIterator(FrameOffset displacement) override;
+  ManagedRegister InterproceduralScratchRegister() const override;
   // Managed runtime calling convention
   ManagedRegister MethodRegister() override;
-  void Next() override;
   bool IsCurrentParamInRegister() override;
   bool IsCurrentParamOnStack() override;
   ManagedRegister CurrentParamRegister() override;
   FrameOffset CurrentParamStackOffset() override;
+  const ManagedRegisterEntrySpills& EntrySpills() override;
 
  private:
-  size_t gpr_index_;
-  size_t float_index_;
-  size_t double_index_;
+  ManagedRegisterEntrySpills entry_spills_;
+
   DISALLOW_COPY_AND_ASSIGN(ArmManagedRuntimeCallingConvention);
 };
 
@@ -62,12 +58,12 @@ class ArmJniCallingConvention final : public JniCallingConvention {
   // Calling convention
   ManagedRegister ReturnRegister() override;
   ManagedRegister IntReturnRegister() override;
+  ManagedRegister InterproceduralScratchRegister() const override;
   // JNI calling convention
   void Next() override;  // Override default behavior for AAPCS
   size_t FrameSize() const override;
-  size_t OutFrameSize() const override;
+  size_t OutArgSize() const override;
   ArrayRef<const ManagedRegister> CalleeSaveRegisters() const override;
-  ManagedRegister SavedLocalReferenceCookieRegister() const override;
   ManagedRegister ReturnScratchRegister() const override;
   uint32_t CoreSpillMask() const override;
   uint32_t FpSpillMask() const override;

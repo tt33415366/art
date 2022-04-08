@@ -103,14 +103,12 @@ public class Main {
     test(loaders[1], /*hasVdex*/ featureEnabled, /*backedByOat*/ featureEnabled,
         /*invokeMethod*/ true);
 
-    // Change boot classpath checksum. vdex files can still be loaded.
+    // Change boot classpath checksum.
     appendToBootClassLoader(DEX_EXTRA, /*isCorePlatform*/ false);
 
     loaders = multiLoader();
-    test(loaders[0], /*hasVdex*/ featureEnabled, /*backedByOat*/ featureEnabled,
-        /*invokeMethod*/ false);
-    test(loaders[1], /*hasVdex*/ featureEnabled, /*backedByOat*/ featureEnabled,
-        /*invokeMethod*/ true);
+    test(loaders[0], /*hasVdex*/ featureEnabled, /*backedByOat*/ false, /*invokeMethod*/ false);
+    test(loaders[1], /*hasVdex*/ featureEnabled, /*backedByOat*/ false, /*invokeMethod*/ true);
 
     loaders = multiLoader();
     test(loaders[0], /*hasVdex*/ featureEnabled, /*backedByOat*/ featureEnabled,

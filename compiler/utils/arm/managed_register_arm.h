@@ -264,7 +264,7 @@ std::ostream& operator<<(std::ostream& os, const ArmManagedRegister& reg);
 
 }  // namespace arm
 
-constexpr arm::ArmManagedRegister ManagedRegister::AsArm() const {
+constexpr inline arm::ArmManagedRegister ManagedRegister::AsArm() const {
   arm::ArmManagedRegister reg(id_);
   CHECK(reg.IsNoRegister() || reg.IsValidManagedRegister());
   return reg;

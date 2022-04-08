@@ -269,7 +269,7 @@ public class CodeTranslator {
         mTryBlock.endInsn = insnLocationMap.get(endLocation);
       }
 
-      // Verify start and end instructions.
+      // Sanity checks.
       if (mTryBlock.startInsn == null) {
         Log.errorAndQuit(String.format(
             "Couldn't find a mutatable insn at start offset 0x%x",
@@ -289,7 +289,7 @@ public class CodeTranslator {
       if (encodedCatchHandler.size <= 0) {
         mTryBlock.catchAllHandler =
             insnLocationMap.get(encodedCatchHandler.catchAllAddr);
-        // Verify catch-all handler instruction.
+        // Sanity check.
         if (mTryBlock.catchAllHandler == null) {
           Log.errorAndQuit(
               String.format("Couldn't find a mutatable insn at catch-all offset 0x%x",
@@ -303,7 +303,7 @@ public class CodeTranslator {
       for (int i = 0; i < Math.abs(encodedCatchHandler.size); i++) {
         EncodedTypeAddrPair handler = encodedCatchHandler.handlers[i];
         MInsn handlerInsn = insnLocationMap.get(handler.addr);
-        // Verify catch handler instruction.
+        // Sanity check.
         if (handlerInsn == null) {
           Log.errorAndQuit(String.format(
               "Couldn't find a mutatable instruction at handler offset 0x%x",

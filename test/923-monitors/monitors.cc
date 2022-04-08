@@ -40,7 +40,7 @@ static jrawMonitorID LongToMonitor(jlong l) {
 extern "C" JNIEXPORT jlong JNICALL Java_art_Test923_createRawMonitor(
     JNIEnv* env, jclass Main_klass ATTRIBUTE_UNUSED) {
   jrawMonitorID id;
-  jvmtiError result = jvmti_env->CreateRawMonitor("placeholder", &id);
+  jvmtiError result = jvmti_env->CreateRawMonitor("dummy", &id);
   if (JvmtiErrorToException(env, jvmti_env, result)) {
     return 0;
   }

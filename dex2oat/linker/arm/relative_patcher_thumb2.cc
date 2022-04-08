@@ -29,6 +29,7 @@
 #include "mirror/array-inl.h"
 #include "mirror/object.h"
 #include "read_barrier.h"
+#include "utils/arm/assembler_arm_vixl.h"
 
 namespace art {
 namespace linker {

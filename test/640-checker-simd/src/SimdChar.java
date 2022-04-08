@@ -143,7 +143,7 @@ public class SimdChar {
   }
 
   //
-  // Shift checks.
+  // Shift sanity.
   //
 
   static void sar31() {

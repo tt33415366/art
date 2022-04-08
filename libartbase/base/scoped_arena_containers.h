@@ -26,8 +26,6 @@
 
 #include "arena_containers.h"  // For ArenaAllocatorAdapterKind.
 #include "dchecked_vector.h"
-#include "hash_map.h"
-#include "hash_set.h"
 #include "safe_map.h"
 #include "scoped_arena_allocator.h"
 
@@ -74,7 +72,7 @@ using ScopedArenaHashSet = HashSet<T, EmptyFn, HashFn, Pred, ScopedArenaAllocato
 
 template <typename Key,
           typename Value,
-          typename EmptyFn = DefaultMapEmptyFn<Key, Value>,
+          typename EmptyFn = DefaultEmptyFn<std::pair<Key, Value>>,
           typename HashFn = DefaultHashFn<Key>,
           typename Pred = DefaultPred<Key>>
 using ScopedArenaHashMap = HashMap<Key,

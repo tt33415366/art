@@ -16,6 +16,9 @@
 
 public class Main {
 
+  // A dummy value to defeat inlining of these routines.
+  static boolean doThrow = false;
+
   public static void assertByteEquals(byte expected, byte result) {
     if (expected != result) {
       throw new Error("Expected: " + expected + ", found: " + result);
@@ -47,26 +50,26 @@ public class Main {
   }
 
   // Non-inlinable type-casting helpers.
-  static  char $noinline$byteToChar   (byte v) { return  (char)v; }
-  static short $noinline$byteToShort  (byte v) { return (short)v; }
-  static   int $noinline$byteToInt    (byte v) { return   (int)v; }
-  static  long $noinline$byteToLong   (byte v) { return  (long)v; }
-  static  byte $noinline$charToByte   (char v) { return  (byte)v; }
-  static short $noinline$charToShort  (char v) { return (short)v; }
-  static   int $noinline$charToInt    (char v) { return   (int)v; }
-  static  long $noinline$charToLong   (char v) { return  (long)v; }
-  static  byte $noinline$shortToByte (short v) { return  (byte)v; }
-  static  char $noinline$shortToChar (short v) { return  (char)v; }
-  static   int $noinline$shortToInt  (short v) { return   (int)v; }
-  static  long $noinline$shortToLong (short v) { return  (long)v; }
-  static  byte $noinline$intToByte     (int v) { return  (byte)v; }
-  static  char $noinline$intToChar     (int v) { return  (char)v; }
-  static short $noinline$intToShort    (int v) { return (short)v; }
-  static  long $noinline$intToLong     (int v) { return  (long)v; }
-  static  byte $noinline$longToByte   (long v) { return  (byte)v; }
-  static  char $noinline$longToChar   (long v) { return  (char)v; }
-  static short $noinline$longToShort  (long v) { return (short)v; }
-  static   int $noinline$longToInt    (long v) { return   (int)v; }
+  static  char $noinline$byteToChar   (byte v) { if (doThrow) throw new Error(); return  (char)v; }
+  static short $noinline$byteToShort  (byte v) { if (doThrow) throw new Error(); return (short)v; }
+  static   int $noinline$byteToInt    (byte v) { if (doThrow) throw new Error(); return   (int)v; }
+  static  long $noinline$byteToLong   (byte v) { if (doThrow) throw new Error(); return  (long)v; }
+  static  byte $noinline$charToByte   (char v) { if (doThrow) throw new Error(); return  (byte)v; }
+  static short $noinline$charToShort  (char v) { if (doThrow) throw new Error(); return (short)v; }
+  static   int $noinline$charToInt    (char v) { if (doThrow) throw new Error(); return   (int)v; }
+  static  long $noinline$charToLong   (char v) { if (doThrow) throw new Error(); return  (long)v; }
+  static  byte $noinline$shortToByte (short v) { if (doThrow) throw new Error(); return  (byte)v; }
+  static  char $noinline$shortToChar (short v) { if (doThrow) throw new Error(); return  (char)v; }
+  static   int $noinline$shortToInt  (short v) { if (doThrow) throw new Error(); return   (int)v; }
+  static  long $noinline$shortToLong (short v) { if (doThrow) throw new Error(); return  (long)v; }
+  static  byte $noinline$intToByte     (int v) { if (doThrow) throw new Error(); return  (byte)v; }
+  static  char $noinline$intToChar     (int v) { if (doThrow) throw new Error(); return  (char)v; }
+  static short $noinline$intToShort    (int v) { if (doThrow) throw new Error(); return (short)v; }
+  static  long $noinline$intToLong     (int v) { if (doThrow) throw new Error(); return  (long)v; }
+  static  byte $noinline$longToByte   (long v) { if (doThrow) throw new Error(); return  (byte)v; }
+  static  char $noinline$longToChar   (long v) { if (doThrow) throw new Error(); return  (char)v; }
+  static short $noinline$longToShort  (long v) { if (doThrow) throw new Error(); return (short)v; }
+  static   int $noinline$longToInt    (long v) { if (doThrow) throw new Error(); return   (int)v; }
 
   /**
    * Basic test merging a bitfield move operation (here a type conversion) into
@@ -111,6 +114,7 @@ public class Main {
   /// CHECK:                            sub x{{\d+}}, x{{\d+}}, w{{\d+}}, sxtb
 
   public static long $opt$noinline$translate(long l, byte b) {
+    if (doThrow) throw new Error();
     long tmp = (long)b;
     return l - tmp;
   }
@@ -152,6 +156,7 @@ public class Main {
   /// CHECK-NOT:                        DataProcWithShifterOp
 
   public static int $opt$noinline$sameInput(int a) {
+    if (doThrow) throw new Error();
     int tmp = a << 2;
     return tmp + tmp;
   }
@@ -205,6 +210,7 @@ public class Main {
   /// CHECK-NOT:                        Add
 
   public static int $opt$noinline$multipleUses(int arg) {
+    if (doThrow) throw new Error();
     int tmp = arg << 23;
     switch (arg) {
       case 1:  return (arg | 1) + tmp;
@@ -241,6 +247,7 @@ public class Main {
   /// CHECK:                            and
 
   static void $opt$noinline$testAnd(long a, long b) {
+    if (doThrow) throw new Error();
     assertLongEquals((a & $noinline$LongShl(b, 5)) | (a & $noinline$longToByte(b)),
                      (a & (b << 5)) | (a & (byte)b));
   }
@@ -264,6 +271,7 @@ public class Main {
   /// CHECK:                            orr
 
   static void $opt$noinline$testOr(int a, int b) {
+    if (doThrow) throw new Error();
     assertIntEquals((a | $noinline$IntShr(b, 6)) | (a | $noinline$intToChar(b)),
                     (a | (b >> 6)) | (a | (char)b));
   }
@@ -287,6 +295,7 @@ public class Main {
   /// CHECK:                            eor
 
   static void $opt$noinline$testXor(long a, long b) {
+    if (doThrow) throw new Error();
     assertLongEquals((a ^ $noinline$LongUshr(b, 7)) | (a ^ $noinline$longToInt(b)),
                      (a ^ (b >>> 7)) | (a ^ (int)b));
   }
@@ -304,6 +313,7 @@ public class Main {
   /// CHECK:                            neg
 
   static void $opt$noinline$testNeg(int a) {
+    if (doThrow) throw new Error();
     assertIntEquals(-$noinline$IntShl(a, 8) | -$noinline$intToShort(a),
                     (-(a << 8)) | (-(short)a));
   }
@@ -622,12 +632,15 @@ public class Main {
 
 
   static int $noinline$IntShl(int b, int c) {
+    if (doThrow) throw new Error();
     return b << c;
   }
   static int $noinline$IntShr(int b, int c) {
+    if (doThrow) throw new Error();
     return b >> c;
   }
   static int $noinline$IntUshr(int b, int c) {
+    if (doThrow) throw new Error();
     return b >>> c;
   }
 
@@ -870,12 +883,15 @@ public class Main {
 
 
   static long $noinline$LongShl(long b, long c) {
+    if (doThrow) throw new Error();
     return b << c;
   }
   static long $noinline$LongShr(long b, long c) {
+    if (doThrow) throw new Error();
     return b >> c;
   }
   static long $noinline$LongUshr(long b, long c) {
+    if (doThrow) throw new Error();
     return b >>> c;
   }
 

@@ -33,28 +33,36 @@ class Object;
 
 // Verifies that the indirect table lookup is valid.
 // Returns "false" if something looks bad.
-inline bool IndirectReferenceTable::IsValidReference(IndirectRef iref,
-                                                     /*out*/std::string* error_msg) const {
-  DCHECK(iref != nullptr);
-  DCHECK_EQ(GetIndirectRefKind(iref), kind_);
+inline bool IndirectReferenceTable::GetChecked(IndirectRef iref) const {
+  if (UNLIKELY(iref == nullptr)) {
+    LOG(WARNING) << "Attempt to look up nullptr " << kind_;
+    return false;
+  }
+  if (UNLIKELY(GetIndirectRefKind(iref) == kHandleScopeOrInvalid)) {
+    AbortIfNoCheckJNI(android::base::StringPrintf("JNI ERROR (app bug): invalid %s %p",
+                                                  GetIndirectRefKindString(kind_),
+                                                  iref));
+    return false;
+  }
   const uint32_t top_index = segment_state_.top_index;
   uint32_t idx = ExtractIndex(iref);
   if (UNLIKELY(idx >= top_index)) {
-    *error_msg = android::base::StringPrintf("deleted reference at index %u in a table of size %u",
-                                             idx,
-                                             top_index);
+    std::string msg = android::base::StringPrintf(
+        "JNI ERROR (app bug): accessed stale %s %p  (index %d in a table of size %d)",
+        GetIndirectRefKindString(kind_),
+        iref,
+        idx,
+        top_index);
+    AbortIfNoCheckJNI(msg);
     return false;
   }
   if (UNLIKELY(table_[idx].GetReference()->IsNull())) {
-    *error_msg = android::base::StringPrintf("deleted reference at index %u", idx);
+    AbortIfNoCheckJNI(android::base::StringPrintf("JNI ERROR (app bug): accessed deleted %s %p",
+                                                  GetIndirectRefKindString(kind_),
+                                                  iref));
     return false;
   }
-  uint32_t iref_serial = DecodeSerial(reinterpret_cast<uintptr_t>(iref));
-  uint32_t entry_serial = table_[idx].GetSerial();
-  if (UNLIKELY(iref_serial != entry_serial)) {
-    *error_msg = android::base::StringPrintf("stale reference with serial number %u v. current %u",
-                                             iref_serial,
-                                             entry_serial);
+  if (UNLIKELY(!CheckEntry("use", iref, idx))) {
     return false;
   }
   return true;
@@ -80,22 +88,21 @@ inline bool IndirectReferenceTable::CheckEntry(const char* what,
 
 template<ReadBarrierOption kReadBarrierOption>
 inline ObjPtr<mirror::Object> IndirectReferenceTable::Get(IndirectRef iref) const {
-  DCHECK_EQ(GetIndirectRefKind(iref), kind_);
+  if (!GetChecked(iref)) {
+    return nullptr;
+  }
   uint32_t idx = ExtractIndex(iref);
-  DCHECK_LT(idx, segment_state_.top_index);
-  DCHECK_EQ(DecodeSerial(reinterpret_cast<uintptr_t>(iref)), table_[idx].GetSerial());
-  DCHECK(!table_[idx].GetReference()->IsNull());
   ObjPtr<mirror::Object> obj = table_[idx].GetReference()->Read<kReadBarrierOption>();
   VerifyObject(obj);
   return obj;
 }
 
 inline void IndirectReferenceTable::Update(IndirectRef iref, ObjPtr<mirror::Object> obj) {
-  DCHECK_EQ(GetIndirectRefKind(iref), kind_);
+  if (!GetChecked(iref)) {
+    LOG(WARNING) << "IndirectReferenceTable Update failed to find reference " << iref;
+    return;
+  }
   uint32_t idx = ExtractIndex(iref);
-  DCHECK_LT(idx, segment_state_.top_index);
-  DCHECK_EQ(DecodeSerial(reinterpret_cast<uintptr_t>(iref)), table_[idx].GetSerial());
-  DCHECK(!table_[idx].GetReference()->IsNull());
   table_[idx].SetReference(obj);
 }
 

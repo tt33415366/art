@@ -42,11 +42,11 @@ public class ChildClass {
   }
 
   enum Hiddenness {
-    Sdk(PrimitiveType.TShort),
-    Unsupported(PrimitiveType.TBoolean),
-    ConditionallyBlocked(PrimitiveType.TByte),
-    Blocklist(PrimitiveType.TCharacter),
-    BlocklistAndCorePlatformApi(PrimitiveType.TInteger);
+    Whitelist(PrimitiveType.TShort),
+    LightGreylist(PrimitiveType.TBoolean),
+    DarkGreylist(PrimitiveType.TByte),
+    Blacklist(PrimitiveType.TCharacter),
+    BlacklistAndCorePlatformApi(PrimitiveType.TInteger);
 
     Hiddenness(PrimitiveType type) { mAssociatedType = type; }
     public PrimitiveType mAssociatedType;
@@ -78,14 +78,14 @@ public class ChildClass {
   private static final boolean booleanValues[] = new boolean[] { false, true };
 
   public static void runTest(String libFileName, int parentDomainOrdinal,
-      int childDomainOrdinal, boolean everythingSdked) throws Exception {
+      int childDomainOrdinal, boolean everythingWhitelisted) throws Exception {
     System.load(libFileName);
 
     parentDomain = DexDomain.values()[parentDomainOrdinal];
     childDomain = DexDomain.values()[childDomainOrdinal];
 
     configMessage = "parentDomain=" + parentDomain.name() + ", childDomain=" + childDomain.name()
-        + ", everythingSdked=" + everythingSdked;
+        + ", everythingWhitelisted=" + everythingWhitelisted;
 
     // Check expectations about loading into boot class path.
     boolean isParentInBoot = (ParentClass.class.getClassLoader().getParent() == null);
@@ -100,9 +100,10 @@ public class ChildClass {
       throw new RuntimeException("Expected ChildClass " + (expectedChildInBoot ? "" : "not ") +
                                  "in boot class path");
     }
-    ChildClass.everythingSdked = everythingSdked;
+    ChildClass.everythingWhitelisted = everythingWhitelisted;
 
     boolean isSameBoot = (isParentInBoot == isChildInBoot);
+    boolean isDebuggable = VMRuntime.getRuntime().isJavaDebuggable();
 
     // For compat reasons, meta-reflection should still be usable by apps if hidden api check
     // hardening is disabled (i.e. target SDK is Q or earlier). The only configuration where this
@@ -117,18 +118,18 @@ public class ChildClass {
       final boolean invokesMemberCallback;
       // Warnings are now disabled whenever access is granted, even for
       // greylisted APIs. This is the behaviour for release builds.
-      if (everythingSdked || hiddenness == Hiddenness.Sdk) {
+      if (everythingWhitelisted || hiddenness == Hiddenness.Whitelist) {
         expected = Behaviour.Granted;
         invokesMemberCallback = false;
       } else if (parentDomain == DexDomain.CorePlatform && childDomain == DexDomain.Platform) {
-        expected = (hiddenness == Hiddenness.BlocklistAndCorePlatformApi)
+        expected = (hiddenness == Hiddenness.BlacklistAndCorePlatformApi)
             ? Behaviour.Granted : Behaviour.Denied;
         invokesMemberCallback = false;
       } else if (isSameBoot) {
         expected = Behaviour.Granted;
         invokesMemberCallback = false;
-      } else if (hiddenness == Hiddenness.Blocklist ||
-                 hiddenness == Hiddenness.BlocklistAndCorePlatformApi) {
+      } else if (hiddenness == Hiddenness.Blacklist ||
+                 hiddenness == Hiddenness.BlacklistAndCorePlatformApi) {
         expected = Behaviour.Denied;
         invokesMemberCallback = true;
       } else {
@@ -551,7 +552,7 @@ public class ChildClass {
 
   private static DexDomain parentDomain;
   private static DexDomain childDomain;
-  private static boolean everythingSdked;
+  private static boolean everythingWhitelisted;
 
   private static String configMessage;
 }

@@ -118,6 +118,15 @@ bool ThreadList::Contains(Thread* thread) {
   return find(list_.begin(), list_.end(), thread) != list_.end();
 }
 
+bool ThreadList::Contains(pid_t tid) {
+  for (const auto& thread : list_) {
+    if (thread->GetTid() == tid) {
+      return true;
+    }
+  }
+  return false;
+}
+
 pid_t ThreadList::GetLockOwner() {
   return Locks::thread_list_lock_->GetExclusiveOwnerTid();
 }
@@ -170,12 +179,12 @@ void ThreadList::DumpUnattachedThreads(std::ostream& os, bool dump_native_stack)
     char* end;
     pid_t tid = strtol(e->d_name, &end, 10);
     if (!*end) {
-      Thread* thread;
+      bool contains;
       {
         MutexLock mu(self, *Locks::thread_list_lock_);
-        thread = FindThreadByTid(tid);
+        contains = Contains(tid);
       }
-      if (thread == nullptr) {
+      if (!contains) {
         DumpUnattachedThread(os, tid, dump_native_stack);
       }
     }
@@ -317,7 +326,7 @@ size_t ThreadList::RunCheckpoint(Closure* checkpoint_function, Closure* callback
   std::vector<Thread*> suspended_count_modified_threads;
   size_t count = 0;
   {
-    // Call a checkpoint function for each thread, threads which are suspended get their checkpoint
+    // Call a checkpoint function for each thread, threads which are suspend get their checkpoint
     // manually called.
     MutexLock mu(self, *Locks::thread_list_lock_);
     MutexLock mu2(self, *Locks::thread_suspend_count_lock_);
@@ -874,11 +883,10 @@ static void ThreadSuspendByPeerWarning(Thread* self,
 }
 
 Thread* ThreadList::SuspendThreadByPeer(jobject peer,
+                                        bool request_suspension,
                                         SuspendReason reason,
                                         bool* timed_out) {
-  bool request_suspension = true;
   const uint64_t start_time = NanoTime();
-  int self_suspend_count = 0;
   useconds_t sleep_us = kThreadSuspendInitialSleepUs;
   *timed_out = false;
   Thread* const self = Thread::Current();
@@ -927,7 +935,6 @@ Thread* ThreadList::SuspendThreadByPeer(jobject peer,
             // We hold the suspend count lock but another thread is trying to suspend us. Its not
             // safe to try to suspend another thread in case we get a cycle. Start the loop again
             // which will allow this thread to be suspended.
-            ++self_suspend_count;
             continue;
           }
           CHECK(suspended_thread == nullptr);
@@ -959,22 +966,20 @@ Thread* ThreadList::SuspendThreadByPeer(jobject peer,
         }
         const uint64_t total_delay = NanoTime() - start_time;
         if (total_delay >= thread_suspend_timeout_ns_) {
-          if (suspended_thread == nullptr) {
-            ThreadSuspendByPeerWarning(self,
-                                       ::android::base::FATAL,
-                                       "Failed to issue suspend request",
-                                       peer);
-          } else {
+          ThreadSuspendByPeerWarning(self,
+                                     ::android::base::FATAL,
+                                     "Thread suspension timed out",
+                                     peer);
+          if (suspended_thread != nullptr) {
             CHECK_EQ(suspended_thread, thread);
-            LOG(WARNING) << "Suspended thread state_and_flags: "
-                         << suspended_thread->StateAndFlagsAsHexString()
-                         << ", self_suspend_count = " << self_suspend_count;
-            ThreadSuspendByPeerWarning(self,
-                                       ::android::base::FATAL,
-                                       "Thread suspension timed out",
-                                       peer);
+            bool updated = suspended_thread->ModifySuspendCount(soa.Self(),
+                                                                -1,
+                                                                nullptr,
+                                                                reason);
+            DCHECK(updated);
           }
-          UNREACHABLE();
+          *timed_out = true;
+          return nullptr;
         } else if (sleep_us == 0 &&
             total_delay > static_cast<uint64_t>(kThreadSuspendMaxYieldUs) * 1000) {
           // We have spun for kThreadSuspendMaxYieldUs time, switch to sleeps to prevent
@@ -1105,15 +1110,6 @@ Thread* ThreadList::FindThreadByThreadId(uint32_t thread_id) {
   return nullptr;
 }
 
-Thread* ThreadList::FindThreadByTid(int tid) {
-  for (const auto& thread : list_) {
-    if (thread->GetTid() == tid) {
-      return thread;
-    }
-  }
-  return nullptr;
-}
-
 void ThreadList::WaitForOtherNonDaemonThreadsToExit(bool check_no_birth) {
   ScopedTrace trace(__PRETTY_FUNCTION__);
   Thread* self = Thread::Current();
@@ -1226,7 +1222,7 @@ void ThreadList::SuspendAllDaemonThreadsForShutdown() {
   }
   // Assume all threads are either suspended or somehow wedged.
   // Wait again for all the now "suspended" threads to actually quiesce. (b)
-  static constexpr size_t kDaemonSleepTime = 400'000;
+  static constexpr size_t kDaemonSleepTime = 200 * 1000;
   usleep(kDaemonSleepTime);
   std::list<Thread*> list_copy;
   {

@@ -43,19 +43,10 @@ public class HaddChar {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddChar.halving_add_unsigned(char[], char[], char[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
-  //
-  //      HalvingAdd idiom is not supported for SVE.
-  ///     CHECK-NOT: VecHalvingAdd
-  //
-  /// CHECK-ELSE:
-  //
-  ///     CHECK-DAG: <<Get1:d\d+>> VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
-  ///     CHECK-DAG: <<Get2:d\d+>> VecLoad                               loop:<<Loop>>      outer_loop:none
-  ///     CHECK-DAG: <<HAdd:d\d+>> VecHalvingAdd [<<Get1>>,<<Get2>>] packed_type:Uint16 rounded:false loop:<<Loop>> outer_loop:none
-  ///     CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
-  //
-  /// CHECK-FI:
+  /// CHECK-DAG: <<Get1:d\d+>> VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
+  /// CHECK-DAG: <<Get2:d\d+>> VecLoad                               loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG: <<HAdd:d\d+>> VecHalvingAdd [<<Get1>>,<<Get2>>] packed_type:Uint16 rounded:false loop:<<Loop>> outer_loop:none
+  /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   private static void halving_add_unsigned(char[] b1, char[] b2, char[] bo) {
     int min_length = Math.min(bo.length, Math.min(b1.length, b2.length));
     for (int i = 0; i < min_length; i++) {
@@ -93,19 +84,10 @@ public class HaddChar {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddChar.halving_add_also_unsigned(char[], char[], char[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
-  //
-  //      HalvingAdd idiom is not supported for SVE.
-  ///     CHECK-NOT: VecHalvingAdd
-  //
-  /// CHECK-ELSE:
-  //
-  ///     CHECK-DAG: <<Get1:d\d+>> VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
-  ///     CHECK-DAG: <<Get2:d\d+>> VecLoad                               loop:<<Loop>>      outer_loop:none
-  ///     CHECK-DAG: <<HAdd:d\d+>> VecHalvingAdd [<<Get1>>,<<Get2>>] packed_type:Uint16 rounded:false loop:<<Loop>> outer_loop:none
-  ///     CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
-  //
-  /// CHECK-FI:
+  /// CHECK-DAG: <<Get1:d\d+>> VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
+  /// CHECK-DAG: <<Get2:d\d+>> VecLoad                               loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG: <<HAdd:d\d+>> VecHalvingAdd [<<Get1>>,<<Get2>>] packed_type:Uint16 rounded:false loop:<<Loop>> outer_loop:none
+  /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   // Note: HAnd has no impact (already a zero extension).
   //
@@ -134,19 +116,10 @@ public class HaddChar {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddChar.rounding_halving_add_unsigned(char[], char[], char[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
-  //
-  //      HalvingAdd idiom is not supported for SVE.
-  ///     CHECK-NOT: VecHalvingAdd
-  //
-  /// CHECK-ELSE:
-  //
   /// CHECK-DAG: <<Get1:d\d+>> VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
   /// CHECK-DAG: <<Get2:d\d+>> VecLoad                               loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG: <<HAdd:d\d+>> VecHalvingAdd [<<Get1>>,<<Get2>>] packed_type:Uint16 rounded:true loop:<<Loop>> outer_loop:none
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
-  //
-  /// CHECK-FI:
   private static void rounding_halving_add_unsigned(char[] b1, char[] b2, char[] bo) {
     int min_length = Math.min(bo.length, Math.min(b1.length, b2.length));
     for (int i = 0; i < min_length; i++) {
@@ -186,19 +159,10 @@ public class HaddChar {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddChar.rounding_halving_add_also_unsigned(char[], char[], char[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
-  //
-  //      HalvingAdd idiom is not supported for SVE.
-  ///     CHECK-NOT: VecHalvingAdd
-  //
-  /// CHECK-ELSE:
-  //
-  ///     CHECK-DAG: <<Get1:d\d+>> VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
-  ///     CHECK-DAG: <<Get2:d\d+>> VecLoad                               loop:<<Loop>>      outer_loop:none
-  ///     CHECK-DAG: <<HAdd:d\d+>> VecHalvingAdd [<<Get1>>,<<Get2>>] packed_type:Uint16 rounded:true loop:<<Loop>> outer_loop:none
-  ///     CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
-  //
-  /// CHECK-FI:
+  /// CHECK-DAG: <<Get1:d\d+>> VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
+  /// CHECK-DAG: <<Get2:d\d+>> VecLoad                               loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG: <<HAdd:d\d+>> VecHalvingAdd [<<Get1>>,<<Get2>>] packed_type:Uint16 rounded:true loop:<<Loop>> outer_loop:none
+  /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   // Note: HAnd has no impact (already a zero extension).
   //
@@ -227,19 +191,10 @@ public class HaddChar {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddChar.halving_add_unsigned_constant(char[], char[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
-  //
-  //      HalvingAdd idiom is not supported for SVE.
-  ///     CHECK-NOT: VecHalvingAdd
-  //
-  /// CHECK-ELSE:
-  //
-  ///     CHECK-DAG: <<UMAX:i\d+>> IntConstant 65535                     loop:none
-  ///     CHECK-DAG: <<Repl:d\d+>> VecReplicateScalar [<<UMAX>>]         loop:none
-  ///     CHECK-DAG: <<Get:d\d+>>  VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
-  ///     CHECK-DAG: <<HAdd:d\d+>> VecHalvingAdd [<<Get>>,<<Repl>>] packed_type:Uint16 rounded:false loop:<<Loop>> outer_loop:none
-  //
-  /// CHECK-FI:
+  /// CHECK-DAG: <<UMAX:i\d+>> IntConstant 65535                     loop:none
+  /// CHECK-DAG: <<Repl:d\d+>> VecReplicateScalar [<<UMAX>>]         loop:none
+  /// CHECK-DAG: <<Get:d\d+>>  VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
+  /// CHECK-DAG: <<HAdd:d\d+>> VecHalvingAdd [<<Get>>,<<Repl>>] packed_type:Uint16 rounded:false loop:<<Loop>> outer_loop:none
   private static void halving_add_unsigned_constant(char[] b1, char[] bo) {
     int min_length = Math.min(bo.length, b1.length);
     for (int i = 0; i < min_length; i++) {
@@ -276,20 +231,11 @@ public class HaddChar {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddChar.halving_add_also_unsigned_constant(char[], char[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
-  //
-  //      HalvingAdd idiom is not supported for SVE.
-  ///     CHECK-NOT: VecHalvingAdd
-  //
-  /// CHECK-ELSE:
-  //
-  ///     CHECK-DAG: <<UMAX:i\d+>> IntConstant 65535                     loop:none
-  ///     CHECK-DAG: <<Repl:d\d+>> VecReplicateScalar [<<UMAX>>]         loop:none
-  ///     CHECK-DAG: <<Get:d\d+>>  VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
-  ///     CHECK-DAG: <<HAdd:d\d+>> VecHalvingAdd [<<Get>>,<<Repl>>] packed_type:Uint16 rounded:false loop:<<Loop>> outer_loop:none
-  ///     CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
-  //
-  /// CHECK-FI:
+  /// CHECK-DAG: <<UMAX:i\d+>> IntConstant 65535                     loop:none
+  /// CHECK-DAG: <<Repl:d\d+>> VecReplicateScalar [<<UMAX>>]         loop:none
+  /// CHECK-DAG: <<Get:d\d+>>  VecLoad                               loop:<<Loop:B\d+>> outer_loop:none
+  /// CHECK-DAG: <<HAdd:d\d+>> VecHalvingAdd [<<Get>>,<<Repl>>] packed_type:Uint16 rounded:false loop:<<Loop>> outer_loop:none
+  /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   // Note: HAnd has no impact (already a zero extension).
   //

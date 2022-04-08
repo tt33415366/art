@@ -24,7 +24,7 @@ public final class DerivedInSecondDex extends BaseInMainDex {
     super(intValue);
   }
 
-  DerivedInSecondDex(long unused) {
+  DerivedInSecondDex(long dummy) {
     // Matched: Superclass in a different dex file has an IPUT that's pruned because we store 0.
     super(0);
   }

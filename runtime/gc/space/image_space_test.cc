@@ -24,7 +24,7 @@
 #include "class_linker.h"
 #include "dexopt_test.h"
 #include "dex/utf.h"
-#include "intern_table-inl.h"
+#include "intern_table.h"
 #include "noop_compiler_callbacks.h"
 #include "oat_file.h"
 
@@ -35,6 +35,8 @@ namespace space {
 class ImageSpaceTest : public CommonRuntimeTest {
  protected:
   void SetUpRuntimeOptions(RuntimeOptions* options) override {
+    // Disable implicit dex2oat invocations when loading image spaces.
+    options->emplace_back("-Xnoimage-dex2oat", nullptr);
     // Disable relocation.
     options->emplace_back("-Xnorelocate", nullptr);
   }
@@ -58,15 +60,11 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
   int mkdir_result = mkdir(image_dir.c_str(), 0700);
   ASSERT_EQ(0, mkdir_result);
 
-  // Prepare boot class path variables, exclude core-icu4j and conscrypt
-  // which are not in the primary boot image.
+  // Prepare boot class path variables, exclude conscrypt which is not in the primary boot image.
   std::vector<std::string> bcp = GetLibCoreDexFileNames();
   std::vector<std::string> bcp_locations = GetLibCoreDexLocations();
   CHECK_EQ(bcp.size(), bcp_locations.size());
   ASSERT_NE(std::string::npos, bcp.back().find("conscrypt"));
-  bcp.pop_back();
-  bcp_locations.pop_back();
-  ASSERT_NE(std::string::npos, bcp.back().find("core-icu4j"));
   bcp.pop_back();
   bcp_locations.pop_back();
   std::string base_bcp_string = android::base::Join(bcp, ':');
@@ -79,7 +77,7 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
     std::string jar_name = GetTestDexFileName(base_name);
     ArrayRef<const std::string> dex_files(&jar_name, /*size=*/ 1u);
     ScratchFile profile_file;
-    GenerateBootProfile(dex_files, profile_file.GetFile());
+    GenerateProfile(dex_files, profile_file.GetFile());
     std::vector<std::string> extra_args = {
         "--profile-file=" + profile_file.GetFilename(),
         "--runtime-arg",
@@ -138,8 +136,10 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
                                      bcp_locations,
                                      full_image_locations,
                                      kRuntimeISA,
+                                     ImageSpaceLoadingOrder::kSystemFirst,
                                      /*relocate=*/ false,
                                      /*executable=*/ true,
+                                     /*is_zygote=*/ false,
                                      /*extra_reservation_size=*/ 0u,
                                      &boot_image_spaces,
                                      &extra_reservation);
@@ -338,6 +338,7 @@ TEST_F(DexoptTest, Checksums) {
         ArrayRef<const std::string>(bcp_locations),
         ArrayRef<const std::string>(bcp),
         kRuntimeISA,
+        gc::space::ImageSpaceLoadingOrder::kSystemFirst,
         &error_msg);
   };
 
@@ -366,7 +367,7 @@ TEST_F(DexoptTest, Checksums) {
   }
 }
 
-template <bool kImage, bool kRelocate>
+template <bool kImage, bool kRelocate, bool kImageDex2oat>
 class ImageSpaceLoadingTest : public CommonRuntimeTest {
  protected:
   void SetUpRuntimeOptions(RuntimeOptions* options) override {
@@ -378,6 +379,7 @@ class ImageSpaceLoadingTest : public CommonRuntimeTest {
     options->emplace_back(android::base::StringPrintf("-Ximage:%s", image_location.c_str()),
                           nullptr);
     options->emplace_back(kRelocate ? "-Xrelocate" : "-Xnorelocate", nullptr);
+    options->emplace_back(kImageDex2oat ? "-Ximage-dex2oat" : "-Xnoimage-dex2oat", nullptr);
 
     // We want to test the relocation behavior of ImageSpace. As such, don't pretend we're a
     // compiler.
@@ -408,17 +410,22 @@ class ImageSpaceLoadingTest : public CommonRuntimeTest {
   UniqueCPtr<const char[]> old_dex2oat_bcp_;
 };
 
-using ImageSpaceNoDex2oatTest = ImageSpaceLoadingTest<true, true>;
+using ImageSpaceDex2oatTest = ImageSpaceLoadingTest<false, true, true>;
+TEST_F(ImageSpaceDex2oatTest, Test) {
+  EXPECT_FALSE(Runtime::Current()->GetHeap()->GetBootImageSpaces().empty());
+}
+
+using ImageSpaceNoDex2oatTest = ImageSpaceLoadingTest<true, true, false>;
 TEST_F(ImageSpaceNoDex2oatTest, Test) {
   EXPECT_FALSE(Runtime::Current()->GetHeap()->GetBootImageSpaces().empty());
 }
 
-using ImageSpaceNoRelocateNoDex2oatTest = ImageSpaceLoadingTest<true, false>;
+using ImageSpaceNoRelocateNoDex2oatTest = ImageSpaceLoadingTest<true, false, false>;
 TEST_F(ImageSpaceNoRelocateNoDex2oatTest, Test) {
   EXPECT_FALSE(Runtime::Current()->GetHeap()->GetBootImageSpaces().empty());
 }
 
-class NoAccessAndroidDataTest : public ImageSpaceLoadingTest<false, true> {
+class NoAccessAndroidDataTest : public ImageSpaceLoadingTest<false, true, true> {
  protected:
   NoAccessAndroidDataTest() : quiet_(LogSeverity::FATAL) {}
 
@@ -439,11 +446,11 @@ class NoAccessAndroidDataTest : public ImageSpaceLoadingTest<false, true> {
     CHECK_NE(fd, -1) << strerror(errno);
     result = close(fd);
     CHECK_EQ(result, 0) << strerror(errno);
-    ImageSpaceLoadingTest<false, true>::SetUpRuntimeOptions(options);
+    ImageSpaceLoadingTest<false, true, true>::SetUpRuntimeOptions(options);
   }
 
   void TearDown() override {
-    ImageSpaceLoadingTest<false, true>::TearDown();
+    ImageSpaceLoadingTest<false, true, true>::TearDown();
     int result = unlink(bad_dalvik_cache_.c_str());
     CHECK_EQ(result, 0) << strerror(errno);
     result = rmdir(bad_android_data_.c_str());

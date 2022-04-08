@@ -426,18 +426,21 @@ static inline size_t CopyAvoidingDirtyingPages(void* dest, const void* src, size
 
 mirror::Object* SemiSpace::MarkNonForwardedObject(mirror::Object* obj) {
   const size_t object_size = obj->SizeOf();
-  size_t bytes_allocated, unused_bytes_tl_bulk_allocated;
+  size_t bytes_allocated, dummy;
   // Copy it to the to-space.
-  mirror::Object* forward_address = to_space_->AllocThreadUnsafe(
-      self_, object_size, &bytes_allocated, nullptr, &unused_bytes_tl_bulk_allocated);
+  mirror::Object* forward_address = to_space_->AllocThreadUnsafe(self_,
+                                                                 object_size,
+                                                                 &bytes_allocated,
+                                                                 nullptr,
+                                                                 &dummy);
 
   if (forward_address != nullptr && to_space_live_bitmap_ != nullptr) {
     to_space_live_bitmap_->Set(forward_address);
   }
   // If it's still null, attempt to use the fallback space.
   if (UNLIKELY(forward_address == nullptr)) {
-    forward_address = fallback_space_->AllocThreadUnsafe(
-        self_, object_size, &bytes_allocated, nullptr, &unused_bytes_tl_bulk_allocated);
+    forward_address = fallback_space_->AllocThreadUnsafe(self_, object_size, &bytes_allocated,
+                                                         nullptr, &dummy);
     CHECK(forward_address != nullptr) << "Out of memory in the to-space and fallback space.";
     accounting::ContinuousSpaceBitmap* bitmap = fallback_space_->GetLiveBitmap();
     if (bitmap != nullptr) {

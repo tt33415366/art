@@ -131,10 +131,6 @@ class DataType {
     return type == Type::kUint64 || type == Type::kInt64 || type == Type::kFloat64;
   }
 
-  static bool Is8BitType(Type type) {
-    return type == Type::kInt8 || type == Type::kUint8 || type == Type::kBool;
-  }
-
   static bool IsUnsignedType(Type type) {
     return type == Type::kBool || type == Type::kUint8 || type == Type::kUint16 ||
         type == Type::kUint32 || type == Type::kUint64;

@@ -39,7 +39,7 @@ public class Main {
 
   public static void doTest() throws Exception {
     final Object lock = new Object();
-    Breakpoint.Manager manager = new Breakpoint.Manager();
+    Breakpoint.Manager man = new Breakpoint.Manager();
     Breakpoint.startBreakpointWatch(
         Main.class,
         Main.class.getDeclaredMethod("notifyBreakpointReached", Thread.class, Executable.class, Long.TYPE),
@@ -56,15 +56,15 @@ public class Main {
       }
     });
     // set the breakpoint.
-    manager.setBreakpoint(Main.class.getDeclaredMethod("doNothing"), 0l);
+    man.setBreakpoint(Main.class.getDeclaredMethod("doNothing"), 0l);
     thr.start();
     while (!started || thr.getState() != Thread.State.TIMED_WAITING);
     // Redefine while thread is paused.
     forceRedefine(Object.class, Thread.currentThread());
     // Clear breakpoints.
-    manager.clearAllBreakpoints();
+    man.clearAllBreakpoints();
     // set the breakpoint again.
-    manager.setBreakpoint(Main.class.getDeclaredMethod("doNothing"), 0l);
+    man.setBreakpoint(Main.class.getDeclaredMethod("doNothing"), 0l);
     // Wakeup
     synchronized(lock) {
       lock.notifyAll();

@@ -118,32 +118,25 @@ static ArtMethod* GetReferrer(Thread* self) REQUIRES_SHARED(Locks::mutator_lock_
     ArtField* field = FindFieldFast(                                           \
         field_idx, referrer, Static ## PrimitiveOrObject ## Write,             \
         sizeof(PrimitiveType));                                                \
-    if (UNLIKELY(field == nullptr)) {                                          \
-      if (IsObject) {                                                          \
-        StackHandleScope<1> hs(self);                                          \
-        HandleWrapper<mirror::Object> h_obj(hs.NewHandleWrapper(               \
-            reinterpret_cast<mirror::Object**>(&new_value)));                  \
-        field = FindFieldFromCode<Static ## PrimitiveOrObject ## Write, true>( \
-            field_idx, referrer, self, sizeof(PrimitiveType));                 \
-      } else {                                                                 \
-        field = FindFieldFromCode<Static ## PrimitiveOrObject ## Write, true>( \
-            field_idx, referrer, self, sizeof(PrimitiveType));                 \
-      }                                                                        \
-      if (UNLIKELY(field == nullptr)) {                                        \
-        return -1;                                                             \
-      }                                                                        \
+    if (LIKELY(field != nullptr)) {                                            \
+      field->Set ## Kind <false>(field->GetDeclaringClass(), new_value);       \
+      return 0;                                                                \
     }                                                                          \
-    if (!referrer->SkipAccessChecks() && IsObject && new_value != 0) {         \
-      StackArtFieldHandleScope<1> rhs(self);                                   \
-      ReflectiveHandle<ArtField> field_handle(rhs.NewHandle(field));           \
-      if (field->ResolveType().IsNull()) {                                     \
-        self->AssertPendingException();                                        \
-        return -1;                                                             \
-      }                                                                        \
-      field = field_handle.Get();                                              \
+    if (IsObject) {                                                            \
+      StackHandleScope<1> hs(self);                                            \
+      HandleWrapper<mirror::Object> h_obj(hs.NewHandleWrapper(                 \
+          reinterpret_cast<mirror::Object**>(&new_value)));                    \
+      field = FindFieldFromCode<Static ## PrimitiveOrObject ## Write, true>(   \
+          field_idx, referrer, self, sizeof(PrimitiveType));                   \
+    } else {                                                                   \
+      field = FindFieldFromCode<Static ## PrimitiveOrObject ## Write, true>(   \
+          field_idx, referrer, self, sizeof(PrimitiveType));                   \
     }                                                                          \
-    field->Set ## Kind <false>(field->GetDeclaringClass(), new_value);         \
-    return 0;                                                                  \
+    if (LIKELY(field != nullptr)) {                                            \
+      field->Set ## Kind <false>(field->GetDeclaringClass(), new_value);       \
+      return 0;                                                                \
+    }                                                                          \
+    return -1;                                                                 \
   }                                                                            \
                                                                                \
   extern "C" int artSet ## Kind ## InstanceFromCode(uint32_t field_idx,        \
@@ -156,42 +149,33 @@ static ArtMethod* GetReferrer(Thread* self) REQUIRES_SHARED(Locks::mutator_lock_
     ArtField* field = FindFieldFast(                                           \
         field_idx, referrer, Instance ## PrimitiveOrObject ## Write,           \
         sizeof(PrimitiveType));                                                \
-    if (UNLIKELY(field == nullptr || obj == nullptr)) {                        \
-      if (IsObject) {                                                          \
-        StackHandleScope<1> hs(self);                                          \
-        HandleWrapper<mirror::Object> h_obj(hs.NewHandleWrapper(               \
-            reinterpret_cast<mirror::Object**>(&new_value)));                  \
-        field =                                                                \
-            FindInstanceField<Instance ## PrimitiveOrObject ## Write, true>(   \
-                field_idx,                                                     \
-                referrer,                                                      \
-                self,                                                          \
-                sizeof(PrimitiveType),                                         \
-                &obj);                                                         \
-      } else {                                                                 \
-        field =                                                                \
-            FindInstanceField<Instance ## PrimitiveOrObject ## Write, true>(   \
-                field_idx,                                                     \
-                referrer,                                                      \
-                self,                                                          \
-                sizeof(PrimitiveType),                                         \
-                &obj);                                                         \
-      }                                                                        \
-      if (UNLIKELY(field == nullptr)) {                                        \
-        return -1;                                                             \
-      }                                                                        \
+    if (LIKELY(field != nullptr && obj != nullptr)) {                          \
+      field->Set ## Kind <false>(obj, new_value);                              \
+      return 0;                                                                \
     }                                                                          \
-    if (!referrer->SkipAccessChecks() && IsObject && new_value != 0) {         \
-      StackArtFieldHandleScope<1> rhs(self);                                   \
-      ReflectiveHandle<ArtField> field_handle(rhs.NewHandle(field));           \
-      if (field->ResolveType().IsNull()) {                                     \
-        self->AssertPendingException();                                        \
-        return -1;                                                             \
-      }                                                                        \
-      field = field_handle.Get();                                              \
+    if (IsObject) {                                                            \
+      StackHandleScope<1> hs(self);                                            \
+      HandleWrapper<mirror::Object> h_obj(hs.NewHandleWrapper(                 \
+          reinterpret_cast<mirror::Object**>(&new_value)));                    \
+      field = FindInstanceField<Instance ## PrimitiveOrObject ## Write, true>( \
+          field_idx,                                                           \
+          referrer,                                                            \
+          self,                                                                \
+          sizeof(PrimitiveType),                                               \
+          &obj);                                                               \
+    } else {                                                                   \
+      field = FindInstanceField<Instance ## PrimitiveOrObject ## Write, true>( \
+          field_idx,                                                           \
+          referrer,                                                            \
+          self,                                                                \
+          sizeof(PrimitiveType),                                               \
+          &obj);                                                               \
     }                                                                          \
-    field->Set ## Kind<false>(obj, new_value);                                 \
-    return 0;                                                                  \
+    if (LIKELY(field != nullptr)) {                                            \
+      field->Set ## Kind<false>(obj, new_value);                               \
+      return 0;                                                                \
+    }                                                                          \
+    return -1;                                                                 \
   }                                                                            \
                                                                                \
   extern "C" RetType artGet ## Kind ## StaticFromCompiledCode(                 \

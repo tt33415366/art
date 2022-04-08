@@ -120,13 +120,19 @@ extern "C" JNIEXPORT void JNICALL Java_art_Test931_testAgentThread(
     env->DeleteLocalRef(cur_thread_info.context_class_loader);
   }
 
-  jmethodID initID = env->GetMethodID(
-      thread_klass.get(), "<init>", "(Ljava/lang/ThreadGroup;Ljava/lang/String;)V");
+  jmethodID initID = env->GetMethodID(thread_klass.get(),
+                                      "<init>",
+                                      "(Ljava/lang/ThreadGroup;Ljava/lang/String;IZ)V");
   if (initID == nullptr) {
     return;
   }
-  env->CallNonvirtualVoidMethod(
-      thread.get(), thread_klass.get(), initID, thread_group.get(), thread_name.get());
+  env->CallNonvirtualVoidMethod(thread.get(),
+                                thread_klass.get(),
+                                initID,
+                                thread_group.get(),
+                                thread_name.get(),
+                                0,
+                                JNI_FALSE);
   if (env->ExceptionCheck()) {
     return;
   }

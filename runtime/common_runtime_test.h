@@ -75,6 +75,8 @@ class CommonRuntimeTestImpl : public CommonArtTestImpl {
   CommonRuntimeTestImpl();
   virtual ~CommonRuntimeTestImpl();
 
+  static std::string GetAndroidTargetToolsDir(InstructionSet isa);
+
   // A helper function to fill the heap.
   static void FillHeap(Thread* self,
                        ClassLinker* class_linker,
@@ -174,15 +176,7 @@ class CommonRuntimeTestImpl : public CommonArtTestImpl {
   void GenerateProfile(ArrayRef<const std::string> dexes,
                        File* out_file,
                        size_t method_frequency = 1u,
-                       size_t type_frequency = 1u,
-                       bool for_boot_image = false);
-  void GenerateBootProfile(ArrayRef<const std::string> dexes,
-                           File* out_file,
-                           size_t method_frequency = 1u,
-                           size_t type_frequency = 1u) {
-    return GenerateProfile(
-        dexes, out_file, method_frequency, type_frequency, /*for_boot_image=*/ true);
-  }
+                       size_t type_frequency = 1u);
 
   std::unique_ptr<Runtime> runtime_;
 
@@ -212,7 +206,8 @@ class CommonRuntimeTestImpl : public CommonArtTestImpl {
   // initializers, initialize well-known classes, and creates the heap thread pool.
   virtual void FinalizeSetup();
 
-  // Returns the directory where the pre-compiled boot.art can be found.
+  // Returns the directory where the pre-compiled core.art can be found.
+  static std::string GetImageDirectory();
   static std::string GetImageLocation();
   static std::string GetSystemImageFile();
 

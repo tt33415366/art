@@ -12,55 +12,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import print_function
 import collections
-import enum
 import sys
 
+class Logger(object):
 
-class Logger:
-  class Level(enum.IntEnum):
-    NO_OUTPUT, ERROR, INFO = range(3)
+  class Level(object):
+    NoOutput, Error, Info = range(3)
 
-  class Color(enum.Enum):
-    DEFAULT, BLUE, GRAY, PURPLE, RED, GREEN = range(6)
+  class Color(object):
+    Default, Blue, Gray, Purple, Red, Green = range(6)
 
     @staticmethod
-    def terminal_code(color, out=sys.stdout):
+    def terminalCode(color, out=sys.stdout):
       if not out.isatty():
-        return ""
-      elif color == Logger.Color.BLUE:
-        return "\033[94m"
-      elif color == Logger.Color.GRAY:
-        return "\033[37m"
-      elif color == Logger.Color.PURPLE:
-        return "\033[95m"
-      elif color == Logger.Color.RED:
-        return "\033[91m"
-      elif color == Logger.Color.GREEN:
-        return "\033[32m"
+        return ''
+      elif color == Logger.Color.Blue:
+        return '\033[94m'
+      elif color == Logger.Color.Gray:
+        return '\033[37m'
+      elif color == Logger.Color.Purple:
+        return '\033[95m'
+      elif color == Logger.Color.Red:
+        return '\033[91m'
+      elif color == Logger.Color.Green:
+        return '\033[32m'
       else:
-        return "\033[0m"
+        return '\033[0m'
 
-  Verbosity = Level.INFO
+  Verbosity = Level.Info
 
   @staticmethod
-  def log(content, level=Level.INFO, color=Color.DEFAULT, new_line=True, out=sys.stdout):
+  def log(text, level=Level.Info, color=Color.Default, newLine=True, out=sys.stdout):
     if level <= Logger.Verbosity:
-      content = "{}{}{}".format(Logger.Color.terminal_code(color, out), content,
-                                Logger.Color.terminal_code(Logger.Color.DEFAULT, out))
-      if new_line:
-        print(content, file=out)
+      text = Logger.Color.terminalCode(color, out) + text + \
+             Logger.Color.terminalCode(Logger.Color.Default, out)
+      if newLine:
+        print(text, file=out)
       else:
-        print(content, end="", file=out)
+        print(text, end="", file=out)
       out.flush()
 
   @staticmethod
-  def fail(msg, file=None, line=-1, line_text=None, variables=None):
-    Logger.log("error: ", Logger.Level.ERROR, color=Logger.Color.RED, new_line=False,
-               out=sys.stderr)
-    Logger.log(msg, Logger.Level.ERROR, out=sys.stderr)
+  def fail(msg, file=None, line=-1, lineText=None, variables=None):
+    Logger.log("error: ", Logger.Level.Error, color=Logger.Color.Red, newLine=False, out=sys.stderr)
+    Logger.log(msg, Logger.Level.Error, out=sys.stderr)
 
-    if line_text:
+    if lineText:
       loc = ""
       if file:
         loc += file + ":"
@@ -68,33 +67,33 @@ class Logger:
         loc += str(line) + ":"
       if loc:
         loc += " "
-      Logger.log(loc, Logger.Level.ERROR, color=Logger.Color.GRAY, new_line=False,
-                 out=sys.stderr)
-      Logger.log(line_text, Logger.Level.ERROR, out=sys.stderr)
+      Logger.log(loc, Logger.Level.Error, color=Logger.Color.Gray, newLine=False, out=sys.stderr)
+      Logger.log(lineText, Logger.Level.Error, out=sys.stderr)
 
     if variables:
-      longest_name = max(len(var) for var in variables)
+      longestName = 0
+      for var in variables:
+        longestName = max(longestName, len(var))
 
       for var in collections.OrderedDict(sorted(variables.items())):
-        padding = " " * (longest_name - len(var))
-        Logger.log(var, Logger.Level.ERROR, color=Logger.Color.GREEN, new_line=False,
-                   out=sys.stderr)
-        Logger.log(padding, Logger.Level.ERROR, new_line=False, out=sys.stderr)
-        Logger.log(" = ", Logger.Level.ERROR, new_line=False, out=sys.stderr)
-        Logger.log(variables[var], Logger.Level.ERROR, out=sys.stderr)
+        padding = ' ' * (longestName - len(var))
+        Logger.log(var, Logger.Level.Error, color=Logger.Color.Green, newLine=False, out=sys.stderr)
+        Logger.log(padding, Logger.Level.Error, newLine=False, out=sys.stderr)
+        Logger.log(" = ", Logger.Level.Error, newLine=False, out=sys.stderr)
+        Logger.log(variables[var], Logger.Level.Error, out=sys.stderr)
 
     sys.exit(1)
 
   @staticmethod
-  def start_test(name):
-    Logger.log("TEST ", color=Logger.Color.PURPLE, new_line=False)
-    Logger.log(name + "... ", new_line=False)
+  def startTest(name):
+    Logger.log("TEST ", color=Logger.Color.Purple, newLine=False)
+    Logger.log(name + "... ", newLine=False)
 
   @staticmethod
-  def test_passed():
-    Logger.log("PASS", color=Logger.Color.BLUE)
+  def testPassed():
+    Logger.log("PASS", color=Logger.Color.Blue)
 
   @staticmethod
-  def test_failed(msg, statement, variables):
-    Logger.log("FAIL", color=Logger.Color.RED)
-    Logger.fail(msg, statement.filename, statement.line_no, statement.original_text, variables)
+  def testFailed(msg, assertion, variables):
+    Logger.log("FAIL", color=Logger.Color.Red)
+    Logger.fail(msg, assertion.fileName, assertion.lineNo, assertion.originalText, variables)

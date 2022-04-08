@@ -16,5 +16,5 @@
 
 #include "gtest/gtest.h"
 
-// Trivial test that gtest alone works on host and target
+// Sanity test that gtest alone works on host and target
 TEST(GTest, Nop) {}

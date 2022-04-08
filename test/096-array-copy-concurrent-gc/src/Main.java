@@ -42,16 +42,7 @@ public class Main {
         }
     }
 
-    Object [] array = new Object[8000];
-
-    void allocateFourStrings() {
-      for (int i = 0; i < 4; i++) {
-        String str = new String("Creating some garbage" + Math.random());
-        if (str.length() < 22) {
-          System.out.println("bad length");
-        }
-      }
-    }
+    Object [] array = new Object[10000];
 
     void stressArray(boolean doLog) {
         // We want many references in the array
@@ -72,14 +63,20 @@ public class Main {
             Object obj = array[array.length - 1];
             System.arraycopy(array, 0, array, 1, array.length - 1);
             array[0] = obj;
-            allocateFourStrings();
+            new String("Creating some garbage" + Math.random());
+            new String("Creating some garbage" + Math.random());
+            new String("Creating some garbage" + Math.random());
+            new String("Creating some garbage" + Math.random());
         }
 
         for (int j = 0; j < array.length; j++) {
             Object obj = array[0];
             System.arraycopy(array, 1, array, 0, array.length - 1);
             array[array.length - 1] = obj;
-            allocateFourStrings();
+            new String("Creating some garbage" + Math.random());
+            new String("Creating some garbage" + Math.random());
+            new String("Creating some garbage" + Math.random());
+            new String("Creating some garbage" + Math.random());
         }
 
         if (doLog) {

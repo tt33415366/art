@@ -24,9 +24,11 @@ namespace art {
 static constexpr size_t kMaxInstructionsInBranch = 1u;
 
 HSelectGenerator::HSelectGenerator(HGraph* graph,
+                                   VariableSizedHandleScope* handles,
                                    OptimizingCompilerStats* stats,
                                    const char* name)
-    : HOptimization(graph, name, stats) {
+    : HOptimization(graph, name, stats),
+      handle_scope_(handles) {
 }
 
 // Returns true if `block` has only one predecessor, ends with a Goto
@@ -161,7 +163,7 @@ bool HSelectGenerator::Run() {
     if (both_successors_return) {
       if (true_value->GetType() == DataType::Type::kReference) {
         DCHECK(false_value->GetType() == DataType::Type::kReference);
-        ReferenceTypePropagation::FixUpInstructionType(select, graph_->GetHandleCache());
+        ReferenceTypePropagation::FixUpInstructionType(select, handle_scope_);
       }
     } else if (phi->GetType() == DataType::Type::kReference) {
       select->SetReferenceTypeInfo(phi->GetReferenceTypeInfo());

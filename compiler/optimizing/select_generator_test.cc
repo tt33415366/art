@@ -24,20 +24,24 @@
 
 namespace art {
 
-class SelectGeneratorTest : public OptimizingUnitTest {
- protected:
-  void InitGraphAndParameters() {
-    InitGraph();
-    AddParameter(new (GetAllocator()) HParameterValue(graph_->GetDexFile(),
-                                                      dex::TypeIndex(0),
-                                                      0,
-                                                      DataType::Type::kInt32));
+class SelectGeneratorTest : public ImprovedOptimizingUnitTest {
+ private:
+  void CreateParameters() override {
+    parameters_.push_back(new (GetAllocator()) HParameterValue(graph_->GetDexFile(),
+                                                               dex::TypeIndex(0),
+                                                               0,
+                                                               DataType::Type::kInt32));
   }
 
+ public:
   void ConstructBasicGraphForSelect(HInstruction* instr) {
-    HBasicBlock* if_block = AddNewBlock();
-    HBasicBlock* then_block = AddNewBlock();
-    HBasicBlock* else_block = AddNewBlock();
+    HBasicBlock* if_block = new (GetAllocator()) HBasicBlock(graph_);
+    HBasicBlock* then_block = new (GetAllocator()) HBasicBlock(graph_);
+    HBasicBlock* else_block = new (GetAllocator()) HBasicBlock(graph_);
+
+    graph_->AddBlock(if_block);
+    graph_->AddBlock(then_block);
+    graph_->AddBlock(else_block);
 
     entry_block_->ReplaceSuccessor(return_block_, if_block);
 
@@ -78,7 +82,7 @@ class SelectGeneratorTest : public OptimizingUnitTest {
 
 // HDivZeroCheck might throw and should not be hoisted from the conditional to an unconditional.
 TEST_F(SelectGeneratorTest, testZeroCheck) {
-  InitGraphAndParameters();
+  InitGraph();
   HDivZeroCheck* instr = new (GetAllocator()) HDivZeroCheck(parameters_[0], 0);
   ConstructBasicGraphForSelect(instr);
 
@@ -91,7 +95,7 @@ TEST_F(SelectGeneratorTest, testZeroCheck) {
 
 // Test that SelectGenerator succeeds with HAdd.
 TEST_F(SelectGeneratorTest, testAdd) {
-  InitGraphAndParameters();
+  InitGraph();
   HAdd* instr = new (GetAllocator()) HAdd(DataType::Type::kInt32,
                                           parameters_[0],
                                           parameters_[0], 0);

@@ -256,7 +256,7 @@ class ObjectHandler implements AhatHandler {
     doc.section("Sample Path from GC Root");
     List<PathElement> path = inst.getPathFromGcRoot();
 
-    // Add a fake PathElement as a marker for the root.
+    // Add a dummy PathElement as a marker for the root.
     final PathElement root = new PathElement(null, null);
     path.add(0, root);
 
@@ -308,3 +308,4 @@ class ObjectHandler implements AhatHandler {
     }
   }
 }
+

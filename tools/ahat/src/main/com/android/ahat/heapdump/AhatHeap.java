@@ -37,7 +37,7 @@ public class AhatHeap implements Diffable<AhatHeap> {
   }
 
   /**
-   * Construct a placeholder heap.
+   * Construct a place holder heap.
    */
   private AhatHeap(String name, AhatHeap baseline) {
     mName = name;
@@ -48,7 +48,7 @@ public class AhatHeap implements Diffable<AhatHeap> {
   }
 
   /**
-   * Construct a new placeholder heap that has the given baseline heap.
+   * Construct a new place holder heap that has the given baseline heap.
    */
   static AhatHeap newPlaceHolderHeap(String name, AhatHeap baseline) {
     return new AhatHeap(name, baseline);

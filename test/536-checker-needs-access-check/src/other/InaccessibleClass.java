@@ -17,13 +17,4 @@
 package other;
 
 public class InaccessibleClass {
-  public static Class<?> $noinline$getReferrersClass() {
-    // The actual test is in src2/ .
-    throw new Error("Unreachable");
-  }
-
-  public static Class<?> $noinline$getReferrersClassViaAnotherClass() {
-    // The actual test is in src2/ .
-    throw new Error("Unreachable");
-  }
 }

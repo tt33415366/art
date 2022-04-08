@@ -118,10 +118,6 @@ class ThreadLifecycleCallbackRuntimeCallbacksTest : public RuntimeCallbacksTest 
 
   struct Callback : public ThreadLifecycleCallback {
     void ThreadStart(Thread* self) override {
-      {
-        ScopedObjectAccess soa(self);
-        LOG(DEBUG) << "ThreadStart callback for thread: " << self->GetThreadName();
-      }
       if (state == CallbackState::kBase) {
         state = CallbackState::kStarted;
         stored_self = self;
@@ -131,10 +127,6 @@ class ThreadLifecycleCallbackRuntimeCallbacksTest : public RuntimeCallbacksTest 
     }
 
     void ThreadDeath(Thread* self) override {
-      {
-        ScopedObjectAccess soa(self);
-        LOG(DEBUG) << "ThreadDeath callback for thread: " << self->GetThreadName();
-      }
       if (state == CallbackState::kStarted && self == stored_self) {
         state = CallbackState::kDied;
       } else {
@@ -157,10 +149,6 @@ TEST_F(ThreadLifecycleCallbackRuntimeCallbacksTest, ThreadLifecycleCallbackJava)
   ASSERT_TRUE(started);
   // Make sure the workers are done starting so we don't get callbacks for them.
   runtime_->WaitForThreadPoolWorkersToStart();
-
-  // The metrics reporting thread will sometimes be slow to start. Synchronously requesting a
-  // metrics report forces us to wait until the thread has started.
-  runtime_->RequestMetricsReport(/*synchronous=*/true);
 
   cb_.state = CallbackState::kBase;  // Ignore main thread attach.
 
@@ -199,7 +187,7 @@ TEST_F(ThreadLifecycleCallbackRuntimeCallbacksTest, ThreadLifecycleCallbackJava)
   env->CallVoidMethod(thread.get(), join_id);
   ASSERT_FALSE(env->ExceptionCheck());
 
-  EXPECT_EQ(cb_.state, CallbackState::kDied);
+  EXPECT_TRUE(cb_.state == CallbackState::kDied) << static_cast<int>(cb_.state);
 }
 
 TEST_F(ThreadLifecycleCallbackRuntimeCallbacksTest, ThreadLifecycleCallbackAttach) {
@@ -312,8 +300,8 @@ TEST_F(ClassLoadCallbackRuntimeCallbacksTest, ClassLoadCallback) {
       hs.NewHandle(class_linker_->FindClass(soa.Self(), descriptor_y, class_loader)));
   ASSERT_TRUE(h_Y != nullptr);
 
-  bool expect1 = Expect({ "PreDefine:LY; <art-gtest-jars-XandY.jar>",
-                          "PreDefine:LX; <art-gtest-jars-XandY.jar>",
+  bool expect1 = Expect({ "PreDefine:LY; <art-gtest-XandY.jar>",
+                          "PreDefine:LX; <art-gtest-XandY.jar>",
                           "Load:LX;",
                           "Prepare:LX;[LX;]",
                           "Load:LY;",
@@ -324,7 +312,7 @@ TEST_F(ClassLoadCallbackRuntimeCallbacksTest, ClassLoadCallback) {
 
   ASSERT_TRUE(class_linker_->EnsureInitialized(Thread::Current(), h_Y, true, true));
 
-  bool expect2 = Expect({ "PreDefine:LY$Z; <art-gtest-jars-XandY.jar>",
+  bool expect2 = Expect({ "PreDefine:LY$Z; <art-gtest-XandY.jar>",
                           "Load:LY$Z;",
                           "Prepare:LY$Z;[LY$Z;]" });
   EXPECT_TRUE(expect2);

@@ -16,30 +16,30 @@
 
 public interface ParentInterface {
   // STATIC FIELD
-  static int fieldPublicStaticSdk = 11;
-  static int fieldPublicStaticUnsupported = 12;
-  static int fieldPublicStaticConditionallyBlocked = 13;
-  static int fieldPublicStaticBlocklist = 14;
-  static int fieldPublicStaticBlocklistAndCorePlatformApi = 15;
+  static int fieldPublicStaticWhitelist = 11;
+  static int fieldPublicStaticLightGreylist = 12;
+  static int fieldPublicStaticDarkGreylist = 13;
+  static int fieldPublicStaticBlacklist = 14;
+  static int fieldPublicStaticBlacklistAndCorePlatformApi = 15;
 
   // INSTANCE METHOD
-  int methodPublicSdk();
-  int methodPublicUnsupported();
-  int methodPublicConditionallyBlocked();
-  int methodPublicBlocklist();
-  int methodPublicBlocklistAndCorePlatformApi();
+  int methodPublicWhitelist();
+  int methodPublicLightGreylist();
+  int methodPublicDarkGreylist();
+  int methodPublicBlacklist();
+  int methodPublicBlacklistAndCorePlatformApi();
 
   // STATIC METHOD
-  static int methodPublicStaticSdk() { return 21; }
-  static int methodPublicStaticUnsupported() { return 22; }
-  static int methodPublicStaticConditionallyBlocked() { return 23; }
-  static int methodPublicStaticBlocklist() { return 24; }
-  static int methodPublicStaticBlocklistAndCorePlatformApi() { return 25; }
+  static int methodPublicStaticWhitelist() { return 21; }
+  static int methodPublicStaticLightGreylist() { return 22; }
+  static int methodPublicStaticDarkGreylist() { return 23; }
+  static int methodPublicStaticBlacklist() { return 24; }
+  static int methodPublicStaticBlacklistAndCorePlatformApi() { return 25; }
 
   // DEFAULT METHOD
-  default int methodPublicDefaultSdk() { return 31; }
-  default int methodPublicDefaultUnsupported() { return 32; }
-  default int methodPublicDefaultConditionallyBlocked() { return 33; }
-  default int methodPublicDefaultBlocklist() { return 34; }
-  default int methodPublicDefaultBlocklistAndCorePlatformApi() { return 35; }
+  default int methodPublicDefaultWhitelist() { return 31; }
+  default int methodPublicDefaultLightGreylist() { return 32; }
+  default int methodPublicDefaultDarkGreylist() { return 33; }
+  default int methodPublicDefaultBlacklist() { return 34; }
+  default int methodPublicDefaultBlacklistAndCorePlatformApi() { return 35; }
 }

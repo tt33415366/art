@@ -25,7 +25,6 @@ namespace art {
 
 using helpers::CanFitInShifterOperand;
 using helpers::HasShifterOperand;
-using helpers::IsSubRightSubLeftShl;
 
 namespace arm64 {
 
@@ -77,7 +76,6 @@ class InstructionSimplifierArm64Visitor : public HGraphVisitor {
   void VisitOr(HOr* instruction) override;
   void VisitShl(HShl* instruction) override;
   void VisitShr(HShr* instruction) override;
-  void VisitSub(HSub* instruction) override;
   void VisitTypeConversion(HTypeConversion* instruction) override;
   void VisitUShr(HUShr* instruction) override;
   void VisitXor(HXor* instruction) override;
@@ -241,15 +239,6 @@ void InstructionSimplifierArm64Visitor::VisitShr(HShr* instruction) {
   }
 }
 
-void InstructionSimplifierArm64Visitor::VisitSub(HSub* instruction) {
-  if (IsSubRightSubLeftShl(instruction)) {
-    HInstruction* shl = instruction->GetRight()->InputAt(0);
-    if (shl->InputAt(1)->IsConstant() && TryReplaceSubSubWithSubAdd(instruction)) {
-      TryMergeIntoUsersShifterOperand(shl);
-    }
-  }
-}
-
 void InstructionSimplifierArm64Visitor::VisitTypeConversion(HTypeConversion* instruction) {
   DataType::Type result_type = instruction->GetResultType();
   DataType::Type input_type = instruction->GetInputType();
@@ -277,17 +266,14 @@ void InstructionSimplifierArm64Visitor::VisitXor(HXor* instruction) {
 }
 
 void InstructionSimplifierArm64Visitor::VisitVecLoad(HVecLoad* instruction) {
-  // TODO: Extract regular HIntermediateAddress.
-  if (!instruction->IsPredicated() && !instruction->IsStringCharAt() &&
-      TryExtractVecArrayAccessAddress(instruction, instruction->GetIndex())) {
+  if (!instruction->IsStringCharAt()
+      && TryExtractVecArrayAccessAddress(instruction, instruction->GetIndex())) {
     RecordSimplification();
   }
 }
 
 void InstructionSimplifierArm64Visitor::VisitVecStore(HVecStore* instruction) {
-  // TODO: Extract regular HIntermediateAddress.
-  if (!instruction->IsPredicated() &&
-      TryExtractVecArrayAccessAddress(instruction, instruction->GetIndex())) {
+  if (TryExtractVecArrayAccessAddress(instruction, instruction->GetIndex())) {
     RecordSimplification();
   }
 }

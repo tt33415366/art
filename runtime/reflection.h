@@ -17,7 +17,6 @@
 #ifndef ART_RUNTIME_REFLECTION_H_
 #define ART_RUNTIME_REFLECTION_H_
 
-#include "base/enums.h"
 #include "base/locks.h"
 #include "dex/primitive.h"
 #include "jni.h"
@@ -98,7 +97,6 @@ JValue InvokeVirtualOrInterfaceWithVarArgs(const ScopedObjectAccessAlreadyRunnab
     REQUIRES_SHARED(Locks::mutator_lock_);
 
 // num_frames is number of frames we look up for access check.
-template<PointerSize pointer_size>
 jobject InvokeMethod(const ScopedObjectAccessAlreadyRunnable& soa,
                      jobject method,
                      jobject receiver,

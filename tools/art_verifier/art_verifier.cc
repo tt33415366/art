@@ -247,7 +247,6 @@ struct MethodVerifierMain : public CmdlineMain<MethodVerifierArgs> {
           std::string error_msg;
           verifier::FailureKind res =
             verifier::ClassVerifier::VerifyClass(soa.Self(),
-                                                 /* verifier_deps= */ nullptr,
                                                  h_klass.Get(),
                                                  runtime->GetCompilerCallbacks(),
                                                  true,
