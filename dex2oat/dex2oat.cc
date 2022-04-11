@@ -525,7 +525,6 @@ class Dex2Oat final {
         zip_fd_(-1),
         image_fd_(-1),
         have_multi_image_arg_(false),
-        multi_image_(false),
         image_base_(0U),
         image_storage_mode_(ImageHeader::kStorageModeUncompressed),
         passes_to_run_filename_(nullptr),
@@ -771,19 +770,20 @@ class Dex2Oat final {
       }
     } else {
       // Use the default, i.e. multi-image for boot image and boot image extension.
-      multi_image_ = IsBootImage() || IsBootImageExtension();  // Shall pass checks below.
+      // This shall pass the checks below.
+      compiler_options_->multi_image_ = IsBootImage() || IsBootImageExtension();
     }
     // On target we support generating a single image for the primary boot image.
     if (!kIsTargetBuild) {
-      if (IsBootImage() && !multi_image_) {
+      if (IsBootImage() && !compiler_options_->multi_image_) {
         Usage("--single-image specified for primary boot image on host");
       }
     }
-    if (IsAppImage() && multi_image_) {
+    if (IsAppImage() && compiler_options_->multi_image_) {
       Usage("--multi-image specified for app image");
     }
 
-    if (image_fd_ != -1 && multi_image_) {
+    if (image_fd_ != -1 && compiler_options_->multi_image_) {
       Usage("--single-image not specified for --image-fd");
     }
 
@@ -909,7 +909,7 @@ class Dex2Oat final {
 
   void ExpandOatAndImageFilenames() {
     ArrayRef<const std::string> locations(dex_locations_);
-    if (!multi_image_) {
+    if (!compiler_options_->multi_image_) {
       locations = locations.SubArray(/*pos=*/ 0u, /*length=*/ 1u);
     }
     if (image_fd_ == -1) {
@@ -925,7 +925,7 @@ class Dex2Oat final {
       oat_filenames_ = ImageSpace::ExpandMultiImageLocations(
           locations, oat_filenames_[0], IsBootImageExtension());
     } else {
-      DCHECK(!multi_image_);
+      DCHECK(!compiler_options_->multi_image_);
       std::vector<std::string> oat_locations = ImageSpace::ExpandMultiImageLocations(
           locations, oat_location_, IsBootImageExtension());
       DCHECK_EQ(1u, oat_locations.size());
@@ -958,7 +958,6 @@ class Dex2Oat final {
     key_value_store_->Put(OatHeader::kCompilerFilter,
                           CompilerFilter::NameOfFilter(compiler_options_->GetCompilerFilter()));
     key_value_store_->Put(OatHeader::kConcurrentCopying, kUseReadBarrier);
-    key_value_store_->Put(OatHeader::kRequiresImage, compiler_options_->IsGeneratingImage());
     if (invocation_file_.get() != -1) {
       std::ostringstream oss;
       for (int i = 0; i < argc; ++i) {
@@ -1120,7 +1119,7 @@ class Dex2Oat final {
     AssignIfExists(args, M::CopyDexFiles, &copy_dex_files_);
 
     AssignTrueIfExists(args, M::MultiImage, &have_multi_image_arg_);
-    AssignIfExists(args, M::MultiImage, &multi_image_);
+    AssignIfExists(args, M::MultiImage, &compiler_options_->multi_image_);
 
     if (args.Exists(M::ForceDeterminism)) {
       force_determinism_ = true;
@@ -1525,10 +1524,10 @@ class Dex2Oat final {
     }
     if (runtime_->GetHeap()->GetBootImageSpaces().empty() &&
         (IsBootImageExtension() || IsAppImage())) {
-      LOG(ERROR) << "Cannot create "
-                 << (IsBootImageExtension() ? "boot image extension" : "app image")
-                 << " without a primary boot image.";
-      return dex2oat::ReturnCode::kOther;
+      LOG(WARNING) << "Cannot create "
+                   << (IsBootImageExtension() ? "boot image extension" : "app image")
+                   << " without a primary boot image.";
+      compiler_options_->image_type_ = CompilerOptions::ImageType::kNone;
     }
     ArrayRef<const DexFile* const> bcp_dex_files(runtime_->GetClassLinker()->GetBootClassPath());
     if (IsBootImage() || IsBootImageExtension()) {
@@ -1666,6 +1665,10 @@ class Dex2Oat final {
           apex_versions_argument_.empty() ? runtime->GetApexVersions() : apex_versions_argument_;
       key_value_store_->Put(OatHeader::kApexVersionsKey, versions);
     }
+
+    // Now that we have adjusted whether we generate an image, encode it in the
+    // key/value store.
+    key_value_store_->Put(OatHeader::kRequiresImage, compiler_options_->IsGeneratingImage());
 
     // Now that we have finalized key_value_store_, start writing the .rodata section.
     // Among other things, this creates type lookup tables that speed up the compilation.
@@ -2538,11 +2541,15 @@ class Dex2Oat final {
     preloaded_classes_ = std::make_unique<HashSet<std::string>>();
     if (!preloaded_classes_fds_.empty()) {
       for (int fd : preloaded_classes_fds_) {
-        ReadCommentedInputFromFd(fd, nullptr, preloaded_classes_.get());
+        if (!ReadCommentedInputFromFd(fd, nullptr, preloaded_classes_.get())) {
+          return false;
+        }
       }
     } else {
       for (const std::string& file : preloaded_classes_files_) {
-        ReadCommentedInputFromFile(file.c_str(), nullptr, preloaded_classes_.get());
+        if (!ReadCommentedInputFromFile(file.c_str(), nullptr, preloaded_classes_.get())) {
+          return false;
+        }
       }
     }
     return true;
@@ -2777,25 +2784,27 @@ class Dex2Oat final {
   }
 
   template <typename T>
-  static void ReadCommentedInputFromFile(
+  static bool ReadCommentedInputFromFile(
       const char* input_filename, std::function<std::string(const char*)>* process, T* output) {
     auto input_file = std::unique_ptr<FILE, decltype(&fclose)>{fopen(input_filename, "r"), fclose};
     if (!input_file) {
       LOG(ERROR) << "Failed to open input file " << input_filename;
-      return;
+      return false;
     }
     ReadCommentedInputStream<T>(input_file.get(), process, output);
+    return true;
   }
 
   template <typename T>
-  static void ReadCommentedInputFromFd(
+  static bool ReadCommentedInputFromFd(
       int input_fd, std::function<std::string(const char*)>* process, T* output) {
     auto input_file = std::unique_ptr<FILE, decltype(&fclose)>{fdopen(input_fd, "r"), fclose};
     if (!input_file) {
       LOG(ERROR) << "Failed to re-open input fd from /prof/self/fd/" << input_fd;
-      return;
+      return false;
     }
     ReadCommentedInputStream<T>(input_file.get(), process, output);
+    return true;
   }
 
   // Read lines from the given file, dropping comments and empty lines. Post-process each line with
@@ -2927,7 +2936,6 @@ class Dex2Oat final {
   std::vector<std::string> image_filenames_;
   int image_fd_;
   bool have_multi_image_arg_;
-  bool multi_image_;
   uintptr_t image_base_;
   ImageHeader::StorageMode image_storage_mode_;
   const char* passes_to_run_filename_;
