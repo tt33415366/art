@@ -691,6 +691,7 @@ class TestingTargetChecker:
     # Check ART test (internal) libraries.
     self._checker.check_native_library('libartd-gtest')
     self._checker.check_native_library('libartd-simulator-container')
+    self._checker.check_native_library('libartbased-testing')
 
     # Check ART test tools.
     self._checker.check_executable('signal_dumper')
@@ -712,7 +713,6 @@ class TestingTargetChecker:
     self._checker.check_art_test_data('art-gtest-jars-ForClassLoaderD.jar')
     self._checker.check_art_test_data('art-gtest-jars-ForClassLoaderC.jar')
     self._checker.check_art_test_data('art-gtest-jars-ErroneousA.jar')
-    self._checker.check_art_test_data('art-gtest-jars-DexToDexDecompiler.jar')
     self._checker.check_art_test_data('art-gtest-jars-HiddenApiSignatures.jar')
     self._checker.check_art_test_data('art-gtest-jars-ForClassLoaderB.jar')
     self._checker.check_art_test_data('art-gtest-jars-LinkageTest.dex')

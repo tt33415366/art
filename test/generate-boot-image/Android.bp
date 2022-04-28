@@ -48,6 +48,7 @@ art_cc_binary {
     ],
     static_libs: [
         "libartbase",
+        "libartbase-testing",
     ],
     tidy: true,
     tidy_flags: [

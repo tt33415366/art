@@ -24,24 +24,21 @@
 #include <string>
 #include <vector>
 
-#ifdef __ANDROID__
-#include <android/api-level.h>
-#endif
-
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
 #include "arch/instruction_set.h"
 #include "base/file_utils.h"
 #include "base/globals.h"
 #include "base/os.h"
+#include "base/testing.h"
 
 namespace art {
 
 namespace {
 
 using ::android::base::Join;
-using ::android::base::Split;
 using ::android::base::StringPrintf;
+using ::art::testing::GetLibCoreDexFileNames;
 
 std::string GetCompilerExecutable() {
   std::string compiler_executable = GetArtBinDir() + "/dex2oat";
@@ -50,28 +47,6 @@ std::string GetCompilerExecutable() {
   }
   compiler_executable += Is64BitInstructionSet(kRuntimeISA) ? "64" : "32";
   return compiler_executable;
-}
-
-std::vector<std::string> GetDexFiles() {
-  const char* bootclasspath_env = getenv("BOOTCLASSPATH");
-  CHECK_NE(bootclasspath_env, nullptr);
-  std::vector<std::string> dex_files = Split(bootclasspath_env, ":");
-  std::string art_root = GetArtRoot();
-// Java core libraries are located in a different location on old versions. We need to rewrite the
-// locations to match where the testing scripts actually place Java core libraries.
-#ifdef __ANDROID__
-  if (android_get_device_api_level() <= __ANDROID_API_Q__) {
-    for (std::string& dex_file : dex_files) {
-      dex_file = android::base::StringReplace(
-          dex_file, "/apex/com.android.runtime", art_root, /*all=*/false);
-    }
-  }
-#endif
-  auto end = std::remove_if(dex_files.begin(), dex_files.end(), [&](const std::string& file) {
-    return !android::base::StartsWith(file, art_root);
-  });
-  dex_files.erase(end, dex_files.end());
-  return dex_files;
 }
 
 // Joins a list of commandline args into a single string, where each part is quoted with double
@@ -95,7 +70,7 @@ int GenerateBootImage(const std::string& dir, const std::string& compiler_filter
   std::vector<std::string> args;
   args.push_back(GetCompilerExecutable());
 
-  std::vector<std::string> dex_files = GetDexFiles();
+  std::vector<std::string> dex_files = GetLibCoreDexFileNames(/*core_only=*/true);
   args.push_back("--runtime-arg");
   args.push_back("-Xbootclasspath:" + Join(dex_files, ":"));
   for (const std::string& file : dex_files) {

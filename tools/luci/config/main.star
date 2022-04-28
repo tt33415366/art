@@ -20,16 +20,14 @@
 After modifying this file execute it ('./main.star') to regenerate the configs.
 """
 
-lucicfg.check_version("1.24.4", "Please update depot_tools")
+lucicfg.check_version("1.30.9", "Please update depot_tools")
 
-# Enable v2 bucket names in LUCI Scheduler config.
+luci.builder.defaults.experiments.set({
+    "luci.recipes.use_python3": 10,
+})
+
+# Use LUCI Scheduler BBv2 names and add Scheduler realms configs.
 lucicfg.enable_experiment("crbug.com/1182002")
-
-# Enable LUCI Security Realms.
-lucicfg.enable_experiment("crbug.com/1085650")
-
-# Launch 0% of Builds in "Realms-aware mode"
-luci.builder.defaults.experiments.set({"luci.use_realms": 100})
 
 # Tell lucicfg what files it is allowed to touch.
 lucicfg.config(
@@ -155,7 +153,7 @@ def ci_builder(name, category, short_name):
         bucket = "ci",
         executable = luci.recipe(
             cipd_package = "infra/recipe_bundles/chromium.googlesource.com/chromium/tools/build",
-            cipd_version = "refs/heads/master",
+            cipd_version = "refs/heads/main",
             name = "art",
         ),
         dimensions = {

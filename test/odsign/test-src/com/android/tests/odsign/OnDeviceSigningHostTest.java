@@ -16,6 +16,8 @@
 
 package com.android.tests.odsign;
 
+import static org.junit.Assert.assertTrue;
+
 import com.android.tradefed.invoker.TestInformation;
 import com.android.tradefed.testtype.DeviceJUnit4ClassRunner;
 import com.android.tradefed.testtype.junit4.AfterClassWithInfo;
@@ -46,6 +48,13 @@ public class OnDeviceSigningHostTest extends ActivationTest {
         OdsignTestUtils testUtils = new OdsignTestUtils(testInfo);
         testUtils.uninstallTestApex();
         testUtils.reboot();
-        testUtils.restoreAdbRoot();
+    }
+
+    @Test
+    public void verifyCompilationLogGenerated() throws Exception {
+        OdsignTestUtils testUtils = new OdsignTestUtils(getTestInformation());
+
+        // Check there is a compilation log, we expect compilation to have occurred.
+        assertTrue("Compilation log not found", testUtils.haveCompilationLog());
     }
 }

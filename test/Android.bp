@@ -229,6 +229,7 @@ art_cc_defaults {
         "libdexfiled",
         "libprofiled",
         "libartbased",
+        "libartbased-testing",
 
         // Library `libnativehelper` needs to appear after `libartd` here,
         // otherwise the following tests from module `libartd-runtime-gtest`
@@ -298,11 +299,13 @@ art_cc_defaults {
         "libnativehelper",
     ],
     static_libs: [
-        // For now, link `libart-gtest` statically for simplicity, to save the
-        // added complexity to package it in test suites (along with other test
-        // artifacts) and install it on device during tests.
+        // For now, link `libart-gtest` and `libartbase-testing` statically for
+        // simplicity, to save the added complexity to package it in test suites
+        // (along with other test artifacts) and install it on device during
+        // tests.
         // TODO(b/192070541): Consider linking `libart-gtest` dynamically.
         "libart-gtest",
+        "libartbase-testing",
     ],
 
     test_for: [
@@ -429,6 +432,7 @@ art_cc_library {
         "libdexfile",
         "libprofile",
         "libartbase",
+        "libartbase-testing",
     ],
 }
 
@@ -449,6 +453,7 @@ art_cc_library {
         "libdexfiled",
         "libprofiled",
         "libartbased",
+        "libartbased-testing",
     ],
 }
 
@@ -461,6 +466,14 @@ filegroup {
     name: "art-run-test-target-template",
     srcs: [
         "art-run-test-target-template.xml",
+    ],
+}
+
+// Same as above, but with a longer timeout.
+filegroup {
+    name: "art-run-test-target-slow-template",
+    srcs: [
+        "art-run-test-target-slow-template.xml",
     ],
 }
 
@@ -1360,7 +1373,6 @@ filegroup {
         ":art-gtest-jars-AbstractMethod",
         ":art-gtest-jars-AllFields",
         ":art-gtest-jars-DefaultMethods",
-        ":art-gtest-jars-DexToDexDecompiler",
         ":art-gtest-jars-ErroneousA",
         ":art-gtest-jars-ErroneousB",
         ":art-gtest-jars-ErroneousInit",
@@ -1439,12 +1451,6 @@ java_library {
 java_library {
     name: "art-gtest-jars-DefaultMethods",
     srcs: ["DefaultMethods/**/*.java"],
-    defaults: ["art-gtest-jars-defaults"],
-}
-
-java_library {
-    name: "art-gtest-jars-DexToDexDecompiler",
-    srcs: ["DexToDexDecompiler/**/*.java"],
     defaults: ["art-gtest-jars-defaults"],
 }
 
@@ -1839,7 +1845,7 @@ genrule_defaults {
     ],
     tool_files: [
         "run-test-build.py",
-        "knownfailures.json",
+        "buildfailures.json",
         "etc/default-build",
         "etc/default-run",
         "etc/default-check",
