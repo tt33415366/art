@@ -1382,7 +1382,10 @@ class CountInternedStringReferencesVisitor {
         space_.HasAddress(referred_obj.Ptr()) &&
         referred_obj->IsString()) {
       ObjPtr<mirror::String> referred_str = referred_obj->AsString();
-      auto it = image_interns_.find(GcRoot<mirror::String>(referred_str));
+      uint32_t hash = static_cast<uint32_t>(referred_str->GetStoredHashCode());
+      // All image strings have the hash code calculated, even if they are not interned.
+      DCHECK_EQ(hash, static_cast<uint32_t>(referred_str->ComputeHashCode()));
+      auto it = image_interns_.FindWithHash(GcRoot<mirror::String>(referred_str), hash);
       if (it != image_interns_.end() && it->Read() == referred_str) {
         ++count_;
       }
@@ -1980,6 +1983,16 @@ bool ClassLinker::AddImageSpace(
   }
 
   if (!runtime->IsAotCompiler()) {
+    // If we are profiling the boot classpath, disable the shared memory for
+    // boot image method optimization. We need to disable it before doing
+    // ResetCounter below, as counters of shared memory method always hold the
+    // "hot" value.
+    if (runtime->GetJITOptions()->GetProfileSaverOptions().GetProfileBootClassPath()) {
+      header.VisitPackedArtMethods([&](ArtMethod& method) REQUIRES_SHARED(Locks::mutator_lock_) {
+        method.ClearMemorySharedMethod();
+      }, space->Begin(), image_pointer_size_);
+    }
+
     ScopedTrace trace("AppImage:UpdateCodeItemAndNterp");
     bool can_use_nterp = interpreter::CanRuntimeUseNterp();
     uint16_t hotness_threshold = runtime->GetJITOptions()->GetWarmupThreshold();
@@ -3701,7 +3714,23 @@ void ClassLinker::LoadMethod(const DexFile& dex_file,
       }
     }
   }
-  size_t slow_args_search_start = 1u;  // First arg.
+
+  // Check for nterp invoke fast-path based on shorty.
+  bool all_parameters_are_reference = true;
+  bool all_parameters_are_reference_or_int = true;
+  for (size_t i = 1; i < shorty.length(); ++i) {
+    if (shorty[i] != 'L') {
+      all_parameters_are_reference = false;
+      if (shorty[i] == 'F' || shorty[i] == 'D' || shorty[i] == 'J') {
+        all_parameters_are_reference_or_int = false;
+        break;
+      }
+    }
+  }
+  if (all_parameters_are_reference_or_int && shorty[0] != 'F' && shorty[0] != 'D') {
+    access_flags |= kAccNterpInvokeFastPathFlag;
+  }
+
   if (UNLIKELY((access_flags & kAccNative) != 0u)) {
     // Check if the native method is annotated with @FastNative or @CriticalNative.
     const dex::ClassDef& class_def = dex_file.GetClassDef(klass->GetDexClassDefIndex());
@@ -3723,6 +3752,10 @@ void ClassLinker::LoadMethod(const DexFile& dex_file,
     DCHECK_EQ(method.GetCodeItemOffset(), 0u);
     dst->SetDataPtrSize(nullptr, image_pointer_size_);  // Single implementation not set yet.
   } else {
+    // Check for nterp entry fast-path based on shorty.
+    if (all_parameters_are_reference) {
+      access_flags |= kAccNterpEntryPointFastPathFlag;
+    }
     const dex::ClassDef& class_def = dex_file.GetClassDef(klass->GetDexClassDefIndex());
     if (annotations::MethodIsNeverCompile(dex_file, class_def, dex_method_idx)) {
       access_flags |= kAccCompileDontBother;
@@ -3737,22 +3770,10 @@ void ClassLinker::LoadMethod(const DexFile& dex_file,
     } else {
       dst->SetCodeItem(dex_file.GetCodeItem(code_item_offset), dex_file.IsCompactDexFile());
     }
-    // Check for nterp entry fast-path based on shorty.
-    slow_args_search_start = shorty.find_first_not_of('L', 1u);
-    if (slow_args_search_start == std::string_view::npos) {
-      dst->SetNterpEntryPointFastPathFlag();
-    }
   }
 
-  // Check for nterp invoke fast-path based on shorty.
-  auto is_slow_arg = [](char c) { return c == 'F' || c == 'D' || c == 'J'; };
-  if ((shorty[0] != 'F' && shorty[0] != 'D') &&  // Returns reference or integral type.
-      (slow_args_search_start == std::string_view::npos ||
-       std::none_of(shorty.begin() + slow_args_search_start, shorty.end(), is_slow_arg))) {
-    dst->SetNterpInvokeFastPathFlag();
-  }
-
-  if (Runtime::Current()->IsZygote()) {
+  if (Runtime::Current()->IsZygote() &&
+      !Runtime::Current()->GetJITOptions()->GetProfileSaverOptions().GetProfileBootClassPath()) {
     dst->SetMemorySharedMethod();
   }
 }
@@ -8086,10 +8107,22 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
       } else {
         auto it2 = super_vtable_signatures.FindWithHash(interface_method, hash);
         if (it2 != super_vtable_signatures.end()) {
-          // FIXME: If there are multiple vtable methods with the same signature, the one
-          // with the highest vtable index is not nessarily the one in most-derived class.
-          // However, we're preserving old behavior for now. b/211854716
+          // If there are multiple vtable methods with the same signature, the one with
+          // the highest vtable index is not nessarily the one in most-derived class.
+          // Find the most-derived method. See b/211854716 .
           vtable_method = super_vtable_accessor.GetVTableEntry(*it2);
+          if (UNLIKELY(!same_signature_vtable_lists.empty())) {
+            size_t current_index = *it2;
+            while (same_signature_vtable_lists[current_index] != dex::kDexNoIndex) {
+              DCHECK_LT(same_signature_vtable_lists[current_index], current_index);
+              current_index = same_signature_vtable_lists[current_index];
+              ArtMethod* current_method = super_vtable_accessor.GetVTableEntry(current_index);
+              ObjPtr<mirror::Class> current_class = current_method->GetDeclaringClass();
+              if (current_class->IsSubClass(vtable_method->GetDeclaringClass())) {
+                vtable_method = current_method;
+              }
+            }
+          }
           found = true;
         }
       }
@@ -8097,6 +8130,7 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
       if (found) {
         DCHECK(vtable_method != nullptr);
         if (!vtable_method->IsAbstract() && !vtable_method->IsPublic()) {
+          // FIXME: Delay the exception until we actually try to call the method. b/211854716
           sants.reset();
           ThrowIllegalAccessErrorForImplementingMethod(klass, vtable_method, interface_method);
           return 0u;
