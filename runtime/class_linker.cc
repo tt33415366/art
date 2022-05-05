@@ -1983,6 +1983,16 @@ bool ClassLinker::AddImageSpace(
   }
 
   if (!runtime->IsAotCompiler()) {
+    // If we are profiling the boot classpath, disable the shared memory for
+    // boot image method optimization. We need to disable it before doing
+    // ResetCounter below, as counters of shared memory method always hold the
+    // "hot" value.
+    if (runtime->GetJITOptions()->GetProfileSaverOptions().GetProfileBootClassPath()) {
+      header.VisitPackedArtMethods([&](ArtMethod& method) REQUIRES_SHARED(Locks::mutator_lock_) {
+        method.ClearMemorySharedMethod();
+      }, space->Begin(), image_pointer_size_);
+    }
+
     ScopedTrace trace("AppImage:UpdateCodeItemAndNterp");
     bool can_use_nterp = interpreter::CanRuntimeUseNterp();
     uint16_t hotness_threshold = runtime->GetJITOptions()->GetWarmupThreshold();
@@ -3762,7 +3772,8 @@ void ClassLinker::LoadMethod(const DexFile& dex_file,
     }
   }
 
-  if (Runtime::Current()->IsZygote()) {
+  if (Runtime::Current()->IsZygote() &&
+      !Runtime::Current()->GetJITOptions()->GetProfileSaverOptions().GetProfileBootClassPath()) {
     dst->SetMemorySharedMethod();
   }
 }
@@ -8096,10 +8107,22 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
       } else {
         auto it2 = super_vtable_signatures.FindWithHash(interface_method, hash);
         if (it2 != super_vtable_signatures.end()) {
-          // FIXME: If there are multiple vtable methods with the same signature, the one
-          // with the highest vtable index is not nessarily the one in most-derived class.
-          // However, we're preserving old behavior for now. b/211854716
+          // If there are multiple vtable methods with the same signature, the one with
+          // the highest vtable index is not nessarily the one in most-derived class.
+          // Find the most-derived method. See b/211854716 .
           vtable_method = super_vtable_accessor.GetVTableEntry(*it2);
+          if (UNLIKELY(!same_signature_vtable_lists.empty())) {
+            size_t current_index = *it2;
+            while (same_signature_vtable_lists[current_index] != dex::kDexNoIndex) {
+              DCHECK_LT(same_signature_vtable_lists[current_index], current_index);
+              current_index = same_signature_vtable_lists[current_index];
+              ArtMethod* current_method = super_vtable_accessor.GetVTableEntry(current_index);
+              ObjPtr<mirror::Class> current_class = current_method->GetDeclaringClass();
+              if (current_class->IsSubClass(vtable_method->GetDeclaringClass())) {
+                vtable_method = current_method;
+              }
+            }
+          }
           found = true;
         }
       }
@@ -8107,6 +8130,7 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
       if (found) {
         DCHECK(vtable_method != nullptr);
         if (!vtable_method->IsAbstract() && !vtable_method->IsPublic()) {
+          // FIXME: Delay the exception until we actually try to call the method. b/211854716
           sants.reset();
           ThrowIllegalAccessErrorForImplementingMethod(klass, vtable_method, interface_method);
           return 0u;
