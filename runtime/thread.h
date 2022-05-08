@@ -188,6 +188,8 @@ enum class WeakRefAccessState : int32_t {
 // This should match RosAlloc::kNumThreadLocalSizeBrackets.
 static constexpr size_t kNumRosAllocThreadLocalSizeBracketsInThread = 16;
 
+static constexpr size_t kSharedMethodHotnessThreshold = 0xffff;
+
 // Thread's stack layout for implicit stack overflow checks:
 //
 //   +---------------------+  <- highest address of stack memory
@@ -764,8 +766,22 @@ class Thread {
         OFFSETOF_MEMBER(tls_32bit_sized_values, is_gc_marking));
   }
 
+  template <PointerSize pointer_size>
+  static constexpr ThreadOffset<pointer_size> DeoptCheckRequiredOffset() {
+    return ThreadOffset<pointer_size>(
+        OFFSETOF_MEMBER(Thread, tls32_) +
+        OFFSETOF_MEMBER(tls_32bit_sized_values, is_deopt_check_required));
+  }
+
   static constexpr size_t IsGcMarkingSize() {
     return sizeof(tls32_.is_gc_marking);
+  }
+
+  template<PointerSize pointer_size>
+  static constexpr ThreadOffset<pointer_size> SharedMethodHotnessOffset() {
+    return ThreadOffset<pointer_size>(
+        OFFSETOF_MEMBER(Thread, tls32_) +
+        OFFSETOF_MEMBER(tls_32bit_sized_values, shared_method_hotness));
   }
 
   // Deoptimize the Java stack.
@@ -1007,6 +1023,10 @@ class Thread {
   }
 
   void SetIsGcMarkingAndUpdateEntrypoints(bool is_marking);
+
+  bool IsDeoptCheckRequired() const { return tls32_.is_deopt_check_required; }
+
+  void SetDeoptCheckRequired(bool flag) { tls32_.is_deopt_check_required = flag; }
 
   bool GetWeakRefAccessEnabled() const;  // Only safe for current thread.
 
@@ -1388,6 +1408,19 @@ class Thread {
     return StateAndFlags::EncodeState(state);
   }
 
+  void ResetSharedMethodHotness() {
+    tls32_.shared_method_hotness = kSharedMethodHotnessThreshold;
+  }
+
+  uint32_t GetSharedMethodHotness() const {
+    return tls32_.shared_method_hotness;
+  }
+
+  uint32_t DecrementSharedMethodHotness() {
+    tls32_.shared_method_hotness = (tls32_.shared_method_hotness - 1) & 0xffff;
+    return tls32_.shared_method_hotness;
+  }
+
  private:
   explicit Thread(bool daemon);
   ~Thread() REQUIRES(!Locks::mutator_lock_, !Locks::thread_suspend_count_lock_);
@@ -1690,13 +1723,16 @@ class Thread {
           thread_exit_check_count(0),
           is_transitioning_to_runnable(false),
           is_gc_marking(false),
+          is_deopt_check_required(false),
           weak_ref_access_enabled(WeakRefAccessState::kVisiblyEnabled),
           disable_thread_flip_count(0),
           user_code_suspend_count(0),
           force_interpreter_count(0),
           make_visibly_initialized_counter(0),
           define_class_counter(0),
-          num_name_readers(0) {}
+          num_name_readers(0),
+          shared_method_hotness(kSharedMethodHotnessThreshold)
+        {}
 
     // The state and flags field must be changed atomically so that flag values aren't lost.
     // See `StateAndFlags` for bit assignments of `ThreadFlag` and `ThreadState` values.
@@ -1741,6 +1777,12 @@ class Thread {
     // thread local so that we can simplify the logic to check for the fast path of read barriers of
     // GC roots.
     bool32_t is_gc_marking;
+
+    // True if we need to check for deoptimization when returning from the runtime functions. This
+    // is required only when a class is redefined to prevent executing code that has field offsets
+    // embedded. For non-debuggable apps redefinition is not allowed and this flag should always be
+    // set to false.
+    bool32_t is_deopt_check_required;
 
     // Thread "interrupted" status; stays raised until queried or thrown.
     Atomic<bool32_t> interrupted;
@@ -1790,6 +1832,14 @@ class Thread {
     // retrieved.
     mutable std::atomic<uint32_t> num_name_readers;
     static_assert(std::atomic<uint32_t>::is_always_lock_free);
+
+    // Thread-local hotness counter for shared memory methods. Initialized with
+    // `kSharedMethodHotnessThreshold`. The interpreter decrements it and goes
+    // into the runtime when hitting zero. Note that all previous decrements
+    // could have been executed by another method than the one seeing zero.
+    // There is a second level counter in `Jit::shared_method_counters_` to make
+    // sure we at least have a few samples before compiling a method.
+    uint32_t shared_method_hotness;
   } tls32_;
 
   struct PACKED(8) tls_64bit_sized_values {

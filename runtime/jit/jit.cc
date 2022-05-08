@@ -259,10 +259,14 @@ bool Jit::LoadCompilerLibrary(std::string* error_msg) {
   return true;
 }
 
-bool Jit::CompileMethod(ArtMethod* method,
-                        Thread* self,
-                        CompilationKind compilation_kind,
-                        bool prejit) {
+bool Jit::CompileMethodInternal(ArtMethod* method,
+                                Thread* self,
+                                CompilationKind compilation_kind,
+                                bool prejit) {
+  if (kIsDebugBuild) {
+    MutexLock mu(self, *Locks::jit_lock_);
+    CHECK(GetCodeCache()->IsMethodBeingCompiled(method, compilation_kind));
+  }
   DCHECK(Runtime::Current()->UseJitCompilation());
   DCHECK(!method->IsRuntimeMethod());
 
@@ -323,7 +327,7 @@ bool Jit::CompileMethod(ArtMethod* method,
             << ArtMethod::PrettyMethod(method_to_compile)
             << " kind=" << compilation_kind;
   bool success = jit_compiler_->CompileMethod(self, region, method_to_compile, compilation_kind);
-  code_cache_->DoneCompiling(method_to_compile, self, compilation_kind);
+  code_cache_->DoneCompiling(method_to_compile, self);
   if (!success) {
     VLOG(jit) << "Failed to compile method "
               << ArtMethod::PrettyMethod(method_to_compile)
@@ -743,6 +747,48 @@ void Jit::NotifyZygoteCompilationDone() {
   child_mapping_methods.Reset();
 }
 
+class ScopedCompilation {
+ public:
+  ScopedCompilation(ScopedCompilation&& other) :
+      jit_(other.jit_),
+      method_(other.method_),
+      compilation_kind_(other.compilation_kind_),
+      owns_compilation_(other.owns_compilation_) {
+    other.owns_compilation_ = false;
+  }
+
+  ScopedCompilation(Jit* jit, ArtMethod* method, CompilationKind compilation_kind)
+      : jit_(jit),
+        method_(method),
+        compilation_kind_(compilation_kind),
+        owns_compilation_(true) {
+    MutexLock mu(Thread::Current(), *Locks::jit_lock_);
+    if (jit_->GetCodeCache()->IsMethodBeingCompiled(method_, compilation_kind_)) {
+      owns_compilation_ = false;
+      return;
+    }
+    jit_->GetCodeCache()->AddMethodBeingCompiled(method_, compilation_kind_);
+  }
+
+  bool OwnsCompilation() const {
+    return owns_compilation_;
+  }
+
+
+  ~ScopedCompilation() {
+    if (owns_compilation_) {
+      MutexLock mu(Thread::Current(), *Locks::jit_lock_);
+      jit_->GetCodeCache()->RemoveMethodBeingCompiled(method_, compilation_kind_);
+    }
+  }
+
+ private:
+  Jit* const jit_;
+  ArtMethod* const method_;
+  const CompilationKind compilation_kind_;
+  bool owns_compilation_;
+};
+
 class JitCompileTask final : public Task {
  public:
   enum class TaskKind {
@@ -750,25 +796,16 @@ class JitCompileTask final : public Task {
     kPreCompile,
   };
 
-  JitCompileTask(ArtMethod* method, TaskKind task_kind, CompilationKind compilation_kind)
-      : method_(method), kind_(task_kind), compilation_kind_(compilation_kind), klass_(nullptr) {
-    ScopedObjectAccess soa(Thread::Current());
-    // For a non-bootclasspath class, add a global ref to the class to prevent class unloading
-    // until compilation is done.
-    // When we precompile, this is either with boot classpath methods, or main
-    // class loader methods, so we don't need to keep a global reference.
-    if (method->GetDeclaringClass()->GetClassLoader() != nullptr &&
-        kind_ != TaskKind::kPreCompile) {
-      klass_ = soa.Vm()->AddGlobalRef(soa.Self(), method_->GetDeclaringClass());
-      CHECK(klass_ != nullptr);
-    }
-  }
-
-  ~JitCompileTask() {
-    if (klass_ != nullptr) {
-      ScopedObjectAccess soa(Thread::Current());
-      soa.Vm()->DeleteGlobalRef(soa.Self(), klass_);
-    }
+  JitCompileTask(ArtMethod* method,
+                 TaskKind task_kind,
+                 CompilationKind compilation_kind,
+                 ScopedCompilation&& sc)
+      : method_(method),
+        kind_(task_kind),
+        compilation_kind_(compilation_kind),
+        scoped_compilation_(std::move(sc)) {
+    DCHECK(scoped_compilation_.OwnsCompilation());
+    DCHECK(!sc.OwnsCompilation());
   }
 
   void Run(Thread* self) override {
@@ -777,7 +814,7 @@ class JitCompileTask final : public Task {
       switch (kind_) {
         case TaskKind::kCompile:
         case TaskKind::kPreCompile: {
-          Runtime::Current()->GetJit()->CompileMethod(
+          Runtime::Current()->GetJit()->CompileMethodInternal(
               method_,
               self,
               compilation_kind_,
@@ -797,7 +834,7 @@ class JitCompileTask final : public Task {
   ArtMethod* const method_;
   const TaskKind kind_;
   const CompilationKind compilation_kind_;
-  jobject klass_;
+  ScopedCompilation scoped_compilation_;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(JitCompileTask);
 };
@@ -1156,20 +1193,9 @@ void Jit::MapBootImageMethods() {
   LOG(INFO) << "Successfully mapped boot image methods";
 }
 
-// Return whether a boot image has a profile. This means we'll need to pre-JIT
-// methods in that profile for performance.
-static bool HasImageWithProfile() {
-  for (gc::space::ImageSpace* space : Runtime::Current()->GetHeap()->GetBootImageSpaces()) {
-    if (!space->GetProfileFiles().empty()) {
-      return true;
-    }
-  }
-  return false;
-}
-
 bool Jit::InZygoteUsingJit() {
   Runtime* runtime = Runtime::Current();
-  return runtime->IsZygote() && HasImageWithProfile() && runtime->UseJitCompilation();
+  return runtime->IsZygote() && runtime->HasImageWithProfile() && runtime->UseJitCompilation();
 }
 
 void Jit::CreateThreadPool() {
@@ -1290,10 +1316,25 @@ void Jit::RegisterDexFiles(const std::vector<std::unique_ptr<const DexFile>>& de
   if (runtime->IsSystemServer() &&
       UseJitCompilation() &&
       options_->UseProfiledJitCompilation() &&
-      HasImageWithProfile() &&
+      runtime->HasImageWithProfile() &&
       !runtime->IsJavaDebuggable()) {
     thread_pool_->AddTask(Thread::Current(), new JitProfileTask(dex_files, class_loader));
   }
+}
+
+void Jit::AddCompileTask(Thread* self,
+                         ArtMethod* method,
+                         CompilationKind compilation_kind,
+                         bool precompile) {
+  ScopedCompilation sc(this, method, compilation_kind);
+  if (!sc.OwnsCompilation()) {
+    return;
+  }
+  JitCompileTask::TaskKind task_kind = precompile
+      ? JitCompileTask::TaskKind::kPreCompile
+      : JitCompileTask::TaskKind::kCompile;
+  thread_pool_->AddTask(
+      self, new JitCompileTask(method, task_kind, compilation_kind, std::move(sc)));
 }
 
 bool Jit::CompileMethodFromProfile(Thread* self,
@@ -1316,6 +1357,7 @@ bool Jit::CompileMethodFromProfile(Thread* self,
     // Already seen by another profile.
     return false;
   }
+  CompilationKind compilation_kind = CompilationKind::kOptimized;
   const void* entry_point = method->GetEntryPointFromQuickCompiledCode();
   if (class_linker->IsQuickToInterpreterBridge(entry_point) ||
       class_linker->IsQuickGenericJniStub(entry_point) ||
@@ -1326,11 +1368,15 @@ bool Jit::CompileMethodFromProfile(Thread* self,
     VLOG(jit) << "JIT Zygote processing method " << ArtMethod::PrettyMethod(method)
               << " from profile";
     method->SetPreCompiled();
+    ScopedCompilation sc(this, method, compilation_kind);
+    if (!sc.OwnsCompilation()) {
+      return false;
+    }
     if (!add_to_queue) {
-      CompileMethod(method, self, CompilationKind::kOptimized, /* prejit= */ true);
+      CompileMethodInternal(method, self, compilation_kind, /* prejit= */ true);
     } else {
       Task* task = new JitCompileTask(
-          method, JitCompileTask::TaskKind::kPreCompile, CompilationKind::kOptimized);
+          method, JitCompileTask::TaskKind::kPreCompile, compilation_kind, std::move(sc));
       if (compile_after_boot) {
         AddPostBootTask(self, task);
       } else {
@@ -1481,11 +1527,7 @@ void Jit::EnqueueOptimizedCompilation(ArtMethod* method, Thread* self) {
   // hotness threshold. If we're not only using the baseline compiler, enqueue a compilation
   // task that will compile optimize the method.
   if (!options_->UseBaselineCompiler()) {
-    thread_pool_->AddTask(
-        self,
-        new JitCompileTask(method,
-                           JitCompileTask::TaskKind::kCompile,
-                           CompilationKind::kOptimized));
+    AddCompileTask(self, method, CompilationKind::kOptimized);
   }
 }
 
@@ -1505,23 +1547,17 @@ class ScopedSetRuntimeThread {
   bool was_runtime_thread_;
 };
 
-void Jit::MethodEntered(Thread* thread, ArtMethod* method) {
+void Jit::MethodEntered(Thread* self, ArtMethod* method) {
   Runtime* runtime = Runtime::Current();
   if (UNLIKELY(runtime->UseJitCompilation() && JitAtFirstUse())) {
     ArtMethod* np_method = method->GetInterfaceMethodIfProxy(kRuntimePointerSize);
     if (np_method->IsCompilable()) {
-      // TODO(ngeoffray): For JIT at first use, use kPreCompile. Currently we don't due to
-      // conflicts with jitzygote optimizations.
-      JitCompileTask compile_task(
-          method, JitCompileTask::TaskKind::kCompile, CompilationKind::kOptimized);
-      // Fake being in a runtime thread so that class-load behavior will be the same as normal jit.
-      ScopedSetRuntimeThread ssrt(thread);
-      compile_task.Run(thread);
+      CompileMethod(method, self, CompilationKind::kOptimized, /* prejit= */ false);
     }
     return;
   }
 
-  AddSamples(thread, method);
+  AddSamples(self, method);
 }
 
 void Jit::WaitForCompilationToFinish(Thread* self) {
@@ -1624,11 +1660,12 @@ void Jit::PostForkChildAction(bool is_system_server, bool is_zygote) {
   // JitAtFirstUse compiles the methods synchronously on mutator threads. While this should work
   // in theory it is causing deadlocks in some jvmti tests related to Jit GC. Hence, disabling
   // Jit GC for now (b/147208992).
-  code_cache_->SetGarbageCollectCode(!jit_compiler_->GenerateDebugInfo() &&
-      !Runtime::Current()->GetInstrumentation()->AreExitStubsInstalled() &&
+  code_cache_->SetGarbageCollectCode(
+      !jit_compiler_->GenerateDebugInfo() &&
+      !runtime->GetInstrumentation()->AreExitStubsInstalled() &&
       !JitAtFirstUse());
 
-  if (is_system_server && HasImageWithProfile()) {
+  if (is_system_server && runtime->HasImageWithProfile()) {
     // Disable garbage collection: we don't want it to delete methods we're compiling
     // through boot and system server profiles.
     // TODO(ngeoffray): Fix this so we still collect deoptimized and unused code.
@@ -1728,7 +1765,7 @@ bool Jit::CanAssumeInitialized(ObjPtr<mirror::Class> cls, bool is_for_shared_reg
   }
 }
 
-void Jit::EnqueueCompilation(ArtMethod* method, Thread* self) {
+void Jit::MaybeEnqueueCompilation(ArtMethod* method, Thread* self) {
   if (thread_pool_ == nullptr) {
     return;
   }
@@ -1742,13 +1779,15 @@ void Jit::EnqueueCompilation(ArtMethod* method, Thread* self) {
     return;
   }
 
+  if (IgnoreSamplesForMethod(method)) {
+    return;
+  }
+
   if (GetCodeCache()->ContainsPc(method->GetEntryPointFromQuickCompiledCode())) {
     if (!method->IsNative() && !code_cache_->IsOsrCompiled(method)) {
       // If we already have compiled code for it, nterp may be stuck in a loop.
       // Compile OSR.
-      thread_pool_->AddTask(
-          self,
-          new JitCompileTask(method, JitCompileTask::TaskKind::kCompile, CompilationKind::kOsr));
+      AddCompileTask(self, method, CompilationKind::kOsr);
     }
     return;
   }
@@ -1765,21 +1804,43 @@ void Jit::EnqueueCompilation(ArtMethod* method, Thread* self) {
     return;
   }
 
-  if (IgnoreSamplesForMethod(method)) {
-    return;
+  static constexpr size_t kIndividualSharedMethodHotnessThreshold = 0xff;
+  if (method->IsMemorySharedMethod()) {
+    MutexLock mu(self, lock_);
+    auto it = shared_method_counters_.find(method);
+    if (it == shared_method_counters_.end()) {
+      shared_method_counters_[method] = kIndividualSharedMethodHotnessThreshold;
+      return;
+    } else if (it->second != 0) {
+      DCHECK_LE(it->second, kIndividualSharedMethodHotnessThreshold);
+      shared_method_counters_[method] = it->second - 1;
+      return;
+    } else {
+      shared_method_counters_[method] = kIndividualSharedMethodHotnessThreshold;
+    }
   }
 
   if (!method->IsNative() && GetCodeCache()->CanAllocateProfilingInfo()) {
-    thread_pool_->AddTask(
-        self,
-        new JitCompileTask(method, JitCompileTask::TaskKind::kCompile, CompilationKind::kBaseline));
+    AddCompileTask(self, method, CompilationKind::kBaseline);
   } else {
-    thread_pool_->AddTask(
-        self,
-        new JitCompileTask(method,
-                           JitCompileTask::TaskKind::kCompile,
-                           CompilationKind::kOptimized));
+    AddCompileTask(self, method, CompilationKind::kOptimized);
   }
+}
+
+bool Jit::CompileMethod(ArtMethod* method,
+                        Thread* self,
+                        CompilationKind compilation_kind,
+                        bool prejit) {
+  ScopedCompilation sc(this, method, compilation_kind);
+  // TODO: all current users of this method expect us to wait if it is being compiled.
+  if (!sc.OwnsCompilation()) {
+    return false;
+  }
+  // Fake being in a runtime thread so that class-load behavior will be the same as normal jit.
+  ScopedSetRuntimeThread ssrt(self);
+  // TODO(ngeoffray): For JIT at first use, use kPreCompile. Currently we don't due to
+  // conflicts with jitzygote optimizations.
+  return CompileMethodInternal(method, self, compilation_kind, prejit);
 }
 
 }  // namespace jit

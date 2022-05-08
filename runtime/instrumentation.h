@@ -31,6 +31,7 @@
 #include "base/macros.h"
 #include "base/safe_map.h"
 #include "gc_root.h"
+#include "jvalue.h"
 #include "offsets.h"
 
 namespace art {
@@ -309,6 +310,13 @@ class Instrumentation {
   // Return the code that we can execute for an invoke including from the JIT.
   const void* GetCodeForInvoke(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_);
 
+  // Return the code that we can execute considering the current instrumentation level.
+  // If interpreter stubs are installed return interpreter bridge. If the entry exit stubs
+  // are installed return an instrumentation entry point. Otherwise, return the code that
+  // can be executed including from the JIT.
+  const void* GetMaybeInstrumentedCodeForInvoke(ArtMethod* method)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
   void ForceInterpretOnly() {
     forced_interpret_only_ = true;
   }
@@ -472,12 +480,29 @@ class Instrumentation {
   void ExceptionHandledEvent(Thread* thread, ObjPtr<mirror::Throwable> exception_object) const
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  JValue GetReturnValue(Thread* self,
-                        ArtMethod* method,
-                        bool* is_ref,
-                        uint64_t* gpr_result,
-                        uint64_t* fpr_result) REQUIRES_SHARED(Locks::mutator_lock_);
-  bool ShouldDeoptimizeMethod(Thread* self, const NthCallerVisitor& visitor)
+  JValue GetReturnValue(ArtMethod* method, bool* is_ref, uint64_t* gpr_result, uint64_t* fpr_result)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+  bool PushDeoptContextIfNeeded(Thread* self,
+                                DeoptimizationMethodType deopt_type,
+                                bool is_ref,
+                                const JValue& result) REQUIRES_SHARED(Locks::mutator_lock_);
+  void DeoptimizeIfNeeded(Thread* self,
+                          ArtMethod** sp,
+                          DeoptimizationMethodType type,
+                          JValue result,
+                          bool is_ref) REQUIRES_SHARED(Locks::mutator_lock_);
+  // TODO(mythria): Update uses of ShouldDeoptimizeCaller that takes a visitor by a method that
+  // doesn't need to walk the stack. This is used on method exits to check if the caller needs a
+  // deoptimization.
+  bool ShouldDeoptimizeCaller(Thread* self, const NthCallerVisitor& visitor)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+  // This returns if the caller of runtime method requires a deoptimization. This checks both if the
+  // method requires a deopt or if this particular frame needs a deopt because of a class
+  // redefinition.
+  bool ShouldDeoptimizeCaller(Thread* self, ArtMethod** sp) REQUIRES_SHARED(Locks::mutator_lock_);
+  // This returns if the specified method requires a deoptimization. This doesn't account if a stack
+  // frame involving this method requires a deoptimization.
+  bool NeedsSlowInterpreterForMethod(Thread* self, ArtMethod* method)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Called when an instrumented method is entered. The intended link register (lr) is saved so
@@ -578,6 +603,10 @@ class Instrumentation {
                !Locks::thread_list_lock_,
                !Locks::classlinker_classes_lock_);
 
+  // If there are no pending deoptimizations restores the stack to the normal state by updating the
+  // return pcs to actual return addresses from the instrumentation stack and clears the
+  // instrumentation stack.
+  void MaybeRestoreInstrumentationStack() REQUIRES(Locks::mutator_lock_);
 
   // No thread safety analysis to get around SetQuickAllocEntryPointsInstrumented requiring
   // exclusive access to mutator lock which you can't get if the runtime isn't started.
