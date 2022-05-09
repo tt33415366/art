@@ -114,9 +114,9 @@ class OnDeviceRefresh final {
   android::base::Result<void> CleanupArtifactDirectory(
       const std::vector<std::string>& artifacts_to_keep) const;
 
-  // Loads artifacts to memory and writes them back. This essentially removes the existing artifacts
-  // from fs-verity so that odsign will not encounter "file exists" error when it adds the existing
-  // artifacts to fs-verity.
+  // Loads artifacts to memory and writes them back. This is a workaround for old versions of
+  // odsign, which encounters "file exists" error when it adds existing artifacts to fs-verity. This
+  // function essentially removes existing artifacts from fs-verity to avoid the error.
   android::base::Result<void> RefreshExistingArtifacts() const;
 
   // Checks whether all boot classpath artifacts are present. Returns true if all are present, false
@@ -139,6 +139,25 @@ class OnDeviceRefresh final {
       /*out*/ std::string* error_msg,
       /*out*/ std::set<std::string>* jars_missing_artifacts,
       /*out*/ std::vector<std::string>* checked_artifacts = nullptr) const;
+
+  // Returns true if all of the system properties listed in `kSystemProperties` are set to the
+  // default values.
+  WARN_UNUSED bool CheckSystemPropertiesAreDefault() const;
+
+  // Returns true if none of the system properties listed in `kSystemProperties` has changed since
+  // the last compilation.
+  WARN_UNUSED bool CheckSystemPropertiesHaveNotChanged(
+      const com::android::art::CacheInfo& cache_info) const;
+
+  // Returns true if boot classpath artifacts on /system are usable if they exist. Note that this
+  // function does not check file existence.
+  WARN_UNUSED bool BootClasspathArtifactsOnSystemUsable(
+      const com::android::apex::ApexInfo& art_apex_info) const;
+
+  // Returns true if system_server artifacts on /system are usable if they exist. Note that this
+  // function does not check file existence.
+  WARN_UNUSED bool SystemServerArtifactsOnSystemUsable(
+      const std::vector<com::android::apex::ApexInfo>& apex_info_list) const;
 
   // Checks whether all boot classpath artifacts are up to date. Returns true if all are present,
   // false otherwise.
