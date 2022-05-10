@@ -189,7 +189,7 @@ void ProfileSaver::Run() {
       // We might have been woken up by a huge number of notifications to guarantee saving.
       // If we didn't meet the minimum saving period go back to sleep (only if missed by
       // a reasonable margin).
-      uint64_t min_save_period_ns = options_.GetMinSavePeriodMs();
+      uint64_t min_save_period_ns = MsToNs(options_.GetMinSavePeriodMs());
       while (min_save_period_ns * 0.9 > sleep_time) {
         {
           MutexLock mu(self, wait_lock_);
@@ -634,14 +634,15 @@ void ProfileSaver::GetClassesAndMethodsHelper::UpdateProfile(const std::set<std:
   size_t number_of_hot_methods = 0u;
   size_t number_of_sampled_methods = 0u;
 
+  uint16_t initial_value = Runtime::Current()->GetJITOptions()->GetWarmupThreshold();
   auto get_method_flags = [&](ArtMethod& method) {
     // Mark methods as hot if they have more than hot_method_sample_threshold
     // samples. This means they will get compiled by the compiler driver.
-    const uint16_t counter = method.GetCounter();
-    if (method.PreviouslyWarm() || counter >= hot_method_sample_threshold) {
+    if (method.PreviouslyWarm() ||
+        method.CounterHasReached(hot_method_sample_threshold, initial_value)) {
       ++number_of_hot_methods;
       return enum_cast<ProfileCompilationInfo::MethodHotness::Flag>(base_flags | Hotness::kFlagHot);
-    } else if (counter != 0u) {
+    } else if (method.CounterHasChanged(initial_value)) {
       ++number_of_sampled_methods;
       return enum_cast<ProfileCompilationInfo::MethodHotness::Flag>(base_flags);
     } else {
@@ -787,7 +788,7 @@ void ProfileSaver::FetchAndCacheResolvedClassesAndMethods(bool startup) {
     // Release the mutator lock. We shall need to re-acquire the lock for a moment to
     // destroy the `VariableSizedHandleScope` inside the `helper` which shall be
     // conveniently handled by destroying `sts`, then `helper` and then `soa`.
-    ScopedThreadSuspension sts(self, kNative);
+    ScopedThreadSuspension sts(self, ThreadState::kNative);
     // Get back to the previous thread priority. We shall not increase the priority
     // for the short time we need to re-acquire mutator lock for `helper` destructor.
     sdp.reset();

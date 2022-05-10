@@ -157,8 +157,6 @@ class VdexFile {
     return size;
   }
 
-  bool IsDexSectionValid() const;
-
   bool HasDexSection() const {
     return GetSectionHeader(VdexSection::kDexFileSection).section_size != 0u;
   }
@@ -196,7 +194,6 @@ class VdexFile {
                                                  const std::string& vdex_filename,
                                                  bool writable,
                                                  bool low_4gb,
-                                                 bool unquicken,
                                                  std::string* error_msg);
 
   // Returns nullptr if the vdex file cannot be opened or is not valid.
@@ -209,14 +206,12 @@ class VdexFile {
                                                  const std::string& vdex_filename,
                                                  bool writable,
                                                  bool low_4gb,
-                                                 bool unquicken,
                                                  std::string* error_msg);
 
   // Returns nullptr if the vdex file cannot be opened or is not valid.
   static std::unique_ptr<VdexFile> Open(const std::string& vdex_filename,
                                         bool writable,
                                         bool low_4gb,
-                                        bool unquicken,
                                         std::string* error_msg) {
     return OpenAtAddress(nullptr,
                          0,
@@ -224,7 +219,6 @@ class VdexFile {
                          vdex_filename,
                          writable,
                          low_4gb,
-                         unquicken,
                          error_msg);
   }
 
@@ -234,7 +228,6 @@ class VdexFile {
                                         const std::string& vdex_filename,
                                         bool writable,
                                         bool low_4gb,
-                                        bool unquicken,
                                         std::string* error_msg) {
     return OpenAtAddress(nullptr,
                          0,
@@ -244,13 +237,18 @@ class VdexFile {
                          vdex_filename,
                          writable,
                          low_4gb,
-                         unquicken,
                          error_msg);
   }
+
+  static std::unique_ptr<VdexFile> OpenFromDm(const std::string& filename,
+                                              const ZipArchive& archive);
 
   const uint8_t* Begin() const { return mmap_.Begin(); }
   const uint8_t* End() const { return mmap_.End(); }
   size_t Size() const { return mmap_.Size(); }
+  bool Contains(const uint8_t* pointer) const {
+    return pointer >= Begin() && pointer < End();
+  }
 
   const VdexFileHeader& GetVdexFileHeader() const {
     return *reinterpret_cast<const VdexFileHeader*>(Begin());

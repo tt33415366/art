@@ -20,6 +20,7 @@
 #include <jni.h>
 #include <stdio.h>
 
+#include <forward_list>
 #include <iosfwd>
 #include <memory>
 #include <set>
@@ -73,7 +74,7 @@ class ClassLoader;
 class DexCache;
 template<class T> class ObjectArray;
 template<class T> class PrimitiveArray;
-typedef PrimitiveArray<int8_t> ByteArray;
+using ByteArray = PrimitiveArray<int8_t>;
 class String;
 class Throwable;
 }  // namespace mirror
@@ -106,6 +107,7 @@ class Plugin;
 struct RuntimeArgumentMap;
 class RuntimeCallbacks;
 class SignalCatcher;
+class SmallIrtAllocator;
 class StackOverflowHandler;
 class SuspensionHandler;
 class ThreadList;
@@ -114,7 +116,7 @@ class Trace;
 struct TraceConfig;
 class Transaction;
 
-typedef std::vector<std::pair<std::string, const void*>> RuntimeOptions;
+using RuntimeOptions = std::vector<std::pair<std::string, const void*>>;
 
 class Runtime {
  public:
@@ -213,8 +215,8 @@ class Runtime {
     return image_compiler_options_;
   }
 
-  const std::string& GetImageLocation() const {
-    return image_location_;
+  const std::vector<std::string>& GetImageLocations() const {
+    return image_locations_;
   }
 
   // Starts a runtime, which may cause threads to be started and code to run.
@@ -222,7 +224,13 @@ class Runtime {
 
   bool IsShuttingDown(Thread* self);
   bool IsShuttingDownLocked() const REQUIRES(Locks::runtime_shutdown_lock_) {
-    return shutting_down_;
+    return shutting_down_.load(std::memory_order_relaxed);
+  }
+  bool IsShuttingDownUnsafe() const {
+    return shutting_down_.load(std::memory_order_relaxed);
+  }
+  void SetShuttingDown() REQUIRES(Locks::runtime_shutdown_lock_) {
+    shutting_down_.store(true, std::memory_order_relaxed);
   }
 
   size_t NumberOfThreadsBeingBorn() const REQUIRES(Locks::runtime_shutdown_lock_) {
@@ -287,6 +295,22 @@ class Runtime {
     return boot_class_path_locations_.empty() ? boot_class_path_ : boot_class_path_locations_;
   }
 
+  const std::vector<int>& GetBootClassPathFds() const {
+    return boot_class_path_fds_;
+  }
+
+  const std::vector<int>& GetBootClassPathImageFds() const {
+    return boot_class_path_image_fds_;
+  }
+
+  const std::vector<int>& GetBootClassPathVdexFds() const {
+    return boot_class_path_vdex_fds_;
+  }
+
+  const std::vector<int>& GetBootClassPathOatFds() const {
+    return boot_class_path_oat_fds_;
+  }
+
   // Returns the checksums for the boot image, extensions and extra boot class path dex files,
   // based on the image spaces and boot class path dex files loaded in memory.
   const std::string& GetBootClassPathChecksums() const {
@@ -299,6 +323,10 @@ class Runtime {
 
   ClassLinker* GetClassLinker() const {
     return class_linker_;
+  }
+
+  SmallIrtAllocator* GetSmallIrtAllocator() const {
+    return small_irt_allocator_;
   }
 
   jni::JniIdManager* GetJniIdManager() const {
@@ -546,7 +574,8 @@ class Runtime {
   // do them in one function.
   void RollbackAndExitTransactionMode() REQUIRES_SHARED(Locks::mutator_lock_);
   bool IsTransactionAborted() const;
-  const std::unique_ptr<Transaction>& GetTransaction() const;
+  const Transaction* GetTransaction() const;
+  Transaction* GetTransaction();
   bool IsActiveStrictTransactionMode() const;
 
   void AbortTransactionAndThrowAbortError(Thread* self, const std::string& abort_message)
@@ -554,42 +583,64 @@ class Runtime {
   void ThrowTransactionAbortError(Thread* self)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  void RecordWriteFieldBoolean(mirror::Object* obj, MemberOffset field_offset, uint8_t value,
-                               bool is_volatile) const;
-  void RecordWriteFieldByte(mirror::Object* obj, MemberOffset field_offset, int8_t value,
-                            bool is_volatile) const;
-  void RecordWriteFieldChar(mirror::Object* obj, MemberOffset field_offset, uint16_t value,
-                            bool is_volatile) const;
-  void RecordWriteFieldShort(mirror::Object* obj, MemberOffset field_offset, int16_t value,
-                          bool is_volatile) const;
-  void RecordWriteField32(mirror::Object* obj, MemberOffset field_offset, uint32_t value,
-                          bool is_volatile) const;
-  void RecordWriteField64(mirror::Object* obj, MemberOffset field_offset, uint64_t value,
-                          bool is_volatile) const;
+  void RecordWriteFieldBoolean(mirror::Object* obj,
+                               MemberOffset field_offset,
+                               uint8_t value,
+                               bool is_volatile);
+  void RecordWriteFieldByte(mirror::Object* obj,
+                            MemberOffset field_offset,
+                            int8_t value,
+                            bool is_volatile);
+  void RecordWriteFieldChar(mirror::Object* obj,
+                            MemberOffset field_offset,
+                            uint16_t value,
+                            bool is_volatile);
+  void RecordWriteFieldShort(mirror::Object* obj,
+                             MemberOffset field_offset,
+                             int16_t value,
+                             bool is_volatile);
+  void RecordWriteField32(mirror::Object* obj,
+                          MemberOffset field_offset,
+                          uint32_t value,
+                          bool is_volatile);
+  void RecordWriteField64(mirror::Object* obj,
+                          MemberOffset field_offset,
+                          uint64_t value,
+                          bool is_volatile);
   void RecordWriteFieldReference(mirror::Object* obj,
                                  MemberOffset field_offset,
                                  ObjPtr<mirror::Object> value,
-                                 bool is_volatile) const
+                                 bool is_volatile)
       REQUIRES_SHARED(Locks::mutator_lock_);
-  void RecordWriteArray(mirror::Array* array, size_t index, uint64_t value) const
+  void RecordWriteArray(mirror::Array* array, size_t index, uint64_t value)
       REQUIRES_SHARED(Locks::mutator_lock_);
-  void RecordStrongStringInsertion(ObjPtr<mirror::String> s) const
+  void RecordStrongStringInsertion(ObjPtr<mirror::String> s)
       REQUIRES(Locks::intern_table_lock_);
-  void RecordWeakStringInsertion(ObjPtr<mirror::String> s) const
+  void RecordWeakStringInsertion(ObjPtr<mirror::String> s)
       REQUIRES(Locks::intern_table_lock_);
-  void RecordStrongStringRemoval(ObjPtr<mirror::String> s) const
+  void RecordStrongStringRemoval(ObjPtr<mirror::String> s)
       REQUIRES(Locks::intern_table_lock_);
-  void RecordWeakStringRemoval(ObjPtr<mirror::String> s) const
+  void RecordWeakStringRemoval(ObjPtr<mirror::String> s)
       REQUIRES(Locks::intern_table_lock_);
-  void RecordResolveString(ObjPtr<mirror::DexCache> dex_cache, dex::StringIndex string_idx) const
+  void RecordResolveString(ObjPtr<mirror::DexCache> dex_cache, dex::StringIndex string_idx)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+  void RecordResolveMethodType(ObjPtr<mirror::DexCache> dex_cache, dex::ProtoIndex proto_idx)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   void SetFaultMessage(const std::string& message);
 
   void AddCurrentRuntimeFeaturesAsDex2OatArguments(std::vector<std::string>* arg_vector) const;
 
-  bool ExplicitStackOverflowChecks() const {
-    return !implicit_so_checks_;
+  bool GetImplicitStackOverflowChecks() const {
+    return implicit_so_checks_;
+  }
+
+  bool GetImplicitSuspendChecks() const {
+    return implicit_suspend_checks_;
+  }
+
+  bool GetImplicitNullChecks() const {
+    return implicit_null_checks_;
   }
 
   void DisableVerifier();
@@ -704,11 +755,11 @@ class Runtime {
   ArenaPool* GetArenaPool() {
     return arena_pool_.get();
   }
-  ArenaPool* GetJitArenaPool() {
-    return jit_arena_pool_.get();
-  }
   const ArenaPool* GetArenaPool() const {
     return arena_pool_.get();
+  }
+  ArenaPool* GetJitArenaPool() {
+    return jit_arena_pool_.get();
   }
 
   void ReclaimArenaPoolMemory();
@@ -761,7 +812,7 @@ class Runtime {
   }
 
   void SetNonStandardExitsEnabled() {
-    DoAndMaybeSwitchInterpreter([=](){ non_standard_exits_enabled_ = true; });
+    non_standard_exits_enabled_ = true;
   }
 
   bool AreAsyncExceptionsThrown() const {
@@ -769,19 +820,8 @@ class Runtime {
   }
 
   void SetAsyncExceptionsThrown() {
-    DoAndMaybeSwitchInterpreter([=](){ async_exceptions_thrown_ = true; });
+    async_exceptions_thrown_ = true;
   }
-
-  // Change state and re-check which interpreter should be used.
-  //
-  // This must be called whenever there is an event that forces
-  // us to use different interpreter (e.g. debugger is attached).
-  //
-  // Changing the state using the lamda gives us some multihreading safety.
-  // It ensures that two calls do not interfere with each other and
-  // it makes it possible to DCHECK that thread local flag is correct.
-  template<typename Action>
-  static void DoAndMaybeSwitchInterpreter(Action lamda);
 
   // Returns the build fingerprint, if set. Otherwise an empty string is returned.
   std::string GetFingerprint() {
@@ -1029,6 +1069,10 @@ class Runtime {
     return apex_versions_;
   }
 
+  // Return whether a boot image has a profile. This means it's an in-memory
+  // image rather that an image loaded from disk.
+  bool HasImageWithProfile() const;
+
   // Trigger a flag reload from system properties or device congfigs.
   //
   // Should only be called from runtime init and zygote post fork as
@@ -1124,11 +1168,15 @@ class Runtime {
   std::string compiler_executable_;
   std::vector<std::string> compiler_options_;
   std::vector<std::string> image_compiler_options_;
-  std::string image_location_;
+  std::vector<std::string> image_locations_;
 
   std::vector<std::string> boot_class_path_;
   std::vector<std::string> boot_class_path_locations_;
   std::string boot_class_path_checksums_;
+  std::vector<int> boot_class_path_fds_;
+  std::vector<int> boot_class_path_image_fds_;
+  std::vector<int> boot_class_path_vdex_fds_;
+  std::vector<int> boot_class_path_oat_fds_;
   std::string class_path_string_;
   std::vector<std::string> properties_;
 
@@ -1167,6 +1215,8 @@ class Runtime {
 
   SignalCatcher* signal_catcher_;
 
+  SmallIrtAllocator* small_irt_allocator_;
+
   std::unique_ptr<jni::JniIdManager> jni_id_manager_;
 
   std::unique_ptr<JavaVMExt> java_vm_;
@@ -1190,8 +1240,10 @@ class Runtime {
   // Waited upon until no threads are being born.
   std::unique_ptr<ConditionVariable> shutdown_cond_ GUARDED_BY(Locks::runtime_shutdown_lock_);
 
-  // Set when runtime shutdown is past the point that new threads may attach.
-  bool shutting_down_ GUARDED_BY(Locks::runtime_shutdown_lock_);
+  // Set when runtime shutdown is past the point that new threads may attach.  Usually
+  // GUARDED_BY(Locks::runtime_shutdown_lock_). But we need to check it in Abort without the
+  // lock, because we may already own it.
+  std::atomic<bool> shutting_down_;
 
   // The runtime is starting to shutdown but is blocked waiting on shutdown_cond_.
   bool shutting_down_started_ GUARDED_BY(Locks::runtime_shutdown_lock_);
@@ -1230,7 +1282,7 @@ class Runtime {
   // Support nested transactions, maintain a list containing all transactions. Transactions are
   // handled under a stack discipline. Because GC needs to go over all transactions, we choose list
   // as substantial data structure instead of stack.
-  std::list<std::unique_ptr<Transaction>> preinitialization_transactions_;
+  std::forward_list<Transaction> preinitialization_transactions_;
 
   // If kNone, verification is disabled. kEnable by default.
   verifier::VerifyMode verify_;
@@ -1341,8 +1393,8 @@ class Runtime {
   // Whether access checks on test API should be performed.
   hiddenapi::EnforcementPolicy test_api_policy_;
 
-  // List of signature prefixes of methods that have been removed from the blacklist, and treated
-  // as if whitelisted.
+  // List of signature prefixes of methods that have been removed from the blocklist, and treated
+  // as if SDK.
   std::vector<std::string> hidden_api_exemptions_;
 
   // Do not warn about the same hidden API access violation twice.
