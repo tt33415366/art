@@ -32,8 +32,42 @@ soong_config_module_type_import {
     ],
 }
 
+// Properties common to `art_test_defaults` and `art_standalone_test_defaults`.
+art_module_cc_defaults {
+    name: "art_test_common_defaults",
+    defaults: ["art_defaults"],
+
+    // Override flags from art_defaults:
+    cflags: [
+        // gmock.h has incorrect unused markers.
+        "-Wno-used-but-marked-unused",
+        // gtest.h compares signed and unsigned.
+        "-Wno-sign-compare",
+        // gtest.h includes cxxabi.h which fails on this check.
+        "-Wno-deprecated-dynamic-exception-spec",
+    ],
+
+    target: {
+        darwin: {
+            enabled: false,
+        },
+        // This has to be duplicated for android and host to make sure it
+        // comes after the -Wframe-larger-than warnings inserted by art.go
+        // target-specific properties
+        android: {
+            cflags: ["-Wno-frame-larger-than="],
+        },
+        host: {
+            cflags: ["-Wno-frame-larger-than="],
+        },
+    },
+}
+
 art_module_cc_defaults {
     name: "art_test_defaults",
+    defaults: [
+        "art_test_common_defaults",
+    ],
     host_supported: true,
     soong_config_variables: {
         source_build: {
@@ -62,13 +96,7 @@ art_module_cc_defaults {
         android_x86_64: {
             relative_install_path: "art/x86_64",
         },
-        darwin: {
-            enabled: false,
-        },
     },
-    cflags: [
-        "-Wno-frame-larger-than=",
-    ],
     // Tests aren't generally included in any APEX, but this is necessary to
     // avoid duplicate install rules for them by making them unavailable to platform.
     apex_available: [
@@ -102,31 +130,57 @@ art_cc_defaults {
     },
 }
 
-art_cc_defaults {
-    name: "art_gtest_defaults",
-    // These really are gtests, but the gtest library comes from libart-gtest.so
-    gtest: false,
-    defaults: [
-        "art_test_defaults",
-        "art_debug_defaults",
-        "art_defaults",
-    ],
+// Test configuration template for standalone ART gtests on target (not bundled with the ART APEX).
+filegroup {
+    name: "art-gtests-target-standalone-template",
+    srcs: ["art-gtests-target-standalone-template.xml"],
+}
 
-    test_suites: ["art-host-tests"],
-    test_options: {
-        test_suite_tag: ["art-host-gtest"],
-    },
+// Test configuration template for standalone ART gtests on target (not bundled with the ART APEX)
+// which are part of CTS.
+filegroup {
+    name: "art-gtests-target-standalone-cts-template",
+    srcs: ["art-gtests-target-standalone-cts-template.xml"],
+}
+
+// Test configuration template for standalone ART gtests run as root on target (not bundled with
+// the ART APEX).
+filegroup {
+    name: "art-gtests-target-standalone-root-template",
+    srcs: ["art-gtests-target-standalone-root-template.xml"],
+}
+
+// Test configuration template for standalone ART gtests run with a boot image on target (not
+// bundled with the ART APEX).
+filegroup {
+    name: "art-gtests-target-standalone-with-boot-image-template",
+    srcs: ["art-gtests-target-standalone-with-boot-image-template.xml"],
+}
+
+art_cc_defaults {
+    name: "art_standalone_test_defaults",
+    defaults: [
+        "art_test_common_defaults",
+    ],
+    // Standalone ART gtests are only supported on device for now.
+    // TODO: Add support for host standalone ART gtests. Note that they should not differ much
+    // from the original ("non-standalone") host gtests, as the latter are not really bundled with
+    // the host ART APEX / artifacts (unlike their device counterparts); but as we plan to remove
+    // the ART gtests bundled with the ART APEX, we'll have to support the host case here
+    // eventually.
+    host_supported: false,
+    test_config_template: ":art-gtests-target-standalone-template",
+}
+
+// Properties common to `art_gtest_defaults` and `art_standalone_gtest_defaults`.
+art_cc_defaults {
+    name: "art_gtest_common_defaults",
+    // These really are gtests, but the gtest library comes from `libart(d)-gtest.so`.
+    gtest: false,
 
     shared_libs: [
-        "libartd",
-        "libartd-disassembler",
-        "libart-gtest",
-        "libdexfiled",
-        "libprofiled",
-        "libartbased",
-
         "libbase",
-        "libnativehelper",
+        "liblog",
         "libz",
     ],
 
@@ -152,27 +206,122 @@ art_cc_defaults {
                 "libziparchive",
             ],
         },
-        android: {
-            shared_libs: [
-                "liblog",
-            ],
-        },
     },
 }
 
 art_cc_defaults {
-    name: "libart-gtest-defaults",
-    host_supported: true,
+    name: "art_gtest_defaults",
     defaults: [
+        "art_test_defaults",
+        "art_gtest_common_defaults",
         "art_debug_defaults",
-        "art_defaults",
     ],
+
+    test_suites: ["art-host-tests"],
+    test_options: {
+        test_suite_tag: ["art-host-gtest"],
+    },
+
     shared_libs: [
         "libartd",
-        "libartd-compiler",
+        "libartd-disassembler",
+        "libartd-gtest",
         "libdexfiled",
         "libprofiled",
         "libartbased",
+        "libartbased-testing",
+
+        // Library `libnativehelper` needs to appear after `libartd` here,
+        // otherwise the following tests from module `libartd-runtime-gtest`
+        // will fail because `art/runtime/jni/java_vm_ext.cc` and
+        // `libnativehelper/JniInvocation.c` define symbols with the same name
+        // (e.g. `JNI_GetDefaultJavaVMInitArgs`) and the link order does matter
+        // for these tests:
+        // - JavaVmExtTest#JNI_GetDefaultJavaVMInitArgs
+        // - JavaVmExtTest#JNI_GetCreatedJavaVMs
+        // - JavaVmExtTest#AttachCurrentThread
+        // - JavaVmExtTest#AttachCurrentThreadAsDaemon
+        // - JavaVmExtTest#AttachCurrentThread_SmallStack
+        "libnativehelper",
+    ],
+}
+
+art_cc_defaults {
+    name: "art_standalone_gtest_defaults",
+    defaults: [
+        // Note: We don't include "art_debug_defaults" here, as standalone ART
+        // gtests link with the "non-d" versions of the libraries contained in
+        // the ART APEX, so that they can be used with all ART APEX flavors
+        // (including the Release ART APEX).
+        "art_standalone_test_defaults",
+        "art_gtest_common_defaults",
+    ],
+
+    test_suites: [
+        "general-tests",
+        "mts-art",
+    ],
+
+    // Support multilib variants (using different suffix per sub-architecture), which is needed on
+    // build targets with secondary architectures, as the MTS test suite packaging logic flattens
+    // all test artifacts into a single `testcases` directory.
+    compile_multilib: "both",
+    multilib: {
+        lib32: {
+            suffix: "32",
+        },
+        lib64: {
+            suffix: "64",
+        },
+    },
+
+    // We use the "non-d" variants of libraries, as the Release ART APEX does
+    // not contain the "d" (debug) variants.
+    shared_libs: [
+        "libart",
+        "libart-compiler",
+        "libart-disassembler",
+        "libdexfile",
+        "libprofile",
+        "libartbase",
+
+        // Library `libnativehelper` needs to appear after `libart` here,
+        // otherwise the following tests from module `libart-runtime-gtest`
+        // will fail because `art/runtime/jni/java_vm_ext.cc` and
+        // `libnativehelper/JniInvocation.c` define symbols with the same name
+        // (e.g. `JNI_GetDefaultJavaVMInitArgs`) and the link order does matter
+        // for these tests:
+        // - JavaVmExtTest#JNI_GetDefaultJavaVMInitArgs
+        // - JavaVmExtTest#JNI_GetCreatedJavaVMs
+        // - JavaVmExtTest#AttachCurrentThread
+        // - JavaVmExtTest#AttachCurrentThreadAsDaemon
+        // - JavaVmExtTest#AttachCurrentThread_SmallStack
+        "libnativehelper",
+    ],
+    static_libs: [
+        // For now, link `libart-gtest` and `libartbase-testing` statically for
+        // simplicity, to save the added complexity to package it in test suites
+        // (along with other test artifacts) and install it on device during
+        // tests.
+        // TODO(b/192070541): Consider linking `libart-gtest` dynamically.
+        "libart-gtest",
+        "libartbase-testing",
+    ],
+
+    test_for: [
+        "com.android.art",
+        "com.android.art.debug",
+    ],
+}
+
+// Properties common to `libart-gtest-defaults` and `libartd-gtest-defaults`.
+art_cc_defaults {
+    name: "libart-gtest-common-defaults",
+    defaults: [
+        "art_defaults",
+    ],
+    host_supported: true,
+    shared_libs: [
         "liblog",
     ],
     static_libs: [
@@ -206,21 +355,25 @@ art_cc_defaults {
     ],
 }
 
-art_cc_library {
-    name: "libart-gtest",
-    host_supported: true,
+art_cc_defaults {
+    name: "libart-gtest-defaults",
+    defaults: [
+        "libart-gtest-common-defaults",
+    ],
+    shared_libs: [
+        "libart",
+        "libart-compiler",
+        "libdexfile",
+        "libprofile",
+        "libartbase",
+    ],
+}
+
+art_cc_defaults {
+    name: "libartd-gtest-defaults",
     defaults: [
         "art_debug_defaults",
-        "art_defaults",
-    ],
-    srcs: [
-        "common/gtest_main.cc",
-    ],
-    whole_static_libs: [
-        "libart-compiler-gtest",
-        "libart-runtime-gtest",
-        "libartbase-art-gtest",
-        "libgtest_isolated",
+        "libart-gtest-common-defaults",
     ],
     shared_libs: [
         "libartd",
@@ -228,6 +381,23 @@ art_cc_library {
         "libdexfiled",
         "libprofiled",
         "libartbased",
+    ],
+}
+
+// Properties common to `libart-gtest` and `libartd-gtest`.
+art_cc_defaults {
+    name: "libart-gtest-common",
+    defaults: [
+        "art_defaults",
+    ],
+    host_supported: true,
+    srcs: [
+        "common/gtest_main.cc",
+    ],
+    whole_static_libs: [
+        "libgtest_isolated",
+    ],
+    shared_libs: [
         "libbase",
         "libbacktrace",
         "liblog",
@@ -246,6 +416,47 @@ art_cc_library {
     ],
 }
 
+art_cc_library {
+    name: "libart-gtest",
+    defaults: [
+        "libart-gtest-common",
+    ],
+    whole_static_libs: [
+        "libart-compiler-gtest",
+        "libart-runtime-gtest",
+        "libartbase-art-gtest",
+    ],
+    shared_libs: [
+        "libart",
+        "libart-compiler",
+        "libdexfile",
+        "libprofile",
+        "libartbase",
+        "libartbase-testing",
+    ],
+}
+
+art_cc_library {
+    name: "libartd-gtest",
+    defaults: [
+        "art_debug_defaults",
+        "libart-gtest-common",
+    ],
+    whole_static_libs: [
+        "libartd-compiler-gtest",
+        "libartd-runtime-gtest",
+        "libartbased-art-gtest",
+    ],
+    shared_libs: [
+        "libartd",
+        "libartd-compiler",
+        "libdexfiled",
+        "libprofiled",
+        "libartbased",
+        "libartbased-testing",
+    ],
+}
+
 // ART run-tests.
 
 // Test configuration template for ART run-tests on target expected to run
@@ -255,6 +466,14 @@ filegroup {
     name: "art-run-test-target-template",
     srcs: [
         "art-run-test-target-template.xml",
+    ],
+}
+
+// Same as above, but with a longer timeout.
+filegroup {
+    name: "art-run-test-target-slow-template",
+    srcs: [
+        "art-run-test-target-slow-template.xml",
     ],
 }
 
@@ -284,9 +503,9 @@ java_defaults {
     system_modules: "core-all-system-modules",
 
     // Some ART run-tests contain constructs which break ErrorProne checks;
-    // disable them on `errorprone` builds.
+    // disable `errorprone` builds.
     errorprone: {
-        javacflags: ["-XepDisableAllChecks"],
+        enabled: false,
     },
     test_suites: [
         "general-tests",
@@ -295,6 +514,7 @@ java_defaults {
     host_required: [
         "art-run-test-checker",
     ],
+    min_sdk_version: "31",
 }
 
 art_cc_test_library {
@@ -324,10 +544,7 @@ art_cc_test_library {
 
 art_cc_defaults {
     name: "libnativebridgetest-defaults",
-    defaults: [
-        "art_test_defaults",
-        "art_defaults",
-    ],
+    defaults: ["art_test_defaults"],
     header_libs: ["libnativebridge-headers"],
     srcs: ["115-native-bridge/nativebridge.cc"],
 }
@@ -353,10 +570,7 @@ art_cc_test_library {
 
 cc_defaults {
     name: "libartagent-defaults",
-    defaults: [
-        "art_test_internal_library_defaults",
-        "art_defaults",
-    ],
+    defaults: ["art_test_internal_library_defaults"],
     shared_libs: [
         "libbacktrace",
         "libbase",
@@ -394,11 +608,7 @@ art_cc_test_library {
 
 art_cc_defaults {
     name: "libtiagent-base-defaults",
-    defaults: [
-        "art_test_internal_library_defaults",
-        "art_defaults",
-        // Not derived from libartagent-defaults for NDK.
-    ],
+    defaults: ["art_test_internal_library_defaults"],
     srcs: [
         // These are the ART-independent parts.
         "ti-agent/agent_common.cc",
@@ -587,14 +797,7 @@ cc_library_static {
     ],
     sdk_version: "current",
     stl: "c++_static",
-    header_libs: [
-        "jni_headers",
-        // This is needed to resolve the base/ header file in libdexfile. Unfortunately there are
-        // many problems with how we export headers that are making doing this the 'right' way
-        // difficult.
-        // TODO: move those headers to art/ rather than under runtime.
-        "libart_runtime_headers_ndk",
-    ],
+    header_libs: ["jni_headers"],
     export_include_dirs: ["ti-agent"],
 }
 
@@ -667,10 +870,7 @@ art_cc_test_library {
 
 cc_defaults {
     name: "libarttest-defaults",
-    defaults: [
-        "art_test_internal_library_defaults",
-        "art_defaults",
-    ],
+    defaults: ["art_test_internal_library_defaults"],
     srcs: [
         "004-JniTest/jni_test.cc",
         "004-ReferenceMap/stack_walk_refmap_jni.cc",
@@ -734,6 +934,8 @@ cc_defaults {
         "2033-shutdown-mechanics/native_shutdown.cc",
         "2036-jni-filechannel/jni_filechannel.cc",
         "2037-thread-name-inherit/thread_name_inherit.cc",
+        "2040-huge-native-alloc/huge_native_buf.cc",
+        "2235-JdkUnsafeTest/unsafe_test.cc",
         "common/runtime_state.cc",
         "common/stack_inspect.cc",
     ],
@@ -910,6 +1112,11 @@ java_library {
         "2007-virtual-structural-finalizable/src-art/art/Test2007.java",
     ],
     sdk_version: "core_platform",
+    // Some ART run-tests contain constructs which break ErrorProne checks;
+    // disable `errorprone` builds.
+    errorprone: {
+        enabled: false,
+    },
 }
 
 // CTS test runner in cts/hostsidetests/jvmti looks for an expected test
@@ -1118,6 +1325,7 @@ art_cc_test {
         // We need the ART testing apex, which contains all gtest binaries.
         // Note that due to build system and linker constraints the gtests must be in the apex.
         ":com.android.art.testing",
+        ":generate-boot-image",
     ],
     test_suites: ["general-tests"],
     test_config: "art-gtests-target-chroot.xml",
@@ -1127,13 +1335,44 @@ art_cc_test {
     ],
 }
 
+csuite_test {
+    name: "csuite-app-compile-launch",
+    test_config_template: "csuite-app-compile-launch.xml",
+}
+
+// Install run-test data in the output directory.
+prebuilt_etc_host {
+    name: "art-run-test-host-data",
+    defaults: ["art_module_source_build_prebuilt_defaults"],
+    src: ":art-run-test-host-data-merged",
+    sub_dir: "art",
+    filename: "art-run-test-host-data.zip",
+}
+
+// Install run-test data in the output directory.
+prebuilt_etc_host {
+    name: "art-run-test-jvm-data",
+    defaults: ["art_module_source_build_prebuilt_defaults"],
+    src: ":art-run-test-jvm-data-merged",
+    sub_dir: "art",
+    filename: "art-run-test-jvm-data.zip",
+}
+
+// Install run-test data in the output directory.
+prebuilt_etc_host {
+    name: "art-run-test-target-data",
+    defaults: ["art_module_source_build_prebuilt_defaults"],
+    src: ":art-run-test-target-data-merged",
+    sub_dir: "art",
+    filename: "art-run-test-target-data.zip",
+}
+
 filegroup {
     name: "art-gtest-jars",
     srcs: [
         ":art-gtest-jars-AbstractMethod",
         ":art-gtest-jars-AllFields",
         ":art-gtest-jars-DefaultMethods",
-        ":art-gtest-jars-DexToDexDecompiler",
         ":art-gtest-jars-ErroneousA",
         ":art-gtest-jars-ErroneousB",
         ":art-gtest-jars-ErroneousInit",
@@ -1212,12 +1451,6 @@ java_library {
 java_library {
     name: "art-gtest-jars-DefaultMethods",
     srcs: ["DefaultMethods/**/*.java"],
-    defaults: ["art-gtest-jars-defaults"],
-}
-
-java_library {
-    name: "art-gtest-jars-DexToDexDecompiler",
-    srcs: ["DexToDexDecompiler/**/*.java"],
     defaults: ["art-gtest-jars-defaults"],
 }
 
@@ -1602,3 +1835,30 @@ genrule {
     srcs: ["Dex2oatVdexPublicSdkDex/*.smali"],
     out: ["art-gtest-jars-Dex2oatVdexPublicSdkDex.dex"],
 }
+
+genrule_defaults {
+    name: "art-run-test-data-defaults",
+    defaults: [
+        // Enable only in source builds, where com.android.art.testing is
+        // available.
+        "art_module_source_build_genrule_defaults",
+    ],
+    tool_files: [
+        "run-test-build.py",
+        "buildfailures.json",
+        "etc/default-build",
+        "etc/default-run",
+        "etc/default-check",
+        ":art-run-test-bootclasspath",
+    ],
+    tools: [
+        "d8",
+        "hiddenapi",
+        "jasmin",
+        "smali",
+    ],
+}
+
+build = [
+    "Android.run-test.bp",
+]

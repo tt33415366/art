@@ -165,7 +165,6 @@ art_cc_library {
     defaults: [
         "libartbase_defaults",
         "libart_nativeunwind_defaults",
-        "art_pgo_defaults",
     ],
     visibility: [
         // TODO(b/183483755): Please visibility checks when the prebuilt
@@ -195,6 +194,7 @@ art_cc_library {
             },
         },
     },
+    afdo: true,
 }
 
 art_cc_library {
@@ -221,15 +221,12 @@ art_cc_library {
     },
 }
 
-art_cc_library {
-    name: "libartbase-art-gtest",
-    defaults: ["libart-gtest-defaults"],
+art_cc_defaults {
+    name: "libartbase-art-gtest-defaults",
     srcs: [
         "base/common_art_test.cc",
     ],
     shared_libs: [
-        "libartbased",
-        "libdexfiled",
         "libbase",
         "libbacktrace",
     ],
@@ -237,17 +234,89 @@ art_cc_library {
         "libnativehelper_header_only",
     ],
     static: {
-        whole_static_libs: ["libc++fs"],
+        whole_static_libs: [
+            "libc++fs",
+        ],
     },
     shared: {
-        static_libs: ["libc++fs"],
+        static_libs: [
+            "libc++fs",
+        ],
     },
 }
 
-art_cc_test {
-    name: "art_libartbase_tests",
+art_cc_library {
+    name: "libartbase-art-gtest",
     defaults: [
-        "art_gtest_defaults",
+        "libart-gtest-defaults",
+        "libartbase-art-gtest-defaults",
+    ],
+    shared_libs: [
+        "libartbase",
+        "libartbase-testing",
+        "libdexfile",
+    ],
+}
+
+art_cc_library {
+    name: "libartbased-art-gtest",
+    defaults: [
+        "libartd-gtest-defaults",
+        "libartbase-art-gtest-defaults",
+    ],
+    shared_libs: [
+        "libartbased",
+        "libartbased-testing",
+        "libdexfiled",
+    ],
+}
+
+art_cc_defaults {
+    name: "libartbase-testing-defaults",
+    defaults: [
+        "art_defaults",
+    ],
+    host_supported: true,
+    srcs: [
+        "base/testing.cc",
+    ],
+    shared_libs: [
+        "libbase",
+    ],
+    apex_available: [
+        "com.android.art.debug",
+        // TODO(b/183882457): This lib doesn't go into com.android.art, but
+        // apex_available lists need to be the same for internal libs to avoid
+        // stubs, and this depends on libdexfiled and others.
+        "com.android.art",
+    ],
+}
+
+art_cc_library {
+    name: "libartbase-testing",
+    defaults: [
+        "libartbase-testing-defaults",
+    ],
+    shared_libs: [
+        "libartbase",
+    ],
+}
+
+art_cc_library {
+    name: "libartbased-testing",
+    defaults: [
+        "libartbase-testing-defaults",
+    ],
+    shared_libs: [
+        "libartbased",
+    ],
+}
+
+art_cc_defaults {
+    name: "art_libartbase_tests_defaults",
+    tidy_timeout_srcs: [
+        "base/bit_utils_test.cc",
+        "base/intrusive_forward_list_test.cc",
     ],
     srcs: [
         "arch/instruction_set_test.cc",
@@ -288,10 +357,35 @@ art_cc_test {
     shared_libs: [
         "libbase",
     ],
+    static_libs: [
+        "libgmock",
+    ],
+}
+
+// Version of ART gtest `art_libartbase_tests` bundled with the ART APEX on target.
+// TODO(b/192274705): Remove this module when the migration to standalone ART gtests is complete.
+art_cc_test {
+    name: "art_libartbase_tests",
+    defaults: [
+        "art_gtest_defaults",
+        "art_libartbase_tests_defaults",
+    ],
+}
+
+// Standalone version of ART gtest `art_libartbase_tests`, not bundled with the ART APEX on target.
+art_cc_test {
+    name: "art_standalone_libartbase_tests",
+    defaults: [
+        "art_standalone_gtest_defaults",
+        "art_libartbase_tests_defaults",
+    ],
+    data: [":generate-boot-image"],
+    test_config_template: ":art-gtests-target-standalone-with-boot-image-template",
 }
 
 cc_library_headers {
     name: "art_libartbase_headers",
+    defaults: ["art_defaults"],
     host_supported: true,
     export_include_dirs: ["."],
     shared_libs: ["libbase"],
@@ -301,5 +395,4 @@ cc_library_headers {
         "com.android.art",
         "com.android.art.debug",
     ],
-    min_sdk_version: "S",
 }

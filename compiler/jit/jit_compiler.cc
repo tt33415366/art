@@ -68,6 +68,10 @@ void JitCompiler::ParseCompilerOptions() {
     compiler_options_->SetDebuggable(runtime->IsJavaDebuggable());
   }
 
+  compiler_options_->implicit_null_checks_ = runtime->GetImplicitNullChecks();
+  compiler_options_->implicit_so_checks_ = runtime->GetImplicitStackOverflowChecks();
+  compiler_options_->implicit_suspend_checks_ = runtime->GetImplicitSuspendChecks();
+
   const InstructionSet instruction_set = compiler_options_->GetInstructionSet();
   if (kRuntimeISA == InstructionSet::kArm) {
     DCHECK_EQ(instruction_set, InstructionSet::kThumb2);
@@ -188,7 +192,7 @@ bool JitCompiler::CompileMethod(
                                           : "Compiling baseline",
                                   &logger);
     JitCodeCache* const code_cache = runtime->GetJit()->GetCodeCache();
-    metrics::AutoTimer timer{runtime->GetMetrics()->JitMethodCompileTime()};
+    metrics::AutoTimer timer{runtime->GetMetrics()->JitMethodCompileTotalTime()};
     success = compiler_->JitCompile(
         self, code_cache, region, method, compilation_kind, jit_logger_.get());
     uint64_t duration_us = timer.Stop();
@@ -206,6 +210,10 @@ bool JitCompiler::CompileMethod(
 
   runtime->GetJit()->AddTimingLogger(logger);
   return success;
+}
+
+bool JitCompiler::IsBaselineCompiler() const {
+  return compiler_options_->IsBaseline();
 }
 
 }  // namespace jit

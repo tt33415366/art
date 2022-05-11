@@ -82,6 +82,11 @@ NO_RETURN static void Usage(const char* fmt, ...) {
   UsageError("    --api-flags=<filename>:");
   UsageError("        CSV file with signatures of methods/fields and their respective flags");
   UsageError("");
+  UsageError("    --max-hiddenapi-level=<max-target-*>:");
+  UsageError("        the maximum hidden api level for APIs. If an API was originally restricted");
+  UsageError("        to a newer sdk, turn it into a regular unsupported API instead.");
+  UsageError("        instead. The full list of valid values is in hiddenapi_flags.h");
+  UsageError("");
   UsageError("    --no-force-assign-all:");
   UsageError("        Disable check that all dex entries have been assigned a flag");
   UsageError("");
@@ -99,6 +104,10 @@ NO_RETURN static void Usage(const char* fmt, ...) {
   UsageError("        classpath. Multiple classpaths can be specified");
   UsageError("");
   UsageError("    --out-api-flags=<filename>: output file for a CSV file with API flags");
+  UsageError("    --fragment: the input is only a fragment of the whole bootclasspath and may");
+  UsageError("      not include a complete set of classes. That requires the tool to ignore");
+  UsageError("      missing classes and members. Specify --verbose to see the warnings.");
+  UsageError("    --verbose: output all warnings, even when --fragment is specified.");
   UsageError("");
 
   exit(EXIT_FAILURE);
@@ -448,8 +457,8 @@ class HierarchyClass final {
 
 class Hierarchy final {
  public:
-  explicit Hierarchy(ClassPath& classpath) : classpath_(classpath) {
-    BuildClassHierarchy();
+  Hierarchy(ClassPath& classpath, bool fragment, bool verbose) : classpath_(classpath) {
+    BuildClassHierarchy(fragment, verbose);
   }
 
   // Perform an operation for each member of the hierarchy which could potentially
@@ -516,7 +525,7 @@ class Hierarchy final {
     }
   }
 
-  void BuildClassHierarchy() {
+  void BuildClassHierarchy(bool fragment, bool verbose) {
     // Create one HierarchyClass entry in `classes_` per class descriptor
     // and add all DexClass objects with the same descriptor to that entry.
     classpath_.ForEachDexClass([this](const DexClass& klass) {
@@ -536,12 +545,16 @@ class Hierarchy final {
 
       auto add_extends = [&](const std::string_view& extends_desc) {
         HierarchyClass* extends = FindClass(extends_desc);
-        CHECK(extends != nullptr)
-          << "Superclass/interface " << extends_desc
-          << " of class " << dex_klass.GetDescriptor() << " from dex file \""
-          << dex_klass.GetDexFile().GetLocation() << "\" was not found. "
-          << "Either it is missing or it appears later in the classpath spec.";
-        klass.AddExtends(*extends);
+        if (extends != nullptr) {
+          klass.AddExtends(*extends);
+        } else if (!fragment || verbose) {
+          auto severity = verbose ? ::android::base::WARNING : ::android::base::FATAL;
+          LOG(severity)
+              << "Superclass/interface " << extends_desc
+              << " of class " << dex_klass.GetDescriptor() << " from dex file \""
+              << dex_klass.GetDexFile().GetLocation() << "\" was not found. "
+              << "Either it is missing or it appears later in the classpath spec.";
+        }
       };
 
       add_extends(dex_klass.GetSuperclassDescriptor());
@@ -908,6 +921,9 @@ class HiddenApi final {
             api_flags_path_ = std::string(option.substr(strlen("--api-flags=")));
           } else if (option == "--no-force-assign-all") {
             force_assign_all_ = false;
+          } else if (StartsWith(option, "--max-hiddenapi-level=")) {
+            std::string value = std::string(option.substr(strlen("--max-hiddenapi-level=")));
+            max_hiddenapi_level_ = ApiList::FromName(value);
           } else {
             Usage("Unknown argument '%s'", raw_option);
           }
@@ -942,6 +958,10 @@ class HiddenApi final {
                 ApiStubs::Kind::kCorePlatformApi));
           } else if (StartsWith(option, "--out-api-flags=")) {
             api_flags_path_ = std::string(option.substr(strlen("--out-api-flags=")));
+          } else if (option == "--fragment") {
+            fragment_ = true;
+          } else if (option == "--verbose") {
+            verbose_ = true;
           } else {
             Usage("Unknown argument '%s'", raw_option);
           }
@@ -966,6 +986,7 @@ class HiddenApi final {
     std::map<std::string, ApiList> api_list = OpenApiFile(api_flags_path_);
 
     // Iterate over input dex files and insert HiddenapiClassData sections.
+    bool max_hiddenapi_level_error = false;
     for (size_t i = 0; i < boot_dex_paths_.size(); ++i) {
       const std::string& input_path = boot_dex_paths_[i];
       const std::string& output_path = output_dex_paths_[i];
@@ -982,11 +1003,22 @@ class HiddenApi final {
         builder.BeginClassDef(boot_class.GetClassDefIndex());
         if (boot_class.GetData() != nullptr) {
           auto fn_shared = [&](const DexMember& boot_member) {
-            auto it = api_list.find(boot_member.GetApiEntry());
+            auto signature = boot_member.GetApiEntry();
+            auto it = api_list.find(signature);
             bool api_list_found = (it != api_list.end());
             CHECK(!force_assign_all_ || api_list_found)
-                << "Could not find hiddenapi flags for dex entry: " << boot_member.GetApiEntry();
-            builder.WriteFlags(api_list_found ? it->second : ApiList::Sdk());
+                << "Could not find hiddenapi flags for dex entry: " << signature;
+            if (api_list_found && it->second.GetIntValue() > max_hiddenapi_level_.GetIntValue()) {
+              ApiList without_domain(it->second.GetIntValue());
+              LOG(ERROR) << "Hidden api flag " << without_domain
+                         << " for member " << signature
+                         << " in " << input_path
+                         << " exceeds maximum allowable flag "
+                         << max_hiddenapi_level_;
+              max_hiddenapi_level_error = true;
+            } else {
+              builder.WriteFlags(api_list_found ? it->second : ApiList::Sdk());
+            }
           };
           auto fn_field = [&](const ClassAccessor::Field& boot_field) {
             fn_shared(DexMember(boot_class, boot_field));
@@ -1002,6 +1034,18 @@ class HiddenApi final {
       DexFileEditor dex_editor(input_dex, builder.GetData());
       dex_editor.Encode();
       dex_editor.WriteTo(output_path);
+    }
+
+    if (max_hiddenapi_level_error) {
+      LOG(ERROR)
+          << "Some hidden API flags could not be encoded within the dex file as"
+          << " they exceed the maximum allowable level of " << max_hiddenapi_level_
+          << " which is determined by the min_sdk_version of the source Java library.\n"
+          << "The affected DEX members are reported in previous error messages.\n"
+          << "The unsupported flags are being generated from the maxTargetSdk property"
+          << " of the member's @UnsupportedAppUsage annotation.\n"
+          << "See b/172453495 and/or contact art-team@ or compat-team@ for more info.\n";
+      exit(EXIT_FAILURE);
     }
   }
 
@@ -1027,7 +1071,9 @@ class HiddenApi final {
 
       ApiList membership;
 
-      bool success = ApiList::FromNames(values.begin() + 1, values.end(), &membership);
+      std::vector<std::string>::iterator apiListBegin = values.begin() + 1;
+      std::vector<std::string>::iterator apiListEnd = values.end();
+      bool success = ApiList::FromNames(apiListBegin, apiListEnd, &membership);
       CHECK(success) << path << ":" << line_number
           << ": Some flags were not recognized: " << line << kErrorHelp;
       CHECK(membership.IsValid()) << path << ":" << line_number
@@ -1064,7 +1110,7 @@ class HiddenApi final {
     ClassPath boot_classpath(boot_dex_paths_,
                              /* open_writable= */ false,
                              /* ignore_empty= */ false);
-    Hierarchy boot_hierarchy(boot_classpath);
+    Hierarchy boot_hierarchy(boot_classpath, fragment_, verbose_);
 
     // Mark all boot dex members private.
     boot_classpath.ForEachDexMember([&](const DexMember& boot_member) {
@@ -1081,7 +1127,7 @@ class HiddenApi final {
       boot_members[boot_member.GetApiEntry()] = {kExcludeFromOutput};
     });
 
-    // Resolve each SDK dex member against the framework and mark it white.
+    // Resolve each SDK dex member against the framework and mark it as SDK.
     for (const auto& cp_entry : stub_classpaths_) {
       // Ignore any empty stub jars as it just means that they provide no APIs
       // for the current kind, e.g. framework-sdkextensions does not provide
@@ -1089,7 +1135,7 @@ class HiddenApi final {
       ClassPath stub_classpath(android::base::Split(cp_entry.first, ":"),
                                /* open_writable= */ false,
                                /* ignore_empty= */ true);
-      Hierarchy stub_hierarchy(stub_classpath);
+      Hierarchy stub_hierarchy(stub_classpath, fragment_, verbose_);
       const ApiStubs::Kind stub_api = cp_entry.second;
 
       stub_classpath.ForEachDexMember(
@@ -1113,8 +1159,10 @@ class HiddenApi final {
     }
 
     // Print errors.
-    for (const std::string& str : unresolved) {
-      LOG(WARNING) << "unresolved: " << str;
+    if (!fragment_ || verbose_) {
+      for (const std::string& str : unresolved) {
+        LOG(WARNING) << "unresolved: " << str;
+      }
     }
 
     // Write into public/private API files.
@@ -1156,6 +1204,20 @@ class HiddenApi final {
   // Path to CSV file containing the list of API members and their flags.
   // This could be both an input and output path.
   std::string api_flags_path_;
+
+  // Maximum allowable hidden API level that can be encoded into the dex file.
+  //
+  // By default this returns a GetIntValue() that is guaranteed to be bigger than
+  // any valid value returned by GetIntValue().
+  ApiList max_hiddenapi_level_;
+
+  // Whether the input is only a fragment of the whole bootclasspath and may
+  // not include a complete set of classes. That requires the tool to ignore missing
+  // classes and members.
+  bool fragment_ = false;
+
+  // Whether to output all warnings, even when `fragment_` is set.
+  bool verbose_ = false;
 };
 
 }  // namespace hiddenapi

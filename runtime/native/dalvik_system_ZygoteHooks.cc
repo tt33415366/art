@@ -197,9 +197,7 @@ static uint32_t EnableDebugFeatures(uint32_t runtime_flags) {
   if ((runtime_flags & DEBUG_ALWAYS_JIT) != 0) {
     jit::JitOptions* jit_options = runtime->GetJITOptions();
     CHECK(jit_options != nullptr);
-    Runtime::Current()->DoAndMaybeSwitchInterpreter([=]() {
-        jit_options->SetJitAtFirstUse();
-    });
+    jit_options->SetJitAtFirstUse();
     runtime_flags &= ~DEBUG_ALWAYS_JIT;
   }
 
@@ -318,10 +316,10 @@ static void ZygoteHooks_nativePostForkChild(JNIEnv* env,
     runtime_flags &= ~DISABLE_VERIFIER;
   }
 
-  if ((runtime_flags & ONLY_USE_TRUSTED_OAT_FILES) != 0 || is_system_server) {
-    runtime->GetOatFileManager().SetOnlyUseTrustedOatFiles();
-    runtime_flags &= ~ONLY_USE_TRUSTED_OAT_FILES;
+  if ((runtime_flags & ONLY_USE_TRUSTED_OAT_FILES) == 0 && !is_system_server) {
+    runtime->GetOatFileManager().ClearOnlyUseTrustedOatFiles();
   }
+  runtime_flags &= ~ONLY_USE_TRUSTED_OAT_FILES;
 
   api_enforcement_policy = hiddenapi::EnforcementPolicyFromInt(
       (runtime_flags & HIDDEN_API_ENFORCEMENT_POLICY_MASK) >> API_ENFORCEMENT_POLICY_SHIFT);
@@ -442,11 +440,17 @@ static void ZygoteHooks_stopZygoteNoThreadCreation(JNIEnv* env ATTRIBUTE_UNUSED,
   Runtime::Current()->SetZygoteNoThreadSection(false);
 }
 
-static jboolean ZygoteHooks_nativeZygoteJitEnabled(JNIEnv* env ATTRIBUTE_UNUSED,
-                                                   jclass klass ATTRIBUTE_UNUSED) {
+static jboolean ZygoteHooks_nativeZygoteLongSuspendOk(JNIEnv* env ATTRIBUTE_UNUSED,
+                                                    jclass klass ATTRIBUTE_UNUSED) {
+  // Indefinite thread suspensions are not OK if we're supposed to be JIT-compiling for other
+  // processes.  We only care about JIT compilation that affects other processes.  The zygote
+  // itself doesn't run appreciable amounts of Java code when running single-threaded, so
+  // suspending the JIT in non-jit-zygote mode is OK.
+  // TODO: Make this potentially return true once we're done with JIT compilation in JIT Zygote.
   // Only called in zygote. Thus static is OK here.
-  static bool result = jit::Jit::InZygoteUsingJit();
-  return result ? JNI_TRUE : JNI_FALSE;
+  static bool isJitZygote = jit::Jit::InZygoteUsingJit();
+  static bool explicitlyDisabled = Runtime::Current()->IsJavaZygoteForkLoopRequired();
+  return (isJitZygote || explicitlyDisabled) ? JNI_FALSE : JNI_TRUE;
 }
 
 
@@ -455,7 +459,7 @@ static JNINativeMethod gMethods[] = {
   NATIVE_METHOD(ZygoteHooks, nativePostZygoteFork, "()V"),
   NATIVE_METHOD(ZygoteHooks, nativePostForkSystemServer, "(I)V"),
   NATIVE_METHOD(ZygoteHooks, nativePostForkChild, "(JIZZLjava/lang/String;)V"),
-  NATIVE_METHOD(ZygoteHooks, nativeZygoteJitEnabled, "()Z"),
+  NATIVE_METHOD(ZygoteHooks, nativeZygoteLongSuspendOk, "()Z"),
   NATIVE_METHOD(ZygoteHooks, startZygoteNoThreadCreation, "()V"),
   NATIVE_METHOD(ZygoteHooks, stopZygoteNoThreadCreation, "()V"),
 };

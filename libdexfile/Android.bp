@@ -27,6 +27,9 @@ cc_defaults {
     name: "libdexfile_defaults",
     defaults: ["art_defaults"],
     host_supported: true,
+    tidy_timeout_srcs: [
+        "dex/dex_file_verifier.cc",
+    ],
     srcs: [
         "dex/art_dex_file_loader.cc",
         "dex/compact_dex_file.cc",
@@ -162,6 +165,15 @@ gensrcs {
 
 art_cc_library {
     name: "libdexfile",
+    visibility: [
+        // Allow libdexfile_support users to list this as a runtime_libs
+        // dependency - see comment for libdexfile_support. It shouldn't be used
+        // for any other purpose.
+        "//external/perfetto",
+        "//system/core/debuggerd",
+        "//system/extras/simpleperf",
+        "//system/unwinding/libunwindstack",
+    ],
     defaults: [
         "libdexfile_defaults",
         "libart_nativeunwind_defaults",
@@ -249,16 +261,12 @@ art_cc_library {
         // stubs, and libartd depends on this.
         "com.android.art",
     ],
-    stubs: {
-        symbol_file: "libdexfile.map.txt",
-        versions: ["1"],
-    },
 }
 
-art_cc_test {
-    name: "art_libdexfile_tests",
-    defaults: [
-        "art_gtest_defaults",
+art_cc_defaults {
+    name: "art_libdexfile_tests_defaults",
+    tidy_timeout_srcs: [
+        "dex/dex_file_verifier_test.cc",
     ],
     srcs: [
         "dex/art_dex_file_loader_test.cc",
@@ -290,8 +298,29 @@ art_cc_test {
     ],
 }
 
+// Version of ART gtest `art_libdexfile_tests` bundled with the ART APEX on target.
+// TODO(b/192274705): Remove this module when the migration to standalone ART gtests is complete.
+art_cc_test {
+    name: "art_libdexfile_tests",
+    defaults: [
+        "art_gtest_defaults",
+        "art_libdexfile_tests_defaults",
+    ],
+}
+
+// Standalone version of ART gtest `art_libdexfile_tests`, not bundled with the ART APEX on target.
+art_cc_test {
+    name: "art_standalone_libdexfile_tests",
+    defaults: [
+        "art_standalone_gtest_defaults",
+        "art_libdexfile_tests_defaults",
+    ],
+    test_config: "art_standalone_libdexfile_tests.xml",
+}
+
 cc_library_headers {
     name: "libdexfile_external_headers",
+    defaults: ["art_defaults"],
     visibility: ["//visibility:public"],
     host_supported: true,
     header_libs: ["libbase_headers"],
@@ -300,6 +329,9 @@ cc_library_headers {
 
     target: {
         windows: {
+            enabled: true,
+        },
+        darwin: {
             enabled: true,
         },
     },
@@ -311,12 +343,12 @@ cc_library_headers {
         "com.android.media",
         "com.android.runtime",
     ],
-    min_sdk_version: "S",
 }
 
 // Make dex_instruction_list.h available for tools/jvmti-agents/titrace
 cc_library_headers {
     name: "libdexfile_all_headers",
+    defaults: ["art_defaults"],
     visibility: ["//art:__subpackages__"],
     host_supported: true,
     export_include_dirs: ["."],
@@ -325,14 +357,12 @@ cc_library_headers {
         "com.android.art",
         "com.android.art.debug",
     ],
-    min_sdk_version: "S",
 }
 
-art_cc_test {
-    name: "art_libdexfile_external_tests",
+art_cc_defaults {
+    name: "art_libdexfile_external_tests_defaults",
     defaults: [
         "art_module_source_build_defaults",
-        "art_test_defaults",
     ],
     test_suites: ["general-tests"],
     srcs: [
@@ -349,6 +379,42 @@ art_cc_test {
     ],
 }
 
+// Version of ART gtest `art_libdexfile_external_tests` bundled with the ART APEX on target.
+// TODO(b/192274705): Remove this module when the migration to standalone ART gtests is complete.
+art_cc_test {
+    name: "art_libdexfile_external_tests",
+    defaults: [
+        "art_test_defaults",
+        "art_libdexfile_external_tests_defaults",
+    ],
+}
+
+// Standalone version of ART gtest `art_libdexfile_external_tests`, not bundled with the ART APEX on
+// target.
+art_cc_test {
+    name: "art_standalone_libdexfile_external_tests",
+    defaults: [
+        "art_standalone_test_defaults",
+        "art_libdexfile_external_tests_defaults",
+    ],
+
+    // Support multilib variants (using different suffix per sub-architecture), which is needed on
+    // build targets with secondary architectures, as the CTS test suite packaging logic flattens
+    // all test artifacts into a single `testcases` directory.
+    compile_multilib: "both",
+    multilib: {
+        lib32: {
+            suffix: "32",
+        },
+        lib64: {
+            suffix: "64",
+        },
+    },
+
+    test_config_template: ":art-gtests-target-standalone-cts-template",
+    test_suites: ["cts"], // For backed-by API coverage.
+}
+
 // Support library with a C++ API for accessing the libdexfile API for external
 // (non-ART) users.
 //
@@ -356,8 +422,17 @@ art_cc_test {
 // dependency on dex file logic. It is therefore safe to use from binaries
 // compiled without dex file support, given they won't encounter any dex file
 // stack frames.
+//
+// IMPORTANT: When adding a static_libs dependency on this library, please
+// remember to also add a corresponding
+//
+//     runtime_libs: ["libdexfile"],
+//
+// That is necessary since Soong doesn't propagate dependencies transitively for
+// static libraries (b/169779783).
 art_cc_library_static {
     name: "libdexfile_support",
+    defaults: ["art_defaults"],
     visibility: ["//visibility:public"],
     host_supported: true,
     srcs: [
@@ -379,16 +454,13 @@ art_cc_library_static {
         "com.android.media.swcodec",
         "com.android.runtime",
     ],
-    min_sdk_version: "S",
 }
 
-art_cc_test {
-    name: "art_libdexfile_support_tests",
+art_cc_defaults {
+    name: "art_libdexfile_support_tests_defaults",
     defaults: [
         "art_module_source_build_defaults",
-        "art_test_defaults",
     ],
-    host_supported: true,
     test_suites: ["general-tests"],
     srcs: [
         "external/dex_file_supp_test.cc",
@@ -404,8 +476,47 @@ art_cc_test {
     ],
 }
 
+// Version of ART gtest `art_libdexfile_support_tests` bundled with the ART APEX on target.
+// TODO(b/192274705): Remove this module when the migration to standalone ART gtests is complete.
+art_cc_test {
+    name: "art_libdexfile_support_tests",
+    host_supported: true,
+    defaults: [
+        "art_test_defaults",
+        "art_libdexfile_support_tests_defaults",
+    ],
+}
+
+// Standalone version of ART gtest `art_libdexfile_support_tests`, not bundled with the ART APEX on
+// target.
+art_cc_test {
+    name: "art_standalone_libdexfile_support_tests",
+    defaults: [
+        "art_standalone_test_defaults",
+        "art_libdexfile_support_tests_defaults",
+    ],
+
+    // Support multilib variants (using different suffix per sub-architecture), which is needed on
+    // build targets with secondary architectures, as the MTS test suite packaging logic flattens
+    // all test artifacts into a single `testcases` directory.
+    compile_multilib: "both",
+    multilib: {
+        lib32: {
+            suffix: "32",
+        },
+        lib64: {
+            suffix: "64",
+        },
+    },
+
+    test_suites: [
+        "mts-art",
+    ],
+}
+
 cc_library_static {
     name: "libdexfile_support_static",
+    defaults: ["art_defaults"],
     host_supported: true,
     srcs: [
         "external/dex_file_supp.cc",
