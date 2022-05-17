@@ -1,6 +1,6 @@
 {
   "name": "com.android.art",
-  "version": 330450000,
+  "version": 330451000,
   "provideNativeLibs": [
     "libjdwp.so"
   ],
