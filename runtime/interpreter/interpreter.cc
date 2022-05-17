@@ -286,7 +286,6 @@ static inline JValue Execute(
       }
       if (UNLIKELY(self->IsExceptionPending())) {
         instrumentation->MethodUnwindEvent(self,
-                                           shadow_frame.GetThisObject(accessor.InsSize()),
                                            method,
                                            0);
         JValue ret = JValue();
@@ -476,6 +475,7 @@ void EnterInterpreterFromDeoptimize(Thread* self,
     const uint32_t dex_pc = shadow_frame->GetDexPC();
     uint32_t new_dex_pc = dex_pc;
     if (UNLIKELY(self->IsExceptionPending())) {
+      DCHECK(self->GetException() != Thread::GetDeoptimizationException());
       // If we deoptimize from the QuickExceptionHandler, we already reported the exception throw
       // event to the instrumentation. Skip throw listeners for the first frame. The deopt check
       // should happen after the throw listener is called as throw listener can trigger a

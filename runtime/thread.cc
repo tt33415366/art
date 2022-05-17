@@ -272,6 +272,7 @@ void Thread::PushDeoptimizationContext(const JValue& return_value,
                                        ObjPtr<mirror::Throwable> exception,
                                        bool from_code,
                                        DeoptimizationMethodType method_type) {
+  DCHECK(exception != Thread::GetDeoptimizationException());
   DeoptimizationContextRecord* record = new DeoptimizationContextRecord(
       return_value,
       is_reference,
@@ -1979,6 +1980,9 @@ void Thread::DumpState(std::ostream& os, const Thread* thread, pid_t tid) {
        << " " << thread->GetState();
     if (thread->IsStillStarting()) {
       os << " (still starting up)";
+    }
+    if (thread->tls32_.disable_thread_flip_count != 0) {
+      os << " DisableFlipCount = " << thread->tls32_.disable_thread_flip_count;
     }
     os << "\n";
   } else {
@@ -3696,6 +3700,9 @@ void Thread::QuickDeliverException() {
   ObjPtr<mirror::Throwable> exception = GetException();
   CHECK(exception != nullptr);
   if (exception == GetDeoptimizationException()) {
+    // This wasn't a real exception, so just clear it here. If there was an actual exception it
+    // will be recorded in the DeoptimizationContext and it will be restored later.
+    ClearException();
     artDeoptimize(this);
     UNREACHABLE();
   }
