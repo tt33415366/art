@@ -1041,18 +1041,7 @@ extern "C" const void* artInstrumentationMethodEntryFromCode(ArtMethod* method,
   // This will get the entry point either from the oat file, the JIT or the appropriate bridge
   // method if none of those can be found.
   result = instrumentation->GetCodeForInvoke(method);
-  jit::Jit* jit = Runtime::Current()->GetJit();
   DCHECK_NE(result, GetQuickInstrumentationEntryPoint()) << method->PrettyMethod();
-  DCHECK(jit == nullptr ||
-         // Native methods come through here in Interpreter entrypoints. We might not have
-         // disabled jit-gc but that is fine since we won't return jit-code for native methods.
-         method->IsNative() ||
-         !jit->GetCodeCache()->GetGarbageCollectCode());
-  DCHECK(!method->IsNative() ||
-         jit == nullptr ||
-         !jit->GetCodeCache()->ContainsPc(result))
-      << method->PrettyMethod() << " code will jump to possibly cleaned up jit code!";
-
   bool interpreter_entry = Runtime::Current()->GetClassLinker()->IsQuickToInterpreterBridge(result);
   bool is_static = method->IsStatic();
   uint32_t shorty_len;
@@ -2717,6 +2706,7 @@ extern "C" int artMethodExitHook(Thread* self,
     if (is_ref) {
       // Restore the return value if it's a reference since it might have moved.
       *reinterpret_cast<mirror::Object**>(gpr_result) = res.Get();
+      return_value.SetL(res.Get());
     }
   }
 
