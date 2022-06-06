@@ -217,6 +217,8 @@ class Checker:
       return False, 'Could not find %s'
     if fs_object.is_dir:
       return False, '%s is a directory'
+    if fs_object.is_symlink:
+      return False, '%s is a symlink'
     return True, ''
 
   def is_dir(self, path):
@@ -616,6 +618,7 @@ class DebugChecker:
     self._checker.check_native_library('libartd-compiler')
     self._checker.check_native_library('libartd-dexlayout')
     self._checker.check_native_library('libartd-disassembler')
+    self._checker.check_native_library('libartserviced')
     self._checker.check_native_library('libopenjdkjvmd')
     self._checker.check_native_library('libopenjdkjvmtid')
     self._checker.check_native_library('libprofiled')
