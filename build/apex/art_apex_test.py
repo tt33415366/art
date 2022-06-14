@@ -274,17 +274,22 @@ class Checker:
   def check_art_test_executable(self, filename, multilib=None):
     dirs = self.arch_dirs_for_path(ART_TEST_DIR, multilib)
     if not dirs:
-      self.fail('ART test binary missing: %s', filename)
+      self.fail('Directories for ART test binary missing: %s', filename)
+      return
     for dir in dirs:
       test_path = '%s/%s' % (dir, filename)
       self._expected_file_globs.add(test_path)
-      if not self._provider.get(test_path).is_exec:
+      file_obj = self._provider.get(test_path)
+      if not file_obj:
+        self.fail('ART test binary missing: %s', test_path)
+      elif not file_obj.is_exec:
         self.fail('%s is not executable', test_path)
 
   def check_art_test_data(self, filename):
     dirs = self.arch_dirs_for_path(ART_TEST_DIR)
     if not dirs:
-      self.fail('ART test data missing: %s', filename)
+      self.fail('Directories for ART test data missing: %s', filename)
+      return
     for dir in dirs:
       if not self.check_file('%s/%s' % (dir, filename)):
         return
@@ -473,7 +478,6 @@ class ReleaseChecker:
     self._checker.check_native_library('libart-disassembler')
     self._checker.check_native_library('libartbase')
     self._checker.check_native_library('libartpalette')
-    self._checker.check_native_library('libartservice')
     self._checker.check_native_library('libarttools')
     self._checker.check_native_library('libdt_fd_forward')
     self._checker.check_native_library('libopenjdkjvm')
@@ -552,6 +556,7 @@ class ReleaseTargetChecker:
     self._checker.check_symlinked_multilib_executable('dex2oat')
 
     # Check internal libraries for ART.
+    self._checker.check_native_library('libartservice')
     self._checker.check_native_library('libperfetto_hprof')
     self._checker.check_prefer64_library('artd-aidl-ndk')
 
@@ -618,7 +623,6 @@ class DebugChecker:
     self._checker.check_native_library('libartd-compiler')
     self._checker.check_native_library('libartd-dexlayout')
     self._checker.check_native_library('libartd-disassembler')
-    self._checker.check_native_library('libartserviced')
     self._checker.check_native_library('libopenjdkjvmd')
     self._checker.check_native_library('libopenjdkjvmtid')
     self._checker.check_native_library('libprofiled')
@@ -640,6 +644,7 @@ class DebugTargetChecker:
     self._checker.check_symlinked_multilib_executable('dex2oatd')
 
     # Check ART internal libraries.
+    self._checker.check_native_library('libartserviced')
     self._checker.check_native_library('libperfetto_hprofd')
 
     # Check internal native library dependencies.
@@ -676,6 +681,7 @@ class TestingTargetChecker:
     self._checker.check_art_test_executable('art_dexlayout_tests')
     self._checker.check_art_test_executable('art_dexlist_tests')
     self._checker.check_art_test_executable('art_dexoptanalyzer_tests')
+    self._checker.check_art_test_executable('art_disassembler_tests')
     self._checker.check_art_test_executable('art_imgdiag_tests')
     self._checker.check_art_test_executable('art_libartbase_tests')
     self._checker.check_art_test_executable('art_libartpalette_tests')
