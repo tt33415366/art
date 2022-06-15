@@ -51,6 +51,7 @@
 #include "dex/dex_file_loader.h"
 #include "dex/primitive.h"
 #include "events-inl.h"
+#include "fixed_up_dex_file.h"
 #include "gc/heap-visit-objects-inl.h"
 #include "gc/heap.h"
 #include "gc_root.h"
@@ -367,7 +368,7 @@ struct ClassCallback : public art::ClassLoadCallback {
       heap->IncrementDisableMovingGC(self);
     }
     {
-      art::ScopedThreadSuspension sts(self, art::ThreadState::kWaitingForVisitObjects);
+      art::ScopedThreadSuspension sts(self, art::kWaitingForVisitObjects);
       art::ScopedSuspendAll ssa("FixupTempClass");
 
       art::mirror::Class* input = temp_klass.Get();

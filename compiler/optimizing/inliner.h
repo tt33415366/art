@@ -70,9 +70,7 @@ class HInliner : public HOptimization {
     kInlineCacheMissingTypes = 5
   };
 
-  // We set `did_set_always_throws` as true if we analyzed `invoke_instruction` and it always
-  // throws.
-  bool TryInline(HInvoke* invoke_instruction, /*inout*/ bool* did_set_always_throws);
+  bool TryInline(HInvoke* invoke_instruction);
 
   // Try to inline `resolved_method` in place of `invoke_instruction`. `do_rtp` is whether
   // reference type propagation can run after the inlining. If the inlining is successful, this

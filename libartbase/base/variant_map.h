@@ -125,7 +125,7 @@ struct VariantMapKeyRaw {
  protected:
   // Avoid the object slicing problem; use Clone() instead.
   VariantMapKeyRaw(const VariantMapKeyRaw&) = default;
-  VariantMapKeyRaw(VariantMapKeyRaw&&) noexcept = default;
+  VariantMapKeyRaw(VariantMapKeyRaw&&) = default;
 
  private:
   size_t key_counter_;  // Runtime type ID. Unique each time a new type is reified.
@@ -179,7 +179,7 @@ struct VariantMapKey : detail::VariantMapKeyRaw {
   }
 
   VariantMapKey(const VariantMapKey&) = default;
-  VariantMapKey(VariantMapKey&&) noexcept = default;
+  VariantMapKey(VariantMapKey&&) = default;
 
   template <typename Base, template <typename TV> class TKey> friend struct VariantMap;
 
@@ -372,12 +372,12 @@ struct VariantMap {
   }
 
   // Create a new map by moving an existing map into this one. The other map becomes empty.
-  VariantMap(VariantMap&& other) noexcept {
+  VariantMap(VariantMap&& other) {
     operator=(std::forward<VariantMap>(other));
   }
 
   // Move the existing map's key/value pairs into this one. The other map becomes empty.
-  VariantMap& operator=(VariantMap&& other) noexcept {
+  VariantMap& operator=(VariantMap&& other) {
     if (this != &other) {
       Clear();
       storage_map_.swap(other.storage_map_);
@@ -395,7 +395,8 @@ struct VariantMap {
 
   template <typename TK, typename TValue, typename ... Rest>
   void InitializeParameters(const TK& key, const TValue& value, const Rest& ... rest) {
-    static_assert(std::is_same_v<TK, TKey<TValue>>, "The 0th/2nd/4th/etc parameters must be a key");
+    static_assert(
+        std::is_same<TK, TKey<TValue>>::value, "The 0th/2nd/4th/etc parameters must be a key");
 
     const TKey<TValue>& key_refined = key;
 
@@ -458,7 +459,7 @@ struct VariantMap {
 
   template <typename TValue>
   static void StaticAssertKeyType() {
-    static_assert(std::is_base_of_v<VariantMapKey<TValue>, TKey<TValue>>,
+    static_assert(std::is_base_of<VariantMapKey<TValue>, TKey<TValue>>::value,
                   "The provided key type (TKey) must be a subclass of VariantMapKey");
   }
 

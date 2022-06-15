@@ -69,9 +69,7 @@ extern "C" const void* artFindNativeMethodRunnable(Thread* self)
     // Note that the BSS also contains entries used for super calls. Given we
     // only deal with invokestatic in this code path, we don't need to adjust
     // the method index.
-    MaybeUpdateBssMethodEntry(target_method,
-                              MethodReference(method->GetDexFile(), method_idx),
-                              GetCalleeSaveOuterMethod(self, CalleeSaveType::kSaveRefsAndArgs));
+    MaybeUpdateBssMethodEntry(target_method, MethodReference(method->GetDexFile(), method_idx));
 
     // These calls do not have an explicit class initialization check, so do the check now.
     // (When going through the stub or GenericJNI, the check was already done.)
@@ -110,11 +108,9 @@ extern "C" const void* artFindNativeMethodRunnable(Thread* self)
   // Lookup symbol address for method, on failure we'll return null with an exception set,
   // otherwise we return the address of the method we found.
   JavaVMExt* vm = down_cast<JNIEnvExt*>(self->GetJniEnv())->GetVm();
-  std::string error_msg;
-  native_code = vm->FindCodeForNativeMethod(method, &error_msg, /*can_suspend=*/ true);
+  native_code = vm->FindCodeForNativeMethod(method);
   if (native_code == nullptr) {
-    LOG(ERROR) << error_msg;
-    self->ThrowNewException("Ljava/lang/UnsatisfiedLinkError;", error_msg.c_str());
+    self->AssertPendingException();
     return nullptr;
   }
 
@@ -171,7 +167,7 @@ extern "C" size_t artCriticalNativeFrameSize(ArtMethod* method, uintptr_t caller
     uint32_t dex_pc = inline_infos.empty() ? stack_map.GetDexPc() : inline_infos.back().GetDexPc();
 
     // Get the callee shorty.
-    const DexFile* dex_file = caller->GetDexFile();
+    const DexFile* dex_file = method->GetDexFile();
     uint32_t method_idx = GetInvokeStaticMethodIndex(caller, dex_pc);
     uint32_t shorty_len;
     const char* shorty = dex_file->GetMethodShorty(dex_file->GetMethodId(method_idx), &shorty_len);

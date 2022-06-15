@@ -311,9 +311,7 @@ public class Main {
       int i = a.i;
       fail();
     } catch (NullPointerException ex) {
-      assertEquals(
-          "Attempt to read from field 'int A.i' on a null object reference in method 'void Main.nullPointers()'",
-          ex.getMessage());
+      assertEquals("Attempt to read from field 'int A.i' on a null object reference", ex.getMessage());
     }
 
     // Write field.
@@ -322,9 +320,7 @@ public class Main {
       a.i = 1;
       fail();
     } catch (NullPointerException ex) {
-      assertEquals(
-          "Attempt to write to field 'int A.i' on a null object reference in method 'void Main.nullPointers()'",
-          ex.getMessage());
+      assertEquals("Attempt to write to field 'int A.i' on a null object reference", ex.getMessage());
     }
 
     // Read array.
@@ -465,7 +461,7 @@ public class Main {
       "hello there".substring(9,14);
       fail();
     } catch (StringIndexOutOfBoundsException ex) {
-      assertEquals("begin 9, end 14, length 11", ex.getMessage());
+      assertEquals("length=11; index=14", ex.getMessage());
     }
   }
 }

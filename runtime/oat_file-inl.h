@@ -21,12 +21,11 @@
 
 #include "base/utils.h"
 #include "oat_quick_method_header.h"
-#include "runtime-inl.h"
 
 namespace art {
 
 inline const OatQuickMethodHeader* OatFile::OatMethod::GetOatQuickMethodHeader() const {
-  const void* code = EntryPointToCodePointer(GetQuickCode());
+  const void* code = EntryPointToCodePointer(GetOatPointer<const void*>(code_offset_));
   if (code == nullptr) {
     return nullptr;
   }
@@ -72,7 +71,7 @@ inline uint32_t OatFile::OatMethod::GetVmapTableOffset() const {
 }
 
 inline const uint8_t* OatFile::OatMethod::GetVmapTable() const {
-  const void* code = EntryPointToCodePointer(GetQuickCode());
+  const void* code = EntryPointToCodePointer(GetOatPointer<const void*>(code_offset_));
   if (code == nullptr) {
     return nullptr;
   }
@@ -84,32 +83,19 @@ inline const uint8_t* OatFile::OatMethod::GetVmapTable() const {
 }
 
 inline uint32_t OatFile::OatMethod::GetQuickCodeSize() const {
-  const void* code = EntryPointToCodePointer(GetQuickCode());
+  const void* code = EntryPointToCodePointer(GetOatPointer<const void*>(code_offset_));
   if (code == nullptr) {
     return 0u;
   }
   return reinterpret_cast<const OatQuickMethodHeader*>(code)[-1].GetCodeSize();
 }
 
-inline const void* OatFile::OatMethod::GetQuickCode() const {
-  if (code_offset_ == 0) {
-    return nullptr;
-  }
-  return reinterpret_cast<const void *>(begin_ + code_offset_);
+inline uint32_t OatFile::OatMethod::GetCodeOffset() const {
+  return (GetQuickCodeSize() == 0) ? 0 : code_offset_;
 }
 
-inline const OatFile::BssMappingInfo* OatFile::FindBcpMappingInfo(const DexFile* dex_file) const {
-  ArrayRef<const OatFile::BssMappingInfo> mapping_info_vector(GetBcpBssInfo());
-  ArrayRef<const DexFile* const> bcp_dexfiles(
-      Runtime::Current()->GetClassLinker()->GetBootClassPath());
-  // Create a sub array to limit search range.
-  bcp_dexfiles = bcp_dexfiles.SubArray(/*pos=*/ 0u, mapping_info_vector.size());
-  auto it = std::find(bcp_dexfiles.begin(), bcp_dexfiles.end(), dex_file);
-  if (it != bcp_dexfiles.end()) {
-    return &mapping_info_vector[std::distance(bcp_dexfiles.begin(), it)];
-  } else {
-    return nullptr;
-  }
+inline const void* OatFile::OatMethod::GetQuickCode() const {
+  return GetOatPointer<const void*>(GetCodeOffset());
 }
 
 }  // namespace art

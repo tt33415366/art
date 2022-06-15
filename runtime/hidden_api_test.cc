@@ -82,8 +82,7 @@ static bool LoadDexFiles(const std::string& path,
       MakeNonOwningPointerVector(*dex_files),
       h_class,
       /* parent_loader= */ ScopedNullHandle<mirror::ClassLoader>(),
-      /* shared_libraries= */ ScopedNullHandle<mirror::ObjectArray<mirror::ClassLoader>>(),
-      /* shared_libraries_after= */ ScopedNullHandle<mirror::ObjectArray<mirror::ClassLoader>>()));
+      /* shared_libraries= */ ScopedNullHandle<mirror::ObjectArray<mirror::ClassLoader>>()));
   for (const auto& dex_file : *dex_files) {
     linker->RegisterDexFile(*dex_file.get(), h_loader.Get());
   }
@@ -235,7 +234,6 @@ TEST_F(HiddenApiTest, CheckGetActionFromRuntimeFlags) {
   runtime_->SetHiddenApiEnforcementPolicy(hiddenapi::EnforcementPolicy::kJustWarn);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Sdk()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Unsupported()), false);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetS()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetR()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetQ()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetP()), false);
@@ -249,7 +247,6 @@ TEST_F(HiddenApiTest, CheckGetActionFromRuntimeFlags) {
   SetChangeIdState(kHideMaxtargetsdkQHiddenApis, false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Sdk()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Unsupported()), false);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetS()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetR()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetQ()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetP()), false);
@@ -263,7 +260,6 @@ TEST_F(HiddenApiTest, CheckGetActionFromRuntimeFlags) {
   SetChangeIdState(kHideMaxtargetsdkQHiddenApis, false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Sdk()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Unsupported()), false);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetS()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetR()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetQ()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetP()), false);
@@ -272,8 +268,6 @@ TEST_F(HiddenApiTest, CheckGetActionFromRuntimeFlags) {
   SetChangeIdState(kHideMaxtargetsdkQHiddenApis, true);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Sdk()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Unsupported()), false);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetS()), false);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetR()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetQ()), true);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetP()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetO()), true);
@@ -286,7 +280,6 @@ TEST_F(HiddenApiTest, CheckGetActionFromRuntimeFlags) {
   SetChangeIdState(kHideMaxtargetsdkQHiddenApis, false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Sdk()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Unsupported()), false);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetS()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetR()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetQ()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetP()), true);
@@ -300,7 +293,6 @@ TEST_F(HiddenApiTest, CheckGetActionFromRuntimeFlags) {
   SetChangeIdState(kHideMaxtargetsdkQHiddenApis, true);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Sdk()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Unsupported()), false);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetS()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetR()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetQ()), true);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetP()), true);
@@ -314,19 +306,6 @@ TEST_F(HiddenApiTest, CheckGetActionFromRuntimeFlags) {
   SetChangeIdState(kHideMaxtargetsdkQHiddenApis, true);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Sdk()), false);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Unsupported()), false);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetS()), false);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetR()), true);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetQ()), true);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetP()), true);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetO()), true);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Blocked()), true);
-
-  runtime_->SetHiddenApiEnforcementPolicy(hiddenapi::EnforcementPolicy::kEnabled);
-  runtime_->SetTargetSdkVersion(
-      static_cast<uint32_t>(hiddenapi::ApiList::MaxTargetS().GetMaxAllowedSdkVersion()) + 1);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Sdk()), false);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::Unsupported()), false);
-  ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetS()), true);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetR()), true);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetQ()), true);
   ASSERT_EQ(ShouldDenyAccess(hiddenapi::ApiList::MaxTargetP()), true);

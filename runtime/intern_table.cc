@@ -32,7 +32,6 @@
 #include "object_callbacks.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread.h"
-#include "thread-inl.h"
 
 namespace art {
 
@@ -74,20 +73,8 @@ void InternTable::VisitRoots(RootVisitor* visitor, VisitRootFlags flags) {
         // The GC moved a root in the log. Need to search the strong interns and update the
         // corresponding object. This is slow, but luckily for us, this may only happen with a
         // concurrent moving GC.
-        DCHECK(new_ref != nullptr);
-        uint32_t hash = static_cast<uint32_t>(old_ref->GetStoredHashCode());
-        DCHECK_EQ(hash, static_cast<uint32_t>(new_ref->GetStoredHashCode()));
-        DCHECK(new_ref->Equals(old_ref));
-        bool found = false;
-        for (Table::InternalTable& table : strong_interns_.tables_) {
-          auto it = table.set_.FindWithHash(GcRoot<mirror::String>(old_ref), hash);
-          if (it != table.set_.end()) {
-            *it = GcRoot<mirror::String>(new_ref);
-            found = true;
-            break;
-          }
-        }
-        DCHECK(found);
+        strong_interns_.Remove(old_ref);
+        strong_interns_.Insert(new_ref);
       }
     }
   }
@@ -103,41 +90,32 @@ void InternTable::VisitRoots(RootVisitor* visitor, VisitRootFlags flags) {
 }
 
 ObjPtr<mirror::String> InternTable::LookupWeak(Thread* self, ObjPtr<mirror::String> s) {
-  DCHECK(s != nullptr);
-  // `String::GetHashCode()` ensures that the stored hash is calculated.
-  uint32_t hash = static_cast<uint32_t>(s->GetHashCode());
   MutexLock mu(self, *Locks::intern_table_lock_);
-  return weak_interns_.Find(s, hash);
+  return LookupWeakLocked(s);
 }
 
 ObjPtr<mirror::String> InternTable::LookupStrong(Thread* self, ObjPtr<mirror::String> s) {
-  DCHECK(s != nullptr);
-  // `String::GetHashCode()` ensures that the stored hash is calculated.
-  uint32_t hash = static_cast<uint32_t>(s->GetHashCode());
   MutexLock mu(self, *Locks::intern_table_lock_);
-  return strong_interns_.Find(s, hash);
+  return LookupStrongLocked(s);
 }
 
 ObjPtr<mirror::String> InternTable::LookupStrong(Thread* self,
                                                  uint32_t utf16_length,
                                                  const char* utf8_data) {
-  uint32_t hash = Utf8String::Hash(utf16_length, utf8_data);
+  DCHECK_EQ(utf16_length, CountModifiedUtf8Chars(utf8_data));
+  Utf8String string(utf16_length,
+                    utf8_data,
+                    ComputeUtf16HashFromModifiedUtf8(utf8_data, utf16_length));
   MutexLock mu(self, *Locks::intern_table_lock_);
-  return strong_interns_.Find(Utf8String(utf16_length, utf8_data), hash);
+  return strong_interns_.Find(string);
 }
 
 ObjPtr<mirror::String> InternTable::LookupWeakLocked(ObjPtr<mirror::String> s) {
-  DCHECK(s != nullptr);
-  // `String::GetHashCode()` ensures that the stored hash is calculated.
-  uint32_t hash = static_cast<uint32_t>(s->GetHashCode());
-  return weak_interns_.Find(s, hash);
+  return weak_interns_.Find(s);
 }
 
 ObjPtr<mirror::String> InternTable::LookupStrongLocked(ObjPtr<mirror::String> s) {
-  DCHECK(s != nullptr);
-  // `String::GetHashCode()` ensures that the stored hash is calculated.
-  uint32_t hash = static_cast<uint32_t>(s->GetHashCode());
-  return strong_interns_.Find(s, hash);
+  return strong_interns_.Find(s);
 }
 
 void InternTable::AddNewTable() {
@@ -146,7 +124,7 @@ void InternTable::AddNewTable() {
   strong_interns_.AddNewTable();
 }
 
-ObjPtr<mirror::String> InternTable::InsertStrong(ObjPtr<mirror::String> s, uint32_t hash) {
+ObjPtr<mirror::String> InternTable::InsertStrong(ObjPtr<mirror::String> s) {
   Runtime* runtime = Runtime::Current();
   if (runtime->IsActiveTransaction()) {
     runtime->RecordStrongStringInsertion(s);
@@ -154,29 +132,50 @@ ObjPtr<mirror::String> InternTable::InsertStrong(ObjPtr<mirror::String> s, uint3
   if (log_new_roots_) {
     new_strong_intern_roots_.push_back(GcRoot<mirror::String>(s));
   }
-  strong_interns_.Insert(s, hash);
+  strong_interns_.Insert(s);
   return s;
 }
 
-ObjPtr<mirror::String> InternTable::InsertWeak(ObjPtr<mirror::String> s, uint32_t hash) {
+ObjPtr<mirror::String> InternTable::InsertWeak(ObjPtr<mirror::String> s) {
   Runtime* runtime = Runtime::Current();
   if (runtime->IsActiveTransaction()) {
     runtime->RecordWeakStringInsertion(s);
   }
-  weak_interns_.Insert(s, hash);
+  weak_interns_.Insert(s);
   return s;
 }
 
-void InternTable::RemoveStrong(ObjPtr<mirror::String> s, uint32_t hash) {
-  strong_interns_.Remove(s, hash);
+void InternTable::RemoveStrong(ObjPtr<mirror::String> s) {
+  strong_interns_.Remove(s);
 }
 
-void InternTable::RemoveWeak(ObjPtr<mirror::String> s, uint32_t hash) {
+void InternTable::RemoveWeak(ObjPtr<mirror::String> s) {
   Runtime* runtime = Runtime::Current();
   if (runtime->IsActiveTransaction()) {
     runtime->RecordWeakStringRemoval(s);
   }
-  weak_interns_.Remove(s, hash);
+  weak_interns_.Remove(s);
+}
+
+// Insert/remove methods used to undo changes made during an aborted transaction.
+ObjPtr<mirror::String> InternTable::InsertStrongFromTransaction(ObjPtr<mirror::String> s) {
+  DCHECK(!Runtime::Current()->IsActiveTransaction());
+  return InsertStrong(s);
+}
+
+ObjPtr<mirror::String> InternTable::InsertWeakFromTransaction(ObjPtr<mirror::String> s) {
+  DCHECK(!Runtime::Current()->IsActiveTransaction());
+  return InsertWeak(s);
+}
+
+void InternTable::RemoveStrongFromTransaction(ObjPtr<mirror::String> s) {
+  DCHECK(!Runtime::Current()->IsActiveTransaction());
+  RemoveStrong(s);
+}
+
+void InternTable::RemoveWeakFromTransaction(ObjPtr<mirror::String> s) {
+  DCHECK(!Runtime::Current()->IsActiveTransaction());
+  RemoveWeak(s);
 }
 
 void InternTable::BroadcastForNewInterns() {
@@ -188,7 +187,7 @@ void InternTable::BroadcastForNewInterns() {
 void InternTable::WaitUntilAccessible(Thread* self) {
   Locks::intern_table_lock_->ExclusiveUnlock(self);
   {
-    ScopedThreadSuspension sts(self, ThreadState::kWaitingWeakGcRootRead);
+    ScopedThreadSuspension sts(self, kWaitingWeakGcRootRead);
     MutexLock mu(self, *Locks::intern_table_lock_);
     while ((!kUseReadBarrier && weak_root_state_ == gc::kWeakRootStateNoReadsOrWrites) ||
            (kUseReadBarrier && !self->GetWeakRefAccessEnabled())) {
@@ -199,33 +198,38 @@ void InternTable::WaitUntilAccessible(Thread* self) {
 }
 
 ObjPtr<mirror::String> InternTable::Insert(ObjPtr<mirror::String> s,
-                                           uint32_t hash,
                                            bool is_strong,
-                                           size_t num_searched_strong_frozen_tables) {
-  DCHECK(s != nullptr);
-  DCHECK_EQ(hash, static_cast<uint32_t>(s->GetStoredHashCode()));
-  DCHECK_IMPLIES(hash == 0u, s->ComputeHashCode() == 0);
+                                           bool holding_locks) {
+  if (s == nullptr) {
+    return nullptr;
+  }
   Thread* const self = Thread::Current();
   MutexLock mu(self, *Locks::intern_table_lock_);
-  if (kDebugLocking) {
+  if (kDebugLocking && !holding_locks) {
     Locks::mutator_lock_->AssertSharedHeld(self);
     CHECK_EQ(2u, self->NumberOfHeldMutexes()) << "may only safely hold the mutator lock";
   }
   while (true) {
+    if (holding_locks) {
+      if (!kUseReadBarrier) {
+        CHECK_EQ(weak_root_state_, gc::kWeakRootStateNormal);
+      } else {
+        CHECK(self->GetWeakRefAccessEnabled());
+      }
+    }
     // Check the strong table for a match.
-    ObjPtr<mirror::String> strong =
-        strong_interns_.Find(s, hash, num_searched_strong_frozen_tables);
+    ObjPtr<mirror::String> strong = LookupStrongLocked(s);
     if (strong != nullptr) {
       return strong;
     }
-    if (kUseReadBarrier ? self->GetWeakRefAccessEnabled()
-                        : weak_root_state_ != gc::kWeakRootStateNoReadsOrWrites) {
+    if ((!kUseReadBarrier && weak_root_state_ != gc::kWeakRootStateNoReadsOrWrites) ||
+        (kUseReadBarrier && self->GetWeakRefAccessEnabled())) {
       break;
     }
-    num_searched_strong_frozen_tables = strong_interns_.tables_.size() - 1u;
     // weak_root_state_ is set to gc::kWeakRootStateNoReadsOrWrites in the GC pause but is only
     // cleared after SweepSystemWeaks has completed. This is why we need to wait until it is
     // cleared.
+    CHECK(!holding_locks);
     StackHandleScope<1> hs(self);
     auto h = hs.NewHandleWrapper(&s);
     WaitUntilAccessible(self);
@@ -236,81 +240,66 @@ ObjPtr<mirror::String> InternTable::Insert(ObjPtr<mirror::String> s,
     CHECK(self->GetWeakRefAccessEnabled());
   }
   // There is no match in the strong table, check the weak table.
-  ObjPtr<mirror::String> weak = weak_interns_.Find(s, hash);
+  ObjPtr<mirror::String> weak = LookupWeakLocked(s);
   if (weak != nullptr) {
     if (is_strong) {
       // A match was found in the weak table. Promote to the strong table.
-      RemoveWeak(weak, hash);
-      return InsertStrong(weak, hash);
+      RemoveWeak(weak);
+      return InsertStrong(weak);
     }
     return weak;
   }
   // No match in the strong table or the weak table. Insert into the strong / weak table.
-  return is_strong ? InsertStrong(s, hash) : InsertWeak(s, hash);
+  return is_strong ? InsertStrong(s) : InsertWeak(s);
 }
 
-ObjPtr<mirror::String> InternTable::InternStrong(uint32_t utf16_length, const char* utf8_data) {
+ObjPtr<mirror::String> InternTable::InternStrong(int32_t utf16_length, const char* utf8_data) {
   DCHECK(utf8_data != nullptr);
-  uint32_t hash = Utf8String::Hash(utf16_length, utf8_data);
   Thread* self = Thread::Current();
-  ObjPtr<mirror::String> s;
-  size_t num_searched_strong_frozen_tables;
-  {
-    // Try to avoid allocation. If we need to allocate, release the mutex before the allocation.
-    MutexLock mu(self, *Locks::intern_table_lock_);
-    DCHECK(!strong_interns_.tables_.empty());
-    num_searched_strong_frozen_tables = strong_interns_.tables_.size() - 1u;
-    s = strong_interns_.Find(Utf8String(utf16_length, utf8_data), hash);
-  }
+  // Try to avoid allocation.
+  ObjPtr<mirror::String> s = LookupStrong(self, utf16_length, utf8_data);
   if (s != nullptr) {
     return s;
   }
-  bool is_ascii = (utf8_data[utf16_length] == 0);
-  int32_t utf8_length = utf16_length + (LIKELY(is_ascii) ? 0 : strlen(utf8_data + utf16_length));
-  DCHECK_EQ(static_cast<size_t>(utf8_length), strlen(utf8_data));
-  s = mirror::String::AllocFromModifiedUtf8(self, utf16_length, utf8_data, utf8_length);
-  if (UNLIKELY(s == nullptr)) {
-    self->AssertPendingOOMException();
-    return nullptr;
-  }
-  s->SetHashCode(static_cast<int32_t>(hash));
-  return Insert(s, hash, /*is_strong=*/ true, num_searched_strong_frozen_tables);
+  return InternStrong(mirror::String::AllocFromModifiedUtf8(
+      self, utf16_length, utf8_data));
 }
 
 ObjPtr<mirror::String> InternTable::InternStrong(const char* utf8_data) {
   DCHECK(utf8_data != nullptr);
-  Thread* self = Thread::Current();
-  ObjPtr<mirror::String> s = mirror::String::AllocFromModifiedUtf8(self, utf8_data);
-  if (UNLIKELY(s == nullptr)) {
-    self->AssertPendingOOMException();
-    return nullptr;
+  return InternStrong(mirror::String::AllocFromModifiedUtf8(Thread::Current(), utf8_data));
+}
+
+ObjPtr<mirror::String> InternTable::InternStrongImageString(ObjPtr<mirror::String> s) {
+  // May be holding the heap bitmap lock.
+  return Insert(s, true, true);
+}
+
+void InternTable::PromoteWeakToStrong() {
+  MutexLock mu(Thread::Current(), *Locks::intern_table_lock_);
+  DCHECK_EQ(weak_interns_.tables_.size(), 1u);
+  for (GcRoot<mirror::String>& entry : weak_interns_.tables_.front().set_) {
+    DCHECK(LookupStrongLocked(entry.Read()) == nullptr);
+    InsertStrong(entry.Read());
   }
-  return InternStrong(s);
+  weak_interns_.tables_.front().set_.clear();
 }
 
 ObjPtr<mirror::String> InternTable::InternStrong(ObjPtr<mirror::String> s) {
-  DCHECK(s != nullptr);
-  // `String::GetHashCode()` ensures that the stored hash is calculated.
-  uint32_t hash = static_cast<uint32_t>(s->GetHashCode());
-  return Insert(s, hash, /*is_strong=*/ true);
+  return Insert(s, true, false);
 }
 
 ObjPtr<mirror::String> InternTable::InternWeak(const char* utf8_data) {
   DCHECK(utf8_data != nullptr);
-  Thread* self = Thread::Current();
-  ObjPtr<mirror::String> s = mirror::String::AllocFromModifiedUtf8(self, utf8_data);
-  if (UNLIKELY(s == nullptr)) {
-    self->AssertPendingOOMException();
-    return nullptr;
-  }
-  return InternWeak(s);
+  return InternWeak(mirror::String::AllocFromModifiedUtf8(Thread::Current(), utf8_data));
 }
 
 ObjPtr<mirror::String> InternTable::InternWeak(ObjPtr<mirror::String> s) {
-  DCHECK(s != nullptr);
-  // `String::GetHashCode()` ensures that the stored hash is calculated.
-  uint32_t hash = static_cast<uint32_t>(s->GetHashCode());
-  return Insert(s, hash, /*is_strong=*/ false);
+  return Insert(s, false, false);
+}
+
+bool InternTable::ContainsWeak(ObjPtr<mirror::String> s) {
+  return LookupWeak(Thread::Current(), s) == s;
 }
 
 void InternTable::SweepInternTableWeaks(IsMarkedVisitor* visitor) {
@@ -318,11 +307,9 @@ void InternTable::SweepInternTableWeaks(IsMarkedVisitor* visitor) {
   weak_interns_.SweepWeaks(visitor);
 }
 
-void InternTable::Table::Remove(ObjPtr<mirror::String> s, uint32_t hash) {
-  // Note: We can remove weak interns even from frozen tables when promoting to strong interns.
-  // We can remove strong interns only for a transaction rollback.
+void InternTable::Table::Remove(ObjPtr<mirror::String> s) {
   for (InternalTable& table : tables_) {
-    auto it = table.set_.FindWithHash(GcRoot<mirror::String>(s), hash);
+    auto it = table.set_.find(GcRoot<mirror::String>(s));
     if (it != table.set_.end()) {
       table.set_.erase(it);
       return;
@@ -331,19 +318,10 @@ void InternTable::Table::Remove(ObjPtr<mirror::String> s, uint32_t hash) {
   LOG(FATAL) << "Attempting to remove non-interned string " << s->ToModifiedUtf8();
 }
 
-FLATTEN
-ObjPtr<mirror::String> InternTable::Table::Find(ObjPtr<mirror::String> s,
-                                                uint32_t hash,
-                                                size_t num_searched_frozen_tables) {
+ObjPtr<mirror::String> InternTable::Table::Find(ObjPtr<mirror::String> s) {
   Locks::intern_table_lock_->AssertHeld(Thread::Current());
-  auto mid = tables_.begin() + num_searched_frozen_tables;
-  for (Table::InternalTable& table : MakeIterationRange(tables_.begin(), mid)) {
-    DCHECK(table.set_.FindWithHash(GcRoot<mirror::String>(s), hash) == table.set_.end());
-  }
-  // Search from the last table, assuming that apps shall search for their own
-  // strings more often than for boot image strings.
-  for (Table::InternalTable& table : ReverseRange(MakeIterationRange(mid, tables_.end()))) {
-    auto it = table.set_.FindWithHash(GcRoot<mirror::String>(s), hash);
+  for (InternalTable& table : tables_) {
+    auto it = table.set_.find(GcRoot<mirror::String>(s));
     if (it != table.set_.end()) {
       return it->Read();
     }
@@ -351,13 +329,10 @@ ObjPtr<mirror::String> InternTable::Table::Find(ObjPtr<mirror::String> s,
   return nullptr;
 }
 
-FLATTEN
-ObjPtr<mirror::String> InternTable::Table::Find(const Utf8String& string, uint32_t hash) {
+ObjPtr<mirror::String> InternTable::Table::Find(const Utf8String& string) {
   Locks::intern_table_lock_->AssertHeld(Thread::Current());
-  // Search from the last table, assuming that apps shall search for their own
-  // strings more often than for boot image strings.
-  for (InternalTable& table : ReverseRange(tables_)) {
-    auto it = table.set_.FindWithHash(string, hash);
+  for (InternalTable& table : tables_) {
+    auto it = table.set_.find(string);
     if (it != table.set_.end()) {
       return it->Read();
     }
@@ -366,19 +341,14 @@ ObjPtr<mirror::String> InternTable::Table::Find(const Utf8String& string, uint32
 }
 
 void InternTable::Table::AddNewTable() {
-  // Propagate the min/max load factor from the old active set.
-  DCHECK(!tables_.empty());
-  const UnorderedSet& last_set = tables_.back().set_;
-  InternalTable new_table;
-  new_table.set_.SetLoadFactor(last_set.GetMinLoadFactor(), last_set.GetMaxLoadFactor());
-  tables_.push_back(std::move(new_table));
+  tables_.push_back(InternalTable());
 }
 
-void InternTable::Table::Insert(ObjPtr<mirror::String> s, uint32_t hash) {
+void InternTable::Table::Insert(ObjPtr<mirror::String> s) {
   // Always insert the last table, the image tables are before and we avoid inserting into these
   // to prevent dirty pages.
   DCHECK(!tables_.empty());
-  tables_.back().set_.PutWithHash(GcRoot<mirror::String>(s), hash);
+  tables_.back().set_.insert(GcRoot<mirror::String>(s));
 }
 
 void InternTable::Table::VisitRoots(RootVisitor* visitor) {

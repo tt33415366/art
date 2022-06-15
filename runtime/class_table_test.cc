@@ -137,7 +137,12 @@ TEST_F(ClassTableTest, ClassTable) {
   });
   EXPECT_EQ(classes.size(), 1u);
 
+  // Test remove.
+  table.Remove(descriptor_x);
+  EXPECT_TRUE(table.LookupByDescriptor(h_X.Get()) == nullptr);
+
   // Test that reading a class set from memory works.
+  table.Insert(h_X.Get());
   ClassTable::ClassSet temp_set;
   table.Visit([&temp_set](ObjPtr<mirror::Class> klass) REQUIRES_SHARED(Locks::mutator_lock_) {
     temp_set.insert(ClassTable::TableSlot(klass));

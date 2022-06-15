@@ -46,11 +46,6 @@ public class Main {
       }
       testAddMethodToProfile(file, bootMethod);
 
-      // We never expect System.console to be executed before Main.main gets invoked, and therefore
-      // it should never be in a profile.
-      Method bootNotInProfileMethod = System.class.getDeclaredMethod("console");
-      testMethodNotInProfile(file, bootNotInProfileMethod);
-
       System.out.println("IsForBootImage: " + isForBootImage(file.getPath()));
     } finally {
       if (file != null) {
@@ -66,16 +61,7 @@ public class Main {
     ensureProfileProcessing();
     // Verify that the profile was saved and contains the method.
     if (!presentInProfile(file.getPath(), m)) {
-      throw new RuntimeException("Expected method " + m + " to be in the profile");
-    }
-  }
-
-  static void testMethodNotInProfile(File file, Method m) {
-    // Make sure the profile gets saved.
-    ensureProfileProcessing();
-    // Verify that the profile was saved and contains the method.
-    if (presentInProfile(file.getPath(), m)) {
-      throw new RuntimeException("Did not expect method " + m + " to be in the profile");
+      throw new RuntimeException("Method with index " + m + " not in the profile");
     }
   }
 

@@ -1,4 +1,9 @@
 {
+  "presubmit": [
+    {
+      "name": "libnativeloader_test"
+    }
+  ],
   "imports": [
     {
       "path": "cts/tests/tests/jni"

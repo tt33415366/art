@@ -16,6 +16,5 @@
 
 package unresolved;
 
-public class UnresolvedPackagePrivateClassProxy extends UnresolvedPackagePrivateClass
-                                                implements BcpExMarker {
+public class UnresolvedPackagePrivateClassProxy extends UnresolvedPackagePrivateClass {
 }

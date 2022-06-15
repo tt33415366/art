@@ -45,8 +45,6 @@ class DedupeSet {
 
   ~DedupeSet();
 
-  size_t Size(Thread* self) const;
-
   std::string DumpStats(Thread* self) const;
 
  private:

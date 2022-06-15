@@ -78,15 +78,9 @@ public class Main {
   /// CHECK-DAG: <<Get1:i\d+>>    ArrayGet [<<Array>>,<<IndAdd>>]           loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG: <<Add:i\d+>>     Add [<<Get0>>,<<Get1>>]                   loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                  ArraySet [<<Array>>,<<Phi>>,<<Add>>]      loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingLoadStoreElimination(int[]) loop_optimization (before)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.unrollingLoadStoreElimination(int[]) loop_optimization (before)
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
+  //
+  /// CHECK-NOT:                  ArrayGet                                  loop:<<Loop>>      outer_loop:none
+  /// CHECK-NOT:                  ArraySet                                  loop:<<Loop>>      outer_loop:none
 
   /// CHECK-START: void Main.unrollingLoadStoreElimination(int[]) loop_optimization (after)
   /// CHECK-DAG: <<Array:l\d+>>   ParameterValue                            loop:none
@@ -109,18 +103,9 @@ public class Main {
   /// CHECK-DAG: <<Get1A:i\d+>>   ArrayGet [<<Array>>,<<IndAddA>>]          loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG: <<AddA:i\d+>>    Add [<<Get0A>>,<<Get1A>>]                 loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                  ArraySet [<<Array>>,<<IndAdd>>,<<AddA>>]  loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingLoadStoreElimination(int[]) loop_optimization (after)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.unrollingLoadStoreElimination(int[]) loop_optimization (after)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
+  //
+  /// CHECK-NOT:                  ArrayGet                                  loop:<<Loop>>      outer_loop:none
+  /// CHECK-NOT:                  ArraySet                                  loop:<<Loop>>      outer_loop:none
   private static final void unrollingLoadStoreElimination(int[] a) {
     for (int i = 0; i < LENGTH - 2; i++) {
       a[i] += a[i + 1];
@@ -139,14 +124,9 @@ public class Main {
   /// CHECK-DAG:                   ArrayGet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   Add [<<PhiI>>,<<Const1>>]                 loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingSwitch(int[]) loop_optimization (before)
-  /// CHECK:                      ArrayGet
-  /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.unrollingSwitch(int[]) loop_optimization (before)
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
+  //
+  /// CHECK-NOT:                   ArrayGet                                  loop:<<Loop>>      outer_loop:none
+  /// CHECK-NOT:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
 
   /// CHECK-START: void Main.unrollingSwitch(int[]) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
@@ -164,16 +144,9 @@ public class Main {
   /// CHECK-DAG:                   ArrayGet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   Add [<<AddI>>,<<Const1>>]                 loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingSwitch(int[]) loop_optimization (after)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.unrollingSwitch(int[]) loop_optimization (after)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
+  //
+  /// CHECK-NOT:                   ArrayGet                                  loop:<<Loop>>      outer_loop:none
+  /// CHECK-NOT:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
   private static final void unrollingSwitch(int[] a) {
     for (int i = 0; i < LENGTH; i++) {
       switch (i % 3) {
@@ -200,16 +173,9 @@ public class Main {
   /// CHECK-DAG:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   Add [<<PhiI>>,<<Const1>>]                 loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingSwapElements(int[]) loop_optimization (before)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.unrollingSwapElements(int[]) loop_optimization (before)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
+  //
+  /// CHECK-NOT:                   ArrayGet                                  loop:<<Loop>>      outer_loop:none
+  /// CHECK-NOT:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
 
   /// CHECK-START: void Main.unrollingSwapElements(int[]) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
@@ -231,20 +197,9 @@ public class Main {
   /// CHECK-DAG:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   Add [<<AddI>>,<<Const1>>]                 loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingSwapElements(int[]) loop_optimization (after)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.unrollingSwapElements(int[]) loop_optimization (after)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
+  //
+  /// CHECK-NOT:                   ArrayGet                                  loop:<<Loop>>      outer_loop:none
+  /// CHECK-NOT:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
   private static final void unrollingSwapElements(int[] array) {
     for (int i = 0; i < LENGTH - 2; i++) {
       if (array[i] > array[i + 1]) {
@@ -270,21 +225,9 @@ public class Main {
   /// CHECK-DAG:                   ArrayGet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   Add [<<PhiI>>,<<Const1>>]                 loop:<<Loop>>      outer_loop:none
-
-  // We have two other `ArrayGet` before the `If` that appears in the CHECK-DAG above.
-  /// CHECK-START: void Main.unrollingRInnerproduct(double[][], double[][], double[][], int, int) loop_optimization (before)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.unrollingRInnerproduct(double[][], double[][], double[][], int, int) loop_optimization (before)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
+  //
+  /// CHECK-NOT:                   ArrayGet                                  loop:<<Loop>>      outer_loop:none
+  /// CHECK-NOT:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
 
   /// CHECK-START: void Main.unrollingRInnerproduct(double[][], double[][], double[][], int, int) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
@@ -308,25 +251,9 @@ public class Main {
   /// CHECK-DAG:                   ArrayGet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   Add [<<AddI>>,<<Const1>>]                 loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingRInnerproduct(double[][], double[][], double[][], int, int) loop_optimization (after)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.unrollingRInnerproduct(double[][], double[][], double[][], int, int) loop_optimization (after)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
+  //
+  /// CHECK-NOT:                   ArrayGet                                  loop:<<Loop>>      outer_loop:none
+  /// CHECK-NOT:                   ArraySet                                  loop:<<Loop>>      outer_loop:none
   private static final void unrollingRInnerproduct(double[][] result,
                                                    double[][] a,
                                                    double[][] b,
@@ -357,23 +284,10 @@ public class Main {
   /// CHECK-DAG:                   ArrayGet                                  loop:<<Loop3>>      outer_loop:<<Loop2>>
   /// CHECK-DAG:                   ArraySet                                  loop:<<Loop3>>      outer_loop:<<Loop2>>
   /// CHECK-DAG:                   Add [<<Phi3>>,<<Const1>>]                 loop:<<Loop3>>      outer_loop:<<Loop2>>
-
-  // Each one of the three `for` loops has an `if`.
-  /// CHECK-START: void Main.unrollingInTheNest(int[], int[], int) loop_optimization (before)
-  /// CHECK:                       If
-  /// CHECK:                       If
-  /// CHECK:                       If
+  //
+  /// CHECK-NOT:                   ArrayGet
+  /// CHECK-NOT:                   ArraySet
   /// CHECK-NOT:                   If
-
-  /// CHECK-START: void Main.unrollingInTheNest(int[], int[], int) loop_optimization (before)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.unrollingInTheNest(int[], int[], int) loop_optimization (before)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
 
   /// CHECK-START: void Main.unrollingInTheNest(int[], int[], int) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
@@ -395,28 +309,10 @@ public class Main {
   /// CHECK-DAG:                   ArraySet                                  loop:<<Loop3>>      outer_loop:<<Loop2>>
   /// CHECK-DAG:                   ArrayGet                                  loop:<<Loop3>>      outer_loop:<<Loop2>>
   /// CHECK-DAG:                   ArraySet                                  loop:<<Loop3>>      outer_loop:<<Loop2>>
-
-  // Loop unrolling adds a 4th `if`. It is the one with `Const0` above.
-  /// CHECK-START: void Main.unrollingInTheNest(int[], int[], int) loop_optimization (after)
-  /// CHECK:                       If
-  /// CHECK:                       If
-  /// CHECK:                       If
-  /// CHECK:                       If
+  //
+  /// CHECK-NOT:                   ArrayGet
+  /// CHECK-NOT:                   ArraySet
   /// CHECK-NOT:                   If
-
-  /// CHECK-START: void Main.unrollingInTheNest(int[], int[], int) loop_optimization (after)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.unrollingInTheNest(int[], int[], int) loop_optimization (after)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
   private static final void unrollingInTheNest(int[] a, int[] b, int x) {
     for (int k = 0; k < 16; k++) {
       for (int j = 0; j < 16; j++) {
@@ -453,24 +349,10 @@ public class Main {
   /// CHECK-DAG:                   ArrayGet                                  loop:<<Loop3>>      outer_loop:<<Loop1>>
   /// CHECK-DAG:                   ArraySet                                  loop:<<Loop3>>      outer_loop:<<Loop1>>
   /// CHECK-DAG: <<AddI3:i\d+>>    Add [<<Phi3>>,<<Const1>>]                 loop:<<Loop3>>      outer_loop:<<Loop1>>
-
-  // Each one of the three `for` loops has an `if`. Plus an `if` inside the outer `for`.
-  /// CHECK-START: void Main.unrollingTwoLoopsInTheNest(int[], int[], int) loop_optimization (before)
-  /// CHECK:                       If
-  /// CHECK:                       If
-  /// CHECK:                       If
-  /// CHECK:                       If
+  //
+  /// CHECK-NOT:                   ArrayGet
+  /// CHECK-NOT:                   ArraySet
   /// CHECK-NOT:                   If
-
-  /// CHECK-START: void Main.unrollingTwoLoopsInTheNest(int[], int[], int) loop_optimization (before)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.unrollingTwoLoopsInTheNest(int[], int[], int) loop_optimization (before)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
 
   /// CHECK-START: void Main.unrollingTwoLoopsInTheNest(int[], int[], int) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
@@ -500,30 +382,10 @@ public class Main {
   /// CHECK-DAG:                   ArrayGet                                  loop:<<Loop3>>      outer_loop:<<Loop1>>
   /// CHECK-DAG:                   ArraySet                                  loop:<<Loop3>>      outer_loop:<<Loop1>>
   /// CHECK-DAG:                   Add [<<AddI3>>,<<Const1>>]                loop:<<Loop3>>      outer_loop:<<Loop1>>
-
-  // LoopOptimization adds two `if`s. One for each loop unrolling.
-  /// CHECK-START: void Main.unrollingTwoLoopsInTheNest(int[], int[], int) loop_optimization (after)
-  /// CHECK:                       If
-  /// CHECK:                       If
-  /// CHECK:                       If
-  /// CHECK:                       If
-  /// CHECK:                       If
-  /// CHECK:                       If
+  //
+  /// CHECK-NOT:                   ArrayGet
+  /// CHECK-NOT:                   ArraySet
   /// CHECK-NOT:                   If
-
-  /// CHECK-START: void Main.unrollingTwoLoopsInTheNest(int[], int[], int) loop_optimization (after)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.unrollingTwoLoopsInTheNest(int[], int[], int) loop_optimization (after)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
   private static final void unrollingTwoLoopsInTheNest(int[] a, int[] b, int x) {
     for (int k = 0; k < 128; k++) {
       if (x > 100) {
@@ -561,14 +423,7 @@ public class Main {
   /// CHECK-DAG: <<ZCheck:i\d+>>  DivZeroCheck [<<STAdd>>] env:[[<<PhiS>>,<<PhiT>>,<<STAdd>>,<<Const1>>,_,<<Array>>]] loop:none
   /// CHECK-DAG: <<Div:i\d+>>     Div [<<Const1>>,<<ZCheck>>]               loop:none
   /// CHECK-DAG:                  Return [<<Div>>]                          loop:none
-
-  /// CHECK-START: int Main.unrollingSimpleLiveOuts(int[]) loop_optimization (before)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
   /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: int Main.unrollingSimpleLiveOuts(int[]) loop_optimization (before)
-  /// CHECK:                      ArraySet
   /// CHECK-NOT:                  ArraySet
 
   /// CHECK-START: int Main.unrollingSimpleLiveOuts(int[]) loop_optimization (after)
@@ -606,17 +461,8 @@ public class Main {
   /// CHECK-DAG: <<ZCheck:i\d+>>  DivZeroCheck [<<STAdd>>] env:[[<<RetPhiS>>,<<RetPhiT>>,<<STAdd>>,<<Const1>>,_,<<Array>>]] loop:none
   /// CHECK-DAG: <<Div:i\d+>>     Div [<<Const1>>,<<ZCheck>>]               loop:none
   /// CHECK-DAG:                  Return [<<Div>>]                          loop:none
-
-  /// CHECK-START: int Main.unrollingSimpleLiveOuts(int[]) loop_optimization (after)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
+  //
   /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: int Main.unrollingSimpleLiveOuts(int[]) loop_optimization (after)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
   /// CHECK-NOT:                  ArraySet
   private static final int unrollingSimpleLiveOuts(int[] a) {
     int s = 1;
@@ -656,14 +502,8 @@ public class Main {
   /// CHECK-DAG:                  ArraySet [<<Array>>,<<PhiI>>,<<AddArr>>]  loop:<<Loop1>>      outer_loop:<<Loop0>>
   //
   /// CHECK-DAG:                  Add [<<OutPhiJ>>,<<Const1>>]              loop:<<Loop0>>      outer_loop:none
-
-  /// CHECK-START: int Main.unrollingLiveOutsNested(int[]) loop_optimization (before)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
+  //
   /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: int Main.unrollingLiveOutsNested(int[]) loop_optimization (before)
-  /// CHECK:                      ArraySet
   /// CHECK-NOT:                  ArraySet
 
   /// CHECK-START: int Main.unrollingLiveOutsNested(int[]) loop_optimization (after)
@@ -705,17 +545,8 @@ public class Main {
   //
   /// CHECK-DAG: <<RetAdd:i\d+>>  Add [<<OutPhiS>>,<<OutPhiT>>]             loop:none
   /// CHECK-DAG:                  Return [<<RetAdd>>]                       loop:none
-
-  /// CHECK-START: int Main.unrollingLiveOutsNested(int[]) loop_optimization (after)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
+  //
   /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: int Main.unrollingLiveOutsNested(int[]) loop_optimization (after)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
   /// CHECK-NOT:                  ArraySet
   private static final int unrollingLiveOutsNested(int[] a) {
     int s = 1;
@@ -735,21 +566,16 @@ public class Main {
   /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
   /// CHECK-DAG:                   Phi [<<Const0>>,{{i\d+}}]                 loop:<<Loop:B\d+>> outer_loop:none
   /// CHECK-DAG:                   InstanceOf                                loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingInstanceOf(int[], java.lang.Object[]) loop_optimization (before)
-  /// CHECK:                      InstanceOf
-  /// CHECK-NOT:                  InstanceOf
+  //
+  /// CHECK-NOT:                   InstanceOf
 
   /// CHECK-START: void Main.unrollingInstanceOf(int[], java.lang.Object[]) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
   /// CHECK-DAG:                   Phi [<<Const0>>,{{i\d+}}]                 loop:<<Loop:B\d+>> outer_loop:none
   /// CHECK-DAG:                   InstanceOf                                loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   InstanceOf                                loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingInstanceOf(int[], java.lang.Object[]) loop_optimization (after)
-  /// CHECK:                      InstanceOf
-  /// CHECK:                      InstanceOf
-  /// CHECK-NOT:                  InstanceOf
+  //
+  /// CHECK-NOT:                   InstanceOf
   public void unrollingInstanceOf(int[] a, Object[] obj_array) {
     for (int i = 0; i < LENGTH_B; i++) {
       if (obj_array[i] instanceof Integer) {
@@ -762,21 +588,16 @@ public class Main {
   /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
   /// CHECK-DAG:                   Phi [<<Const0>>,{{i\d+}}]                 loop:<<Loop:B\d+>> outer_loop:none
   /// CHECK-DAG:                   DivZeroCheck                              loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingDivZeroCheck(int[], int) loop_optimization (before)
-  /// CHECK:                      DivZeroCheck
-  /// CHECK-NOT:                  DivZeroCheck
+  //
+  /// CHECK-NOT:                   DivZeroCheck
 
   /// CHECK-START: void Main.unrollingDivZeroCheck(int[], int) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
   /// CHECK-DAG:                   Phi [<<Const0>>,{{i\d+}}]                 loop:<<Loop:B\d+>> outer_loop:none
   /// CHECK-DAG:                   DivZeroCheck                              loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   DivZeroCheck                              loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingDivZeroCheck(int[], int) loop_optimization (after)
-  /// CHECK:                      DivZeroCheck
-  /// CHECK:                      DivZeroCheck
-  /// CHECK-NOT:                  DivZeroCheck
+  //
+  /// CHECK-NOT:                   DivZeroCheck
   public void unrollingDivZeroCheck(int[] a, int r) {
     for (int i = 0; i < LENGTH_B; i++) {
       a[i] += a[i] / r;
@@ -787,21 +608,16 @@ public class Main {
   /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
   /// CHECK-DAG:                   Phi [<<Const0>>,{{i\d+}}]                 loop:<<Loop:B\d+>> outer_loop:none
   /// CHECK-DAG:                   TypeConversion                            loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingTypeConversion(int[], double[]) loop_optimization (before)
-  /// CHECK:                      TypeConversion
-  /// CHECK-NOT:                  TypeConversion
+  //
+  /// CHECK-NOT:                   TypeConversion
 
   /// CHECK-START: void Main.unrollingTypeConversion(int[], double[]) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
   /// CHECK-DAG:                   Phi [<<Const0>>,{{i\d+}}]                 loop:<<Loop:B\d+>> outer_loop:none
   /// CHECK-DAG:                   TypeConversion                            loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   TypeConversion                            loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingTypeConversion(int[], double[]) loop_optimization (after)
-  /// CHECK:                      TypeConversion
-  /// CHECK:                      TypeConversion
-  /// CHECK-NOT:                  TypeConversion
+  //
+  /// CHECK-NOT:                   TypeConversion
   public void unrollingTypeConversion(int[] a, double[] b) {
     for (int i = 0; i < LENGTH_B; i++) {
       a[i] = (int) b[i];
@@ -818,21 +634,16 @@ public class Main {
   /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
   /// CHECK-DAG:                   Phi [<<Const0>>,{{i\d+}}]                 loop:<<Loop:B\d+>> outer_loop:none
   /// CHECK-DAG:                   CheckCast                                 loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingCheckCast(int[], java.lang.Object) loop_optimization (before)
-  /// CHECK:                      CheckCast
-  /// CHECK-NOT:                  CheckCast
+  //
+  /// CHECK-NOT:                   CheckCast
 
   /// CHECK-START: void Main.unrollingCheckCast(int[], java.lang.Object) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
   /// CHECK-DAG:                   Phi [<<Const0>>,{{i\d+}}]                 loop:<<Loop:B\d+>> outer_loop:none
   /// CHECK-DAG:                   CheckCast                                 loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                   CheckCast                                 loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingCheckCast(int[], java.lang.Object) loop_optimization (after)
-  /// CHECK:                      CheckCast
-  /// CHECK:                      CheckCast
-  /// CHECK-NOT:                  CheckCast
+  //
+  /// CHECK-NOT:                   CheckCast
   public void unrollingCheckCast(int[] a, Object o) {
     for (int i = 0; i < LENGTH_B; i++) {
       if (((SubMain)o) == o) {
@@ -853,22 +664,10 @@ public class Main {
   /// CHECK-DAG: <<Get1:i\d+>>    ArrayGet [<<Array>>,<<IndAdd>>]           loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG: <<Add:i\d+>>     Add [<<Get0>>,<<Get1>>]                   loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                  ArraySet [<<Array>>,<<Phi>>,<<Add>>]      loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.noUnrollingOddTripCount(int[]) loop_optimization (before)
-  /// CHECK:                      Phi
+  //
   /// CHECK-NOT:                  Phi
-
-  /// CHECK-START: void Main.noUnrollingOddTripCount(int[]) loop_optimization (before)
-  /// CHECK:                      If
   /// CHECK-NOT:                  If
-
-  /// CHECK-START: void Main.noUnrollingOddTripCount(int[]) loop_optimization (before)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
   /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.noUnrollingOddTripCount(int[]) loop_optimization (before)
-  /// CHECK:                      ArraySet
   /// CHECK-NOT:                  ArraySet
 
   /// CHECK-START: void Main.noUnrollingOddTripCount(int[]) loop_optimization (after)
@@ -877,22 +676,10 @@ public class Main {
   /// CHECK-DAG:                  ArrayGet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                  ArrayGet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                  ArraySet                                  loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.noUnrollingOddTripCount(int[]) loop_optimization (after)
-  /// CHECK:                      Phi
+  //
   /// CHECK-NOT:                  Phi
-
-  /// CHECK-START: void Main.noUnrollingOddTripCount(int[]) loop_optimization (after)
-  /// CHECK:                      If
   /// CHECK-NOT:                  If
-
-  /// CHECK-START: void Main.noUnrollingOddTripCount(int[]) loop_optimization (after)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
   /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.noUnrollingOddTripCount(int[]) loop_optimization (after)
-  /// CHECK:                      ArraySet
   /// CHECK-NOT:                  ArraySet
   private static final void noUnrollingOddTripCount(int[] a) {
     for (int i = 0; i < LENGTH - 1; i++) {
@@ -912,24 +699,9 @@ public class Main {
   /// CHECK-DAG: <<Get1:i\d+>>    ArrayGet [<<Array>>,<<IndAdd>>]           loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG: <<Add:i\d+>>     Add [<<Get0>>,<<Get1>>]                   loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                  ArraySet [<<Array>>,<<Phi>>,<<Add>>]      loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.noUnrollingNotKnownTripCount(int[], int) loop_optimization (before)
-  /// CHECK:                      Phi
+  //
   /// CHECK-NOT:                  Phi
-
-  // One `if` for the `for` loop, and another one for a deoptimize.
-  /// CHECK-START: void Main.noUnrollingNotKnownTripCount(int[], int) loop_optimization (before)
-  /// CHECK:                      If
-  /// CHECK:                      If
-  /// CHECK-NOT:                  If
-
-  /// CHECK-START: void Main.noUnrollingNotKnownTripCount(int[], int) loop_optimization (before)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
   /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.noUnrollingNotKnownTripCount(int[], int) loop_optimization (before)
-  /// CHECK:                      ArraySet
   /// CHECK-NOT:                  ArraySet
 
   /// CHECK-START: void Main.noUnrollingNotKnownTripCount(int[], int) loop_optimization (after)
@@ -938,23 +710,9 @@ public class Main {
   /// CHECK-DAG:                  ArrayGet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                  ArrayGet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                  ArraySet                                  loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.noUnrollingNotKnownTripCount(int[], int) loop_optimization (after)
-  /// CHECK:                      Phi
+  //
   /// CHECK-NOT:                  Phi
-
-  /// CHECK-START: void Main.noUnrollingNotKnownTripCount(int[], int) loop_optimization (after)
-  /// CHECK:                      If
-  /// CHECK:                      If
-  /// CHECK-NOT:                  If
-
-  /// CHECK-START: void Main.noUnrollingNotKnownTripCount(int[], int) loop_optimization (after)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
   /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.noUnrollingNotKnownTripCount(int[], int) loop_optimization (after)
-  /// CHECK:                      ArraySet
   /// CHECK-NOT:                  ArraySet
   private static final void noUnrollingNotKnownTripCount(int[] a, int n) {
     for (int i = 0; i < n; i++) {
@@ -974,15 +732,9 @@ public class Main {
   /// CHECK-DAG:                    ArrayGet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                    ArraySet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG: <<IndAdd:i\d+>>    Add [<<Phi>>,<<Const1>>]                  loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.peelingSimple(int[], boolean) loop_optimization (before)
-  /// CHECK:                      If
-  /// CHECK:                      If
-  /// CHECK-NOT:                  If
-
-  /// CHECK-START: void Main.peelingSimple(int[], boolean) loop_optimization (before)
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
+  //
+  /// CHECK-NOT:                    If
+  /// CHECK-NOT:                    ArraySet
 
   /// CHECK-START: void Main.peelingSimple(int[], boolean) loop_optimization (after)
   /// CHECK-DAG: <<Param:z\d+>>     ParameterValue                            loop:none
@@ -1002,18 +754,9 @@ public class Main {
   /// CHECK-DAG:                    ArrayGet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                    ArraySet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG: <<IndAdd:i\d+>>    Add [<<Phi>>,<<Const1>>]                  loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.peelingSimple(int[], boolean) loop_optimization (after)
-  /// CHECK:                      If
-  /// CHECK:                      If
-  /// CHECK:                      If
-  /// CHECK:                      If
-  /// CHECK-NOT:                  If
-
-  /// CHECK-START: void Main.peelingSimple(int[], boolean) loop_optimization (after)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
+  //
+  /// CHECK-NOT:                    If
+  /// CHECK-NOT:                    ArraySet
 
   /// CHECK-START: void Main.peelingSimple(int[], boolean) dead_code_elimination$final (after)
   /// CHECK-DAG: <<Param:z\d+>>     ParameterValue                            loop:none
@@ -1029,25 +772,11 @@ public class Main {
   /// CHECK-DAG:                    ArrayGet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                    ArraySet                                  loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG: <<IndAdd:i\d+>>    Add [<<Phi>>,<<Const1>>]                  loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.peelingSimple(int[], boolean) dead_code_elimination$final (after)
-  /// CHECK:                      GreaterThanOrEqual
-  /// CHECK-NOT:                  GreaterThanOrEqual
-
-  /// CHECK-START: void Main.peelingSimple(int[], boolean) dead_code_elimination$final (after)
-  /// CHECK:                      If
-  /// CHECK:                      If
-  /// CHECK-NOT:                  If
-
-  /// CHECK-START: void Main.peelingSimple(int[], boolean) dead_code_elimination$final (after)
-  /// CHECK:                      ArrayGet
-  /// CHECK:                      ArrayGet
-  /// CHECK-NOT:                  ArrayGet
-
-  /// CHECK-START: void Main.peelingSimple(int[], boolean) dead_code_elimination$final (after)
-  /// CHECK:                      ArraySet
-  /// CHECK:                      ArraySet
-  /// CHECK-NOT:                  ArraySet
+  //
+  /// CHECK-NOT:                    GreaterThanOrEqual
+  /// CHECK-NOT:                    If
+  /// CHECK-NOT:                    ArrayGet
+  /// CHECK-NOT:                    ArraySet
   private static final void peelingSimple(int[] a, boolean f) {
     for (int i = 0; i < LENGTH; i++) {
       if (f) {
@@ -1079,13 +808,8 @@ public class Main {
   /// CHECK-DAG: <<Check:z\d+>>     GreaterThanOrEqual [<<Phi>>,{{i\d+}}] loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                    If [<<Check>>]                        loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                    ArraySet                              loop:<<Loop>>      outer_loop:none
-
-  // There's a 3rd `if` due to bounds checks.
-  /// CHECK-START: void Main.peelingAddInts(int[]) dead_code_elimination$final (after)
-  /// CHECK:                        If
-  /// CHECK:                        If
-  /// CHECK:                        If
-  /// CHECK-NOT:                    If
+  //
+  /// CHECK-NOT:                    If [<<Eq>>]                           loop:<<Loop>>      outer_loop:none
   private static final void peelingAddInts(int[] a) {
     for (int i = 0; a != null && i < a.length; i++) {
       a[i] += 1;
@@ -1106,16 +830,8 @@ public class Main {
   /// CHECK-DAG:                    ArraySet                                loop:<<Loop1>>      outer_loop:<<Loop0>>
   /// CHECK-DAG: <<IndAdd1:i\d+>>   Add [<<Phi1>>,<<Const1>>]               loop:<<Loop1>>      outer_loop:<<Loop0>>
   /// CHECK-DAG: <<IndAdd0:i\d+>>   Add [<<Phi0>>,<<Const1>>]               loop:<<Loop0>>      outer_loop:none
-
-  // The two loops have an `if`. The 3rd `if` is the explicit one in the innermost loop.
-  /// CHECK-START: void Main.peelingBreakFromNest(int[], boolean) loop_optimization (before)
-  /// CHECK:                        If
-  /// CHECK:                        If
-  /// CHECK:                        If
+  //
   /// CHECK-NOT:                    If
-
-  /// CHECK-START: void Main.peelingBreakFromNest(int[], boolean) loop_optimization (before)
-  /// CHECK:                        ArraySet
   /// CHECK-NOT:                    ArraySet
 
   /// CHECK-START: void Main.peelingBreakFromNest(int[], boolean) dead_code_elimination$final (after)
@@ -1134,16 +850,8 @@ public class Main {
   /// CHECK-DAG:                    ArraySet                                loop:<<Loop1>>      outer_loop:<<Loop0>>
   /// CHECK-DAG: <<IndAdd1:i\d+>>   Add [<<Phi1>>,<<Const1>>]               loop:<<Loop1>>      outer_loop:<<Loop0>>
   /// CHECK-DAG: <<IndAdd0:i\d+>>   Add [<<Phi0>>,<<Const1>>]               loop:<<Loop0>>      outer_loop:none
-
-  /// CHECK-START: void Main.peelingBreakFromNest(int[], boolean) dead_code_elimination$final (after)
-  /// CHECK:                        If
-  /// CHECK:                        If
-  /// CHECK:                        If
+  //
   /// CHECK-NOT:                    If
-
-  /// CHECK-START: void Main.peelingBreakFromNest(int[], boolean) dead_code_elimination$final (after)
-  /// CHECK:                        ArraySet
-  /// CHECK:                        ArraySet
   /// CHECK-NOT:                    ArraySet
   private static final void peelingBreakFromNest(int[] a, boolean f) {
     outer:
@@ -1165,9 +873,7 @@ public class Main {
   /// CHECK-DAG: <<Phi:i\d+>>       Phi [<<Const0>>,{{i\d+}}]                 loop:<<Loop:B\d+>> outer_loop:none
   /// CHECK-DAG:                    If [<<Check>>]                            loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG: <<IndAdd:i\d+>>    Add [<<Phi>>,<<Const1>>]                  loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: int Main.peelingHoistOneControl(int) loop_optimization (before)
-  /// CHECK:                        If
+  //
   /// CHECK-NOT:                    If
 
   /// CHECK-START: int Main.peelingHoistOneControl(int) dead_code_elimination$final (after)
@@ -1180,15 +886,8 @@ public class Main {
   //
   //  Check that the loop has no instruction except SuspendCheck and Goto (indefinite loop).
   /// CHECK-NOT:                                                              loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: int Main.peelingHoistOneControl(int) dead_code_elimination$final (after)
-  /// CHECK:                        If
   /// CHECK-NOT:                    If
-
-  /// CHECK-START: int Main.peelingHoistOneControl(int) dead_code_elimination$final (after)
   /// CHECK-NOT:                    Phi
-
-  /// CHECK-START: int Main.peelingHoistOneControl(int) dead_code_elimination$final (after)
   /// CHECK-NOT:                    Add
   private static final int peelingHoistOneControl(int x) {
     int i = 0;
@@ -1203,17 +902,11 @@ public class Main {
   /// CHECK-DAG: <<Phi:i\d+>> Phi  loop:<<Loop:B\d+>> outer_loop:none
   /// CHECK-DAG:              If   loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:              If   loop:<<Loop>>      outer_loop:none
-
+  //
   /// CHECK-START: int Main.peelingHoistOneControl(int, int) dead_code_elimination$final (after)
   /// CHECK-DAG: <<Phi:i\d+>> Phi  loop:<<Loop:B\d+>> outer_loop:none
   /// CHECK-DAG:              If   loop:<<Loop>>      outer_loop:none
-
-  // One `if` inside the loop (the one no longer invariant), two outside of it.
-  /// CHECK-START: int Main.peelingHoistOneControl(int, int) dead_code_elimination$final (after)
-  /// CHECK:                  If
-  /// CHECK:                  If
-  /// CHECK:                  If
-  /// CHECK-NOT:              If
+  /// CHECK-NOT:              If   loop:<<Loop>>      outer_loop:none
   private static final int peelingHoistOneControl(int x, int y) {
     while (true) {
       if (x == 0)
@@ -1229,18 +922,11 @@ public class Main {
   /// CHECK-DAG:              If   loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:              If   loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:              If   loop:<<Loop>>      outer_loop:none
-
+  //
   /// CHECK-START: int Main.peelingHoistTwoControl(int, int, int) dead_code_elimination$final (after)
   /// CHECK-DAG: <<Phi:i\d+>> Phi  loop:<<Loop:B\d+>> outer_loop:none
   /// CHECK-DAG:              If   loop:<<Loop>>      outer_loop:none
-
-  // One `if` inside the loop (the one no longer invariant), three outside of it.
-  /// CHECK-START: int Main.peelingHoistTwoControl(int, int, int) dead_code_elimination$final (after)
-  /// CHECK:                  If
-  /// CHECK:                  If
-  /// CHECK:                  If
-  /// CHECK:                  If
-  /// CHECK-NOT:              If
+  /// CHECK-NOT:              If   loop:<<Loop>>      outer_loop:none
   private static final int peelingHoistTwoControl(int x, int y, int z) {
     while (true) {
       if (x == 0)
@@ -1262,14 +948,8 @@ public class Main {
   /// CHECK-DAG:                    ArrayGet                                loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                    ArrayGet                                loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                    ArraySet                                loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingFull(int[]) loop_optimization (before)
-  /// CHECK:                        ArrayGet
-  /// CHECK:                        ArrayGet
+  //
   /// CHECK-NOT:                    ArrayGet
-
-  /// CHECK-START: void Main.unrollingFull(int[]) loop_optimization (before)
-  /// CHECK:                        ArraySet
   /// CHECK-NOT:                    ArraySet
 
   /// CHECK-START: void Main.unrollingFull(int[]) loop_optimization (after)
@@ -1290,20 +970,8 @@ public class Main {
   /// CHECK-DAG:                    ArrayGet                                loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                    ArraySet                                loop:<<Loop>>      outer_loop:none
   /// CHECK-DAG:                    If [<<Const1>>]                         loop:<<Loop>>      outer_loop:none
-
-  /// CHECK-START: void Main.unrollingFull(int[]) loop_optimization (after)
-  /// CHECK:                        ArrayGet
-  /// CHECK:                        ArrayGet
-  /// CHECK:                        ArrayGet
-  /// CHECK:                        ArrayGet
-  /// CHECK:                        ArrayGet
-  /// CHECK:                        ArrayGet
+  //
   /// CHECK-NOT:                    ArrayGet
-
-  /// CHECK-START: void Main.unrollingFull(int[]) loop_optimization (after)
-  /// CHECK:                        ArraySet
-  /// CHECK:                        ArraySet
-  /// CHECK:                        ArraySet
   /// CHECK-NOT:                    ArraySet
   private static final void unrollingFull(int[] a) {
     for (int i = 0; i < 2; i++) {

@@ -26,8 +26,6 @@ import java.text.ParseException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * A representation of a proguard mapping for deobfuscating class names,
@@ -36,7 +34,6 @@ import java.util.regex.Pattern;
 public class ProguardMap {
 
   private static final String ARRAY_SYMBOL = "[]";
-  private static final Version LINE_MAPPING_BEHAVIOR_CHANGE_VERSION = new Version(3, 1, 4);
 
   private static class FrameData {
     public FrameData(String clearMethodName) {
@@ -44,55 +41,31 @@ public class ProguardMap {
     }
 
     private final String clearMethodName;
-    private final TreeMap<Integer, LineNumberMapping> lineNumbers = new TreeMap<>();
+    private final TreeMap<Integer, LineNumber> lineNumbers = new TreeMap<>();
 
     public int getClearLine(int obfuscatedLine) {
-      var lineNumberEntry = lineNumbers.floorEntry(obfuscatedLine);
-      LineNumberMapping mapping = lineNumberEntry == null ? null : lineNumberEntry.getValue();
-      if (mapping != null && mapping.hasObfuscatedLine(obfuscatedLine)) {
-        return mapping.mapObfuscatedLine(obfuscatedLine);
+      Map.Entry<Integer, LineNumber> lineNumberEntry = lineNumbers.floorEntry(obfuscatedLine);
+      LineNumber lineNumber = lineNumberEntry == null ? null : lineNumberEntry.getValue();
+      if (lineNumber != null
+          && obfuscatedLine >= lineNumber.obfuscatedLineStart
+          && obfuscatedLine <= lineNumber.obfuscatedLineEnd) {
+        return lineNumber.clearLineStart + obfuscatedLine - lineNumber.obfuscatedLineStart;
       } else {
         return obfuscatedLine;
       }
     }
   }
 
-  private static class LineRange {
-    public LineRange(int start, int end) {
-      this.start = start;
-      this.end = end;
+  private static class LineNumber {
+    public LineNumber(int obfuscatedLineStart, int obfuscatedLineEnd, int clearLineStart) {
+      this.obfuscatedLineStart = obfuscatedLineStart;
+      this.obfuscatedLineEnd = obfuscatedLineEnd;
+      this.clearLineStart = clearLineStart;
     }
 
-    public boolean hasLine(int lineNumber) {
-      return (lineNumber >= start && lineNumber <= end);
-    }
-
-    public final int start;
-    public final int end;
-  }
-
-  private static class LineNumberMapping {
-    public LineNumberMapping(LineRange obfuscatedRange, LineRange clearRange) {
-      this.obfuscatedRange = obfuscatedRange;
-      this.clearRange = clearRange;
-    }
-
-    public boolean hasObfuscatedLine(int lineNumber) {
-      return obfuscatedRange.hasLine(lineNumber);
-    }
-
-    public int mapObfuscatedLine(int lineNumber) {
-      int mappedLine = clearRange.start + lineNumber - obfuscatedRange.start;
-      if (!clearRange.hasLine(mappedLine)) {
-        // If the mapped line ends out outside of range, it would be past the end, so just limit it
-        // to the end line
-        return clearRange.end;
-      }
-      return mappedLine;
-    }
-
-    public final LineRange obfuscatedRange;
-    public final LineRange clearRange;
+    private final int obfuscatedLineStart;
+    private final int obfuscatedLineEnd;
+    private final int clearLineStart;
   }
 
   private static class ClassData {
@@ -129,14 +102,14 @@ public class ProguardMap {
     }
 
     public void addFrame(String obfuscatedMethodName, String clearMethodName,
-            String clearSignature, LineRange obfuscatedLine, LineRange clearRange) {
+            String clearSignature, int obfuscatedLine, int obfuscatedLineEnd, int clearLine) {
         String key = obfuscatedMethodName + clearSignature;
         FrameData data = mFrames.get(key);
         if (data == null) {
           data = new FrameData(clearMethodName);
         }
         data.lineNumbers.put(
-            obfuscatedLine.start, new LineNumberMapping(obfuscatedLine, clearRange));
+            obfuscatedLine, new LineNumber(obfuscatedLine, obfuscatedLineEnd, clearLine));
         mFrames.put(key, data);
     }
 
@@ -235,13 +208,11 @@ public class ProguardMap {
    *                        formatted proguard mapping file.
    */
   public void readFromReader(Reader mapReader) throws IOException, ParseException {
-    Version compilerVersion = new Version(0, 0, 0);
     BufferedReader reader = new BufferedReader(mapReader);
     String line = reader.readLine();
     while (line != null) {
-      // Skip comment lines.
-      if (isCommentLine(line)) {
-        compilerVersion = tryParseVersion(line, compilerVersion);
+      // Comment lines start with '#'. Skip over them.
+      if (line.startsWith("#")) {
         line = reader.readLine();
         continue;
       }
@@ -263,14 +234,14 @@ public class ProguardMap {
       //   '    type clearName -> obfuscatedName'
       //   '# comment line'
       line = reader.readLine();
-      while (line != null && (line.startsWith("    ") || isCommentLine(line))) {
-        String trimmed = line.trim();
-        // Comment lines may occur anywhere in the file.
+      while (line != null && (line.startsWith("    ") || line.startsWith("#"))) {
+        // Comment lines start with '#' and may occur anywhere in the file.
         // Skip over them.
-        if (isCommentLine(trimmed)) {
+        if (line.startsWith("#")) {
           line = reader.readLine();
           continue;
         }
+        String trimmed = line.trim();
         int ws = trimmed.indexOf(' ');
         sep = trimmed.indexOf(" -> ");
         if (ws == -1 || sep == -1) {
@@ -287,14 +258,14 @@ public class ProguardMap {
           classData.addField(obfuscatedName, clearName);
         } else {
           // For methods, the type is of the form: [#:[#:]]<returnType>
-          int obfuscatedLineStart = 0;
+          int obfuscatedLine = 0;
           // The end of the obfuscated line range.
           // If line does not contain explicit end range, e.g #:, it is equivalent to #:#:
           int obfuscatedLineEnd = 0;
           int colon = type.indexOf(':');
           if (colon != -1) {
-            obfuscatedLineStart = Integer.parseInt(type.substring(0, colon));
-            obfuscatedLineEnd = obfuscatedLineStart;
+            obfuscatedLine = Integer.parseInt(type.substring(0, colon));
+            obfuscatedLineEnd = obfuscatedLine;
             type = type.substring(colon + 1);
           }
           colon = type.indexOf(':');
@@ -302,7 +273,6 @@ public class ProguardMap {
             obfuscatedLineEnd = Integer.parseInt(type.substring(0, colon));
             type = type.substring(colon + 1);
           }
-          LineRange obfuscatedRange = new LineRange(obfuscatedLineStart, obfuscatedLineEnd);
 
           // For methods, the clearName is of the form: <clearName><sig>[:#[:#]]
           int op = clearName.indexOf('(');
@@ -313,86 +283,30 @@ public class ProguardMap {
 
           String sig = clearName.substring(op, cp + 1);
 
-          int clearLineStart = obfuscatedRange.start;
-          int clearLineEnd = obfuscatedRange.end;
+          int clearLine = obfuscatedLine;
           colon = clearName.lastIndexOf(':');
           if (colon != -1) {
-            if (compilerVersion.compareTo(LINE_MAPPING_BEHAVIOR_CHANGE_VERSION) < 0) {
-              // Before v3.1.4 if only one clear line was present, that implied a range equal to the
-              // obfuscated line range
-              clearLineStart = Integer.parseInt(clearName.substring(colon + 1));
-              clearLineEnd = clearLineStart + obfuscatedRange.end - obfuscatedRange.start;
-            } else {
-              // From v3.1.4 if only one clear line was present, that implies that all lines map to
-              // a single clear line
-              clearLineEnd = Integer.parseInt(clearName.substring(colon + 1));
-              clearLineStart = clearLineEnd;
-            }
+            clearLine = Integer.parseInt(clearName.substring(colon + 1));
             clearName = clearName.substring(0, colon);
           }
 
           colon = clearName.lastIndexOf(':');
           if (colon != -1) {
-            clearLineStart = Integer.parseInt(clearName.substring(colon + 1));
+            clearLine = Integer.parseInt(clearName.substring(colon + 1));
             clearName = clearName.substring(0, colon);
           }
-          LineRange clearRange = new LineRange(clearLineStart, clearLineEnd);
 
           clearName = clearName.substring(0, op);
 
           String clearSig = fromProguardSignature(sig + type);
-          classData.addFrame(obfuscatedName, clearName, clearSig, obfuscatedRange, clearRange);
+          classData.addFrame(obfuscatedName, clearName, clearSig,
+                  obfuscatedLine, obfuscatedLineEnd, clearLine);
         }
 
         line = reader.readLine();
       }
     }
     reader.close();
-  }
-
-  private static class Version implements Comparable<Version> {
-    final int major;
-    final int minor;
-    final int build;
-
-    public Version(int major, int minor, int build) {
-      this.major = major;
-      this.minor = minor;
-      this.build = build;
-    }
-
-    @Override
-    public int compareTo(Version other) {
-      int compare = Integer.compare(this.major, other.major);
-      if (compare == 0) {
-        compare = Integer.compare(this.minor, other.minor);
-      }
-      if (compare == 0) {
-        compare = Integer.compare(this.build, other.build);
-      }
-      return compare;
-    }
-  }
-
-  private boolean isCommentLine(String line) {
-    // Comment lines start with '#' and my have leading whitespaces.
-    return line.trim().startsWith("#");
-  }
-
-  private Version tryParseVersion(String line, Version old) {
-    Pattern pattern = Pattern.compile("#\\s*compiler_version:\\s*(\\d+).(\\d+).(?:(\\d+))?");
-    Matcher matcher = pattern.matcher(line);
-    if (matcher.find()) {
-      String buildStr = matcher.group(3);
-      if (buildStr == null) {
-        buildStr = Integer.toString(0);
-      }
-      return new Version(
-          Integer.parseInt(matcher.group(1)),
-          Integer.parseInt(matcher.group(2)),
-          Integer.parseInt(buildStr));
-    }
-    return old;
   }
 
   /**

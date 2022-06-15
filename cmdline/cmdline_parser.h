@@ -229,7 +229,7 @@ struct CmdlineParser {
     }
 
     // Ensure we always move this when returning a new builder.
-    ArgumentBuilder(ArgumentBuilder&&) noexcept = default;
+    ArgumentBuilder(ArgumentBuilder&&) = default;
 
    protected:
     // Used by builder to internally ignore arguments by dropping them on the floor after parsing.
@@ -372,7 +372,7 @@ struct CmdlineParser {
     }
 
     // Ensure we always move this when returning a new builder.
-    UntypedArgumentBuilder(UntypedArgumentBuilder&&) noexcept = default;
+    UntypedArgumentBuilder(UntypedArgumentBuilder&&) = default;
 
    protected:
     void SetNames(std::vector<const char*>&& names) {
@@ -590,9 +590,9 @@ struct CmdlineParser {
   }
 
   // Ensure we have a default move constructor.
-  CmdlineParser(CmdlineParser&&) noexcept = default;
+  CmdlineParser(CmdlineParser&&) = default;
   // Ensure we have a default move assignment operator.
-  CmdlineParser& operator=(CmdlineParser&&) noexcept = default;
+  CmdlineParser& operator=(CmdlineParser&&) = default;
 
  private:
   friend struct Builder;
@@ -739,11 +739,11 @@ void CmdlineParser<TVariantMap, TVariantMapKey>::DumpHelp(VariableIndentationOut
   std::unordered_map<std::string, std::vector<detail::CmdlineParseArgumentAny*>> args;
   for (const std::unique_ptr<detail::CmdlineParseArgumentAny>& it : completed_arguments_) {
     auto cat = it->GetCategory();
-    if (cat.has_value()) {
-      if (args.find(*cat) == args.end()) {
-        args[*cat] = {};
+    if (cat) {
+      if (args.find(cat.value()) == args.end()) {
+        args[cat.value()] = {};
       }
-      args.at(*cat).push_back(it.get());
+      args.at(cat.value()).push_back(it.get());
     } else {
       uncat.push_back(it.get());
     }

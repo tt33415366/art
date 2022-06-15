@@ -76,7 +76,7 @@ public class Main {
 
     @Override
     public void transform(EmulatedStackFrame stackFrame) throws Throwable {
-        invokeFromTransform(delegate, stackFrame);
+      delegate.invoke(stackFrame);
     }
   }
 

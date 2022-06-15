@@ -28,13 +28,11 @@
 
 namespace art {
 
-inline ClassTable::TableSlot::TableSlot(ObjPtr<mirror::Class> klass)
-    : TableSlot(klass, klass->DescriptorHash()) {}
-
 inline uint32_t ClassTable::ClassDescriptorHash::operator()(const TableSlot& slot) const {
-  // No read barriers needed, we're reading a chain of constant references for comparison with null
-  // and retrieval of constant primitive data. See `ReadBarrierOption` and `Class::DescriptorHash()`.
-  return slot.Read<kWithoutReadBarrier>()->DescriptorHash();
+  std::string temp;
+  // No read barrier needed, we're reading a chain of constant references for comparison
+  // with null and retrieval of constant primitive data. See ReadBarrierOption.
+  return ComputeModifiedUtf8Hash(slot.Read<kWithoutReadBarrier>()->GetDescriptor(&temp));
 }
 
 inline uint32_t ClassTable::ClassDescriptorHash::operator()(const DescriptorHashPair& pair) const {
@@ -104,7 +102,7 @@ void ClassTable::VisitRoots(const Visitor& visitor) {
   }
 }
 
-template <ReadBarrierOption kReadBarrierOption, typename Visitor>
+template <typename Visitor, ReadBarrierOption kReadBarrierOption>
 bool ClassTable::Visit(Visitor& visitor) {
   ReaderMutexLock mu(Thread::Current(), lock_);
   for (ClassSet& class_set : classes_) {
@@ -117,7 +115,7 @@ bool ClassTable::Visit(Visitor& visitor) {
   return true;
 }
 
-template <ReadBarrierOption kReadBarrierOption, typename Visitor>
+template <typename Visitor, ReadBarrierOption kReadBarrierOption>
 bool ClassTable::Visit(const Visitor& visitor) {
   ReaderMutexLock mu(Thread::Current(), lock_);
   for (ClassSet& class_set : classes_) {
@@ -173,7 +171,7 @@ inline uint32_t ClassTable::TableSlot::Encode(ObjPtr<mirror::Class> klass, uint3
 
 inline ClassTable::TableSlot::TableSlot(ObjPtr<mirror::Class> klass, uint32_t descriptor_hash)
     : data_(Encode(klass, MaskHash(descriptor_hash))) {
-  DCHECK_EQ(descriptor_hash, klass->DescriptorHash());
+  DCHECK_EQ(descriptor_hash, HashDescriptor(klass));
 }
 
 template <typename Filter>
@@ -184,9 +182,9 @@ inline void ClassTable::RemoveStrongRoots(const Filter& filter) {
 }
 
 inline ObjPtr<mirror::Class> ClassTable::LookupByDescriptor(ObjPtr<mirror::Class> klass) {
-  uint32_t hash = klass->DescriptorHash();
   std::string temp;
   const char* descriptor = klass->GetDescriptor(&temp);
+  uint32_t hash = TableSlot::HashDescriptor(klass);
   return Lookup(descriptor, hash);
 }
 

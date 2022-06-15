@@ -16,9 +16,10 @@
 
 package com.android.tests.odsign;
 
-import static com.google.common.truth.Truth.assertThat;
-import static com.google.common.truth.Truth.assertWithMessage;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
+
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 
@@ -29,8 +30,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 public class ArtifactsSignedTest {
     private static final String TAG = "VerifyArtArtifactsSignedTest";
@@ -41,13 +43,15 @@ public class ArtifactsSignedTest {
     // Verifying that they are generated for the correct architectures is currently out of
     // scope for this test.
     private static final String[] REQUIRED_ARTIFACT_NAMES = {
-        "boot.art",
-        "boot.oat",
-        "boot.vdex",
+        "boot-framework.art",
+        "boot-framework.oat",
+        "boot-framework.vdex",
         "system@framework@services.jar@classes.vdex",
         "system@framework@services.jar@classes.odex",
         "system@framework@services.jar@classes.art",
     };
+
+    private static final ArrayList<String> mFoundArtifactNames = new ArrayList<>();
 
     static {
         System.loadLibrary("OdsignTestAppJni");
@@ -62,26 +66,36 @@ public class ArtifactsSignedTest {
     @Test
     public void testArtArtifactsHaveFsverity() throws Exception {
         assumeTrue("fs-verity is not supported on this device.", isFsVeritySupported());
-        assertWithMessage("Found artifacts not in fs-verity")
-                .that(getArtifacts().map(File::getPath).filter((path) -> !hasFsverityNative(path))
-                        .collect(Collectors.toList()))
-                .isEmpty();
+        List<File> files = Files.walk(Paths.get(ARTIFACTS_DIR), Integer.MAX_VALUE).
+            map(Path::toFile)
+            .collect(Collectors.toList());
+
+        for (File file : files) {
+            if (file.isFile()) {
+                assertTrue(file.getPath() + " is not in fs-verity",
+                        hasFsverityNative(file.getPath()));
+                Log.i(TAG, file.getPath() + " is in fs-verity");
+                mFoundArtifactNames.add(file.getName());
+            }
+        }
+        for (String artifact : REQUIRED_ARTIFACT_NAMES) {
+            assertTrue("Missing artifact " + artifact, mFoundArtifactNames.contains(artifact));
+        }
     }
 
     @Test
     public void testGeneratesRequiredArtArtifacts() throws Exception {
-        assertThat(getArtifacts().map(File::getName).collect(Collectors.toList()))
-                .containsAtLeastElementsIn(REQUIRED_ARTIFACT_NAMES);
-    }
+        List<File> files = Files.walk(Paths.get(ARTIFACTS_DIR), Integer.MAX_VALUE).
+            map(Path::toFile)
+            .collect(Collectors.toList());
 
-    @Test
-    public void testGeneratesAnyArtArtifacts() throws Exception {
-        assertThat(getArtifacts().collect(Collectors.toList())).isNotEmpty();
-    }
-
-    private Stream<File> getArtifacts() throws Exception {
-        return Files.walk(Paths.get(ARTIFACTS_DIR), Integer.MAX_VALUE)
-                .map(Path::toFile)
-                .filter(File::isFile);
+        for (File file : files) {
+            if (file.isFile()) {
+                mFoundArtifactNames.add(file.getName());
+            }
+        }
+        for (String artifact : REQUIRED_ARTIFACT_NAMES) {
+            assertTrue("Missing artifact " + artifact, mFoundArtifactNames.contains(artifact));
+        }
     }
 }

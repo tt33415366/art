@@ -23,7 +23,6 @@
 #include "obj_ptr-inl.h"
 #include "object_callbacks.h"
 #include "stack.h"
-#include "thread-inl.h"  // For GetWeakRefAccessEnabled().
 
 #include <android-base/properties.h>
 
@@ -32,14 +31,7 @@ namespace gc {
 
 int32_t AllocRecordStackTraceElement::ComputeLineNumber() const {
   DCHECK(method_ != nullptr);
-  int32_t line_number = method_->GetLineNumFromDexPC(dex_pc_);
-  if (line_number == -1 && !method_->IsProxyMethod()) {
-    // If we failed to map the dex pc to a line number, then most probably there is no debug info.
-    // Make the line_number same as the dex pc - it can be decoded later using a map file.
-    // See b/30183883 and b/228000954.
-    line_number = static_cast<int32_t>(dex_pc_);
-  }
-  return line_number;
+  return method_->GetLineNumFromDexPC(dex_pc_);
 }
 
 const char* AllocRecord::GetClassDescriptor(std::string* storage) const {

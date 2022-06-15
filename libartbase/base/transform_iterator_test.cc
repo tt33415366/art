@@ -45,28 +45,32 @@ TEST(TransformIterator, VectorAdd1) {
   std::vector<int> output;
 
   using vector_titer = decltype(MakeTransformIterator(input.begin(), add1));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_titer::iterator_category>);
-  static_assert(std::is_same_v<int, vector_titer::value_type>);
-  static_assert(std::is_same_v<vector_titer, vector_titer::pointer>);
-  static_assert(std::is_same_v<int, vector_titer::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_titer::iterator_category>::value, "category");
+  static_assert(std::is_same<int, vector_titer::value_type>::value, "value_type");
+  static_assert(std::is_same<vector_titer, vector_titer::pointer>::value, "pointer");
+  static_assert(std::is_same<int, vector_titer::reference>::value, "reference");
 
   using vector_ctiter = decltype(MakeTransformIterator(input.cbegin(), add1));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_ctiter::iterator_category>);
-  static_assert(std::is_same_v<int, vector_ctiter::value_type>);
-  static_assert(std::is_same_v<vector_ctiter, vector_ctiter::pointer>);
-  static_assert(std::is_same_v<int, vector_ctiter::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_ctiter::iterator_category>::value, "category");
+  static_assert(std::is_same<int, vector_ctiter::value_type>::value, "value_type");
+  static_assert(std::is_same<vector_ctiter, vector_ctiter::pointer>::value, "pointer");
+  static_assert(std::is_same<int, vector_ctiter::reference>::value, "reference");
 
   using vector_rtiter = decltype(MakeTransformIterator(input.rbegin(), add1));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_rtiter::iterator_category>);
-  static_assert(std::is_same_v<int, vector_rtiter::value_type>);
-  static_assert(std::is_same_v<vector_rtiter, vector_rtiter::pointer>);
-  static_assert(std::is_same_v<int, vector_rtiter::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_rtiter::iterator_category>::value, "category");
+  static_assert(std::is_same<int, vector_rtiter::value_type>::value, "value_type");
+  static_assert(std::is_same<vector_rtiter, vector_rtiter::pointer>::value, "pointer");
+  static_assert(std::is_same<int, vector_rtiter::reference>::value, "reference");
 
   using vector_crtiter = decltype(MakeTransformIterator(input.crbegin(), add1));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_crtiter::iterator_category>);
-  static_assert(std::is_same_v<int, vector_crtiter::value_type>);
-  static_assert(std::is_same_v<vector_crtiter, vector_crtiter::pointer>);
-  static_assert(std::is_same_v<int, vector_crtiter::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_crtiter::iterator_category>::value, "category");
+  static_assert(std::is_same<int, vector_crtiter::value_type>::value, "value_type");
+  static_assert(std::is_same<vector_crtiter, vector_crtiter::pointer>::value, "pointer");
+  static_assert(std::is_same<int, vector_crtiter::reference>::value, "reference");
 
   std::copy(MakeTransformIterator(input.begin(), add1),
             MakeTransformIterator(input.end(), add1),
@@ -130,11 +134,11 @@ TEST(TransformIterator, VectorAdd1) {
   // Test iterator->const_iterator conversion and comparison.
   auto it = MakeTransformIterator(input.begin(), add1);
   decltype(MakeTransformIterator(input.cbegin(), add1)) cit = it;
-  static_assert(!std::is_same_v<decltype(it), decltype(cit)>, "Types must be different");
+  static_assert(!std::is_same<decltype(it), decltype(cit)>::value, "Types must be different");
   ASSERT_EQ(it, cit);
   auto rit = MakeTransformIterator(input.rbegin(), add1);
   decltype(MakeTransformIterator(input.crbegin(), add1)) crit(rit);
-  static_assert(!std::is_same_v<decltype(rit), decltype(crit)>, "Types must be different");
+  static_assert(!std::is_same<decltype(rit), decltype(crit)>::value, "Types must be different");
   ASSERT_EQ(rit, crit);
 }
 
@@ -144,28 +148,32 @@ TEST(TransformIterator, ListSub1) {
   std::vector<int> output;
 
   using list_titer = decltype(MakeTransformIterator(input.begin(), sub1));
-  static_assert(std::is_same_v<std::bidirectional_iterator_tag, list_titer::iterator_category>);
-  static_assert(std::is_same_v<int, list_titer::value_type>);
-  static_assert(std::is_same_v<list_titer, list_titer::pointer>);
-  static_assert(std::is_same_v<int, list_titer::reference>);
+  static_assert(std::is_same<std::bidirectional_iterator_tag,
+                             list_titer::iterator_category>::value, "category");
+  static_assert(std::is_same<int, list_titer::value_type>::value, "value_type");
+  static_assert(std::is_same<list_titer, list_titer::pointer>::value, "pointer");
+  static_assert(std::is_same<int, list_titer::reference>::value, "reference");
 
   using list_ctiter = decltype(MakeTransformIterator(input.cbegin(), sub1));
-  static_assert(std::is_same_v<std::bidirectional_iterator_tag, list_ctiter::iterator_category>);
-  static_assert(std::is_same_v<int, list_ctiter::value_type>);
-  static_assert(std::is_same_v<list_ctiter, list_ctiter::pointer>);
-  static_assert(std::is_same_v<int, list_ctiter::reference>);
+  static_assert(std::is_same<std::bidirectional_iterator_tag,
+                             list_ctiter::iterator_category>::value, "category");
+  static_assert(std::is_same<int, list_ctiter::value_type>::value, "value_type");
+  static_assert(std::is_same<list_ctiter, list_ctiter::pointer>::value, "pointer");
+  static_assert(std::is_same<int, list_ctiter::reference>::value, "reference");
 
   using list_rtiter = decltype(MakeTransformIterator(input.rbegin(), sub1));
-  static_assert(std::is_same_v<std::bidirectional_iterator_tag, list_rtiter::iterator_category>);
-  static_assert(std::is_same_v<int, list_rtiter::value_type>);
-  static_assert(std::is_same_v<list_rtiter, list_rtiter::pointer>);
-  static_assert(std::is_same_v<int, list_rtiter::reference>);
+  static_assert(std::is_same<std::bidirectional_iterator_tag,
+                             list_rtiter::iterator_category>::value, "category");
+  static_assert(std::is_same<int, list_rtiter::value_type>::value, "value_type");
+  static_assert(std::is_same<list_rtiter, list_rtiter::pointer>::value, "pointer");
+  static_assert(std::is_same<int, list_rtiter::reference>::value, "reference");
 
   using list_crtiter = decltype(MakeTransformIterator(input.crbegin(), sub1));
-  static_assert(std::is_same_v<std::bidirectional_iterator_tag, list_crtiter::iterator_category>);
-  static_assert(std::is_same_v<int, list_crtiter::value_type>);
-  static_assert(std::is_same_v<list_crtiter, list_crtiter::pointer>);
-  static_assert(std::is_same_v<int, list_crtiter::reference>);
+  static_assert(std::is_same<std::bidirectional_iterator_tag,
+                             list_crtiter::iterator_category>::value, "category");
+  static_assert(std::is_same<int, list_crtiter::value_type>::value, "value_type");
+  static_assert(std::is_same<list_crtiter, list_crtiter::pointer>::value, "pointer");
+  static_assert(std::is_same<int, list_crtiter::reference>::value, "reference");
 
   std::copy(MakeTransformIterator(input.begin(), sub1),
             MakeTransformIterator(input.end(), sub1),
@@ -194,7 +202,7 @@ TEST(TransformIterator, ListSub1) {
   // Test iterator->const_iterator conversion and comparison.
   auto it = MakeTransformIterator(input.begin(), sub1);
   decltype(MakeTransformIterator(input.cbegin(), sub1)) cit = it;
-  static_assert(!std::is_same_v<decltype(it), decltype(cit)>, "Types must be different");
+  static_assert(!std::is_same<decltype(it), decltype(cit)>::value, "Types must be different");
   ASSERT_EQ(it, cit);
 }
 
@@ -204,16 +212,18 @@ TEST(TransformIterator, ForwardListSub1) {
   std::vector<int> output;
 
   using flist_titer = decltype(MakeTransformIterator(input.begin(), mul3));
-  static_assert(std::is_same_v<std::forward_iterator_tag, flist_titer::iterator_category>);
-  static_assert(std::is_same_v<int, flist_titer::value_type>);
-  static_assert(std::is_same_v<flist_titer, flist_titer::pointer>);
-  static_assert(std::is_same_v<int, flist_titer::reference>);
+  static_assert(std::is_same<std::forward_iterator_tag,
+                             flist_titer::iterator_category>::value, "category");
+  static_assert(std::is_same<int, flist_titer::value_type>::value, "value_type");
+  static_assert(std::is_same<flist_titer, flist_titer::pointer>::value, "pointer");
+  static_assert(std::is_same<int, flist_titer::reference>::value, "reference");
 
   using flist_ctiter = decltype(MakeTransformIterator(input.cbegin(), mul3));
-  static_assert(std::is_same_v<std::forward_iterator_tag, flist_ctiter::iterator_category>);
-  static_assert(std::is_same_v<int, flist_ctiter::value_type>);
-  static_assert(std::is_same_v<flist_ctiter, flist_ctiter::pointer>);
-  static_assert(std::is_same_v<int, flist_ctiter::reference>);
+  static_assert(std::is_same<std::forward_iterator_tag,
+                             flist_ctiter::iterator_category>::value, "category");
+  static_assert(std::is_same<int, flist_ctiter::value_type>::value, "value_type");
+  static_assert(std::is_same<flist_ctiter, flist_ctiter::pointer>::value, "pointer");
+  static_assert(std::is_same<int, flist_ctiter::reference>::value, "reference");
 
   std::copy(MakeTransformIterator(input.begin(), mul3),
             MakeTransformIterator(input.end(), mul3),
@@ -230,7 +240,7 @@ TEST(TransformIterator, ForwardListSub1) {
   // Test iterator->const_iterator conversion and comparison.
   auto it = MakeTransformIterator(input.begin(), mul3);
   decltype(MakeTransformIterator(input.cbegin(), mul3)) cit = it;
-  static_assert(!std::is_same_v<decltype(it), decltype(cit)>, "Types must be different");
+  static_assert(!std::is_same<decltype(it), decltype(cit)>::value, "Types must be different");
   ASSERT_EQ(it, cit);
 }
 
@@ -240,28 +250,32 @@ TEST(TransformIterator, VectorConstReference) {
   std::vector<int> output;
 
   using vector_titer = decltype(MakeTransformIterator(input.begin(), ref));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_titer::iterator_category>);
-  static_assert(std::is_same_v<int, vector_titer::value_type>);
-  static_assert(std::is_same_v<const int*, vector_titer::pointer>);
-  static_assert(std::is_same_v<const int&, vector_titer::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_titer::iterator_category>::value, "category");
+  static_assert(std::is_same<int, vector_titer::value_type>::value, "value_type");
+  static_assert(std::is_same<const int*, vector_titer::pointer>::value, "pointer");
+  static_assert(std::is_same<const int&, vector_titer::reference>::value, "reference");
 
   using vector_ctiter = decltype(MakeTransformIterator(input.cbegin(), ref));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_ctiter::iterator_category>);
-  static_assert(std::is_same_v<int, vector_ctiter::value_type>);
-  static_assert(std::is_same_v<const int*, vector_ctiter::pointer>);
-  static_assert(std::is_same_v<const int&, vector_ctiter::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_ctiter::iterator_category>::value, "category");
+  static_assert(std::is_same<int, vector_ctiter::value_type>::value, "value_type");
+  static_assert(std::is_same<const int*, vector_ctiter::pointer>::value, "pointer");
+  static_assert(std::is_same<const int&, vector_ctiter::reference>::value, "reference");
 
   using vector_rtiter = decltype(MakeTransformIterator(input.rbegin(), ref));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_rtiter::iterator_category>);
-  static_assert(std::is_same_v<int, vector_rtiter::value_type>);
-  static_assert(std::is_same_v<const int*, vector_rtiter::pointer>);
-  static_assert(std::is_same_v<const int&, vector_rtiter::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_rtiter::iterator_category>::value, "category");
+  static_assert(std::is_same<int, vector_rtiter::value_type>::value, "value_type");
+  static_assert(std::is_same<const int*, vector_rtiter::pointer>::value, "pointer");
+  static_assert(std::is_same<const int&, vector_rtiter::reference>::value, "reference");
 
   using vector_crtiter = decltype(MakeTransformIterator(input.crbegin(), ref));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_crtiter::iterator_category>);
-  static_assert(std::is_same_v<int, vector_crtiter::value_type>);
-  static_assert(std::is_same_v<const int*, vector_crtiter::pointer>);
-  static_assert(std::is_same_v<const int&, vector_crtiter::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_crtiter::iterator_category>::value, "category");
+  static_assert(std::is_same<int, vector_crtiter::value_type>::value, "value_type");
+  static_assert(std::is_same<const int*, vector_crtiter::pointer>::value, "pointer");
+  static_assert(std::is_same<const int&, vector_crtiter::reference>::value, "reference");
 
   std::copy(MakeTransformIterator(input.begin(), ref),
             MakeTransformIterator(input.end(), ref),
@@ -329,16 +343,18 @@ TEST(TransformIterator, VectorNonConstReference) {
   std::vector<int> output;
 
   using vector_titer = decltype(MakeTransformIterator(input.begin(), ref));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_titer::iterator_category>);
-  static_assert(std::is_same_v<int, vector_titer::value_type>);
-  static_assert(std::is_same_v<int*, vector_titer::pointer>);
-  static_assert(std::is_same_v<int&, vector_titer::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_titer::iterator_category>::value, "category");
+  static_assert(std::is_same<int, vector_titer::value_type>::value, "value_type");
+  static_assert(std::is_same<int*, vector_titer::pointer>::value, "pointer");
+  static_assert(std::is_same<int&, vector_titer::reference>::value, "reference");
 
   using vector_rtiter = decltype(MakeTransformIterator(input.rbegin(), ref));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_rtiter::iterator_category>);
-  static_assert(std::is_same_v<int, vector_rtiter::value_type>);
-  static_assert(std::is_same_v<int*, vector_rtiter::pointer>);
-  static_assert(std::is_same_v<int&, vector_rtiter::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_rtiter::iterator_category>::value, "category");
+  static_assert(std::is_same<int, vector_rtiter::value_type>::value, "value_type");
+  static_assert(std::is_same<int*, vector_rtiter::pointer>::value, "pointer");
+  static_assert(std::is_same<int&, vector_rtiter::reference>::value, "reference");
 
   std::copy(MakeTransformIterator(input.begin(), ref),
             MakeTransformIterator(input.end(), ref),
@@ -395,28 +411,32 @@ TEST(TransformIterator, VectorConstAndNonConstReference) {
   std::vector<int> output;
 
   using vector_titer = decltype(MakeTransformIterator(input.begin(), ref));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_titer::iterator_category>);
-  static_assert(std::is_same_v<int, vector_titer::value_type>);
-  static_assert(std::is_same_v<int*, vector_titer::pointer>);
-  static_assert(std::is_same_v<int&, vector_titer::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_titer::iterator_category>::value, "category");
+  static_assert(std::is_same<int, vector_titer::value_type>::value, "value_type");
+  static_assert(std::is_same<int*, vector_titer::pointer>::value, "pointer");
+  static_assert(std::is_same<int&, vector_titer::reference>::value, "reference");
 
   using vector_ctiter = decltype(MakeTransformIterator(input.cbegin(), ref));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_ctiter::iterator_category>);
-  static_assert(std::is_same_v<int, vector_ctiter::value_type>);
-  static_assert(std::is_same_v<const int*, vector_ctiter::pointer>);
-  static_assert(std::is_same_v<const int&, vector_ctiter::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_ctiter::iterator_category>::value, "category");
+  // static_assert(std::is_same<int, vector_ctiter::value_type>::value, "value_type");
+  static_assert(std::is_same<const int*, vector_ctiter::pointer>::value, "pointer");
+  static_assert(std::is_same<const int&, vector_ctiter::reference>::value, "reference");
 
   using vector_rtiter = decltype(MakeTransformIterator(input.rbegin(), ref));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_rtiter::iterator_category>);
-  static_assert(std::is_same_v<int, vector_rtiter::value_type>);
-  static_assert(std::is_same_v<int*, vector_rtiter::pointer>);
-  static_assert(std::is_same_v<int&, vector_rtiter::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_rtiter::iterator_category>::value, "category");
+  static_assert(std::is_same<int, vector_rtiter::value_type>::value, "value_type");
+  static_assert(std::is_same<int*, vector_rtiter::pointer>::value, "pointer");
+  static_assert(std::is_same<int&, vector_rtiter::reference>::value, "reference");
 
   using vector_crtiter = decltype(MakeTransformIterator(input.crbegin(), ref));
-  static_assert(std::is_same_v<std::random_access_iterator_tag, vector_crtiter::iterator_category>);
-  static_assert(std::is_same_v<int, vector_crtiter::value_type>);
-  static_assert(std::is_same_v<const int*, vector_crtiter::pointer>);
-  static_assert(std::is_same_v<const int&, vector_crtiter::reference>);
+  static_assert(std::is_same<std::random_access_iterator_tag,
+                             vector_crtiter::iterator_category>::value, "category");
+  // static_assert(std::is_same<int, vector_crtiter::value_type>::value, "value_type");
+  static_assert(std::is_same<const int*, vector_crtiter::pointer>::value, "pointer");
+  static_assert(std::is_same<const int&, vector_crtiter::reference>::value, "reference");
 
   std::copy(MakeTransformIterator(input.begin(), ref),
             MakeTransformIterator(input.end(), ref),
@@ -480,11 +500,11 @@ TEST(TransformIterator, VectorConstAndNonConstReference) {
   // Test iterator->const_iterator conversion and comparison.
   auto it = MakeTransformIterator(input.begin(), ref);
   decltype(MakeTransformIterator(input.cbegin(), ref)) cit = it;
-  static_assert(!std::is_same_v<decltype(it), decltype(cit)>, "Types must be different");
+  static_assert(!std::is_same<decltype(it), decltype(cit)>::value, "Types must be different");
   ASSERT_EQ(it, cit);
   auto rit = MakeTransformIterator(input.rbegin(), ref);
   decltype(MakeTransformIterator(input.crbegin(), ref)) crit(rit);
-  static_assert(!std::is_same_v<decltype(rit), decltype(crit)>, "Types must be different");
+  static_assert(!std::is_same<decltype(rit), decltype(crit)>::value, "Types must be different");
   ASSERT_EQ(rit, crit);
 
   // Test writing through the transform iterator.
