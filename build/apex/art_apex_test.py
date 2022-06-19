@@ -510,7 +510,6 @@ class ReleaseChecker:
     # catch invalid dependencies on /system or other APEXes that should go
     # through an exported library with stubs (b/128708192 tracks implementing a
     # better approach for that).
-    self._checker.check_native_library('libbacktrace')
     self._checker.check_native_library('libbase')
     self._checker.check_native_library('libc++')
     self._checker.check_native_library('libdt_socket')
@@ -558,7 +557,6 @@ class ReleaseTargetChecker:
     # Check internal libraries for ART.
     self._checker.check_native_library('libartservice')
     self._checker.check_native_library('libperfetto_hprof')
-    self._checker.check_prefer64_library('artd-aidl-ndk')
 
     # Check internal Java libraries
     self._checker.check_java_library("service-art")
@@ -672,6 +670,9 @@ class TestingTargetChecker:
 
   def run(self):
     # Check ART test binaries.
+    # TODO(b/235464166): art_artd_tests doesn't work on master-art because of
+    # the dependency on libbinder_ndk.
+    # self._checker.check_art_test_executable('art_artd_tests')
     self._checker.check_art_test_executable('art_cmdline_tests')
     self._checker.check_art_test_executable('art_compiler_tests')
     self._checker.check_art_test_executable('art_dex2oat_tests')
