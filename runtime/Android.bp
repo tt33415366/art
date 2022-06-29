@@ -415,7 +415,6 @@ libart_cc_defaults {
             ],
             static_libs: [
                 "libstatslog_art",
-                "libtinyxml2",
             ],
             generated_sources: [
                 "apex-info-list-tinyxml",
@@ -466,7 +465,6 @@ libart_cc_defaults {
     ],
     shared_libs: [
         "libartpalette",
-        "libbacktrace",
         "libbase", // For common macros.
         "liblog",
         "liblz4",
@@ -496,7 +494,6 @@ libart_static_cc_defaults {
     name: "libart_static_base_defaults",
     whole_static_libs: [
         "libartpalette",
-        "libbacktrace",
         "libbase",
         "liblog",
         "liblz4",
@@ -848,7 +845,7 @@ art_cc_defaults {
         "verifier/reg_type_test.cc",
     ],
     shared_libs: [
-        "libbacktrace",
+        "libunwindstack",
     ],
     header_libs: [
         "art_cmdlineparser_headers", // For parsed_options_test.
@@ -877,6 +874,7 @@ art_cc_test {
         "art_standalone_gtest_defaults",
         "art_runtime_tests_defaults",
     ],
+    data: [":generate-boot-image"],
     target: {
         host: {
             required: ["dex2oat"],
@@ -930,6 +928,7 @@ art_cc_test {
         "art_standalone_gtest_defaults",
         "art_runtime_compiler_tests_defaults",
     ],
+    data: [":generate-boot-image"],
     shared_libs: [
         "libart-compiler",
     ],

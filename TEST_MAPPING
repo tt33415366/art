@@ -401,10 +401,19 @@
       "name": "art-run-test-2042-checker-dce-always-throw[com.google.android.art.apex]"
     },
     {
+      "name": "art-run-test-2042-reference-processing[com.google.android.art.apex]"
+    },
+    {
+      "name": "art-run-test-2043-reference-pauses[com.google.android.art.apex]"
+    },
+    {
       "name": "art-run-test-2231-checker-heap-poisoning[com.google.android.art.apex]"
     },
     {
       "name": "art-run-test-2232-write-metrics-to-log[com.google.android.art.apex]"
+    },
+    {
+      "name": "art-run-test-2233-checker-remove-loop-suspend-check[com.google.android.art.apex]"
     },
     {
       "name": "art-run-test-2234-checker-remove-entry-suspendcheck[com.google.android.art.apex]"
@@ -1699,10 +1708,19 @@
       "name": "art-run-test-2042-checker-dce-always-throw"
     },
     {
+      "name": "art-run-test-2042-reference-processing"
+    },
+    {
+      "name": "art-run-test-2043-reference-pauses"
+    },
+    {
       "name": "art-run-test-2231-checker-heap-poisoning"
     },
     {
       "name": "art-run-test-2232-write-metrics-to-log"
+    },
+    {
+      "name": "art-run-test-2233-checker-remove-loop-suspend-check"
     },
     {
       "name": "art-run-test-2234-checker-remove-entry-suspendcheck"
@@ -2589,9 +2607,6 @@
   ],
   "hwasan-presubmit": [
     {
-      "name": "BootImageProfileTest"
-    },
-    {
       "name": "ArtServiceTests"
     },
     {
@@ -2997,10 +3012,19 @@
       "name": "art-run-test-2042-checker-dce-always-throw"
     },
     {
+      "name": "art-run-test-2042-reference-processing"
+    },
+    {
+      "name": "art-run-test-2043-reference-pauses"
+    },
+    {
       "name": "art-run-test-2231-checker-heap-poisoning"
     },
     {
       "name": "art-run-test-2232-write-metrics-to-log"
+    },
+    {
+      "name": "art-run-test-2233-checker-remove-loop-suspend-check"
     },
     {
       "name": "art-run-test-2234-checker-remove-entry-suspendcheck"

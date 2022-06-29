@@ -178,6 +178,7 @@
 #include "well_known_classes.h"
 
 #ifdef ART_TARGET_ANDROID
+#include <android/api-level.h>
 #include <android/set_abort_message.h>
 #include "com_android_apex.h"
 namespace apex = com::android::apex;
@@ -543,7 +544,7 @@ struct AbortState {
     os << "Runtime aborting...\n";
     if (Runtime::Current() == nullptr) {
       os << "(Runtime does not yet exist!)\n";
-      DumpNativeStack(os, GetTid(), nullptr, "  native: ", nullptr);
+      DumpNativeStack(os, GetTid(), "  native: ", nullptr);
       return;
     }
     Thread* self = Thread::Current();
@@ -555,7 +556,7 @@ struct AbortState {
 
     if (self == nullptr) {
       os << "(Aborting thread was not attached to runtime!)\n";
-      DumpNativeStack(os, GetTid(), nullptr, "  native: ", nullptr);
+      DumpNativeStack(os, GetTid(), "  native: ", nullptr);
     } else {
       os << "Aborting thread:\n";
       if (Locks::mutator_lock_->IsExclusiveHeld(self) || Locks::mutator_lock_->IsSharedHeld(self)) {
@@ -1128,8 +1129,8 @@ void Runtime::InitNonZygoteOrPostFork(
       std::vector<std::string> jars = android::base::Split(system_server_classpath, ":");
       app_info_.RegisterAppInfo("android",
                                 jars,
-                                /*cur_profile_path=*/ "",
-                                /*ref_profile_path=*/ "",
+                                /*profile_output_filename=*/ "",
+                                /*ref_profile_filename=*/ "",
                                 AppInfo::CodeType::kPrimaryApk);
     }
 
@@ -1328,9 +1329,9 @@ static inline void CreatePreAllocatedException(Thread* self,
   detailMessageField->SetObject</* kTransactionActive= */ false>(exception->Read(), message);
 }
 
-void Runtime::InitializeApexVersions() {
+std::string Runtime::GetApexVersions(ArrayRef<const std::string> boot_class_path_locations) {
   std::vector<std::string_view> bcp_apexes;
-  for (std::string_view jar : Runtime::Current()->GetBootClassPathLocations()) {
+  for (std::string_view jar : boot_class_path_locations) {
     std::string_view apex = ApexNameFromLocation(jar);
     if (!apex.empty()) {
       bcp_apexes.push_back(apex);
@@ -1338,20 +1339,20 @@ void Runtime::InitializeApexVersions() {
   }
   static const char* kApexFileName = "/apex/apex-info-list.xml";
   // Start with empty markers.
-  apex_versions_ = std::string(bcp_apexes.size(), '/');
+  std::string empty_apex_versions(bcp_apexes.size(), '/');
   // When running on host or chroot, we just use empty markers.
   if (!kIsTargetBuild || !OS::FileExists(kApexFileName)) {
-    return;
+    return empty_apex_versions;
   }
 #ifdef ART_TARGET_ANDROID
   if (access(kApexFileName, R_OK) != 0) {
     PLOG(WARNING) << "Failed to read " << kApexFileName;
-    return;
+    return empty_apex_versions;
   }
   auto info_list = apex::readApexInfoList(kApexFileName);
   if (!info_list.has_value()) {
     LOG(WARNING) << "Failed to parse " << kApexFileName;
-    return;
+    return empty_apex_versions;
   }
 
   std::string result;
@@ -1375,8 +1376,15 @@ void Runtime::InitializeApexVersions() {
       android::base::StringAppendF(&result, "/%" PRIu64, version);
     }
   }
-  apex_versions_ = result;
+  return result;
+#else
+  return empty_apex_versions;  // Not an Android build.
 #endif
+}
+
+void Runtime::InitializeApexVersions() {
+  apex_versions_ =
+      GetApexVersions(ArrayRef<const std::string>(Runtime::Current()->GetBootClassPathLocations()));
 }
 
 void Runtime::ReloadAllFlags(const std::string& caller) {
@@ -3147,15 +3155,19 @@ class UpdateEntryPointsClassVisitor : public ClassVisitor {
     auto pointer_size = Runtime::Current()->GetClassLinker()->GetImagePointerSize();
     for (auto& m : klass->GetMethods(pointer_size)) {
       const void* code = m.GetEntryPointFromQuickCompiledCode();
+      // For java debuggable runtimes we also deoptimize native methods. For other cases (boot
+      // image profiling) we don't need to deoptimize native methods. If this changes also
+      // update Instrumentation::CanUseAotCode.
+      bool deoptimize_native_methods = Runtime::Current()->IsJavaDebuggable();
       if (Runtime::Current()->GetHeap()->IsInBootImageOatFile(code) &&
-          !m.IsNative() &&
+          (!m.IsNative() || deoptimize_native_methods) &&
           !m.IsProxyMethod()) {
         instrumentation_->InitializeMethodsCode(&m, /*aot_code=*/ nullptr);
       }
 
       if (Runtime::Current()->GetJit() != nullptr &&
           Runtime::Current()->GetJit()->GetCodeCache()->IsInZygoteExecSpace(code) &&
-          !m.IsNative()) {
+          (!m.IsNative() || deoptimize_native_methods)) {
         DCHECK(!m.IsProxyMethod());
         instrumentation_->InitializeMethodsCode(&m, /*aot_code=*/ nullptr);
       }
@@ -3361,6 +3373,22 @@ void Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
                                   const uint8_t* map_begin,
                                   const uint8_t* map_end,
                                   const std::string& file_name) {
+#ifdef ART_TARGET_ANDROID
+  // Short-circuit the madvise optimization for background processes. This
+  // avoids IO and memory contention with foreground processes, particularly
+  // those involving app startup.
+  // Note: We can only safely short-circuit the madvise on T+, as it requires
+  // the framework to always immediately notify ART of process states.
+  static const int kApiLevel = android_get_device_api_level();
+  const bool accurate_process_state_at_startup = kApiLevel >= __ANDROID_API_T__;
+  if (accurate_process_state_at_startup) {
+    const Runtime* runtime = Runtime::Current();
+    if (runtime != nullptr && !runtime->InJankPerceptibleProcessState()) {
+      return;
+    }
+  }
+#endif  // ART_TARGET_ANDROID
+
   // Ideal blockTransferSize for madvising files (128KiB)
   static constexpr size_t kIdealIoTransferSizeBytes = 128*1024;
 

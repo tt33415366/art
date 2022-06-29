@@ -310,6 +310,7 @@ uint32_t ArtMethod::FindCatchBlock(Handle<mirror::Class> exception_type,
   return found_dex_pc;
 }
 
+NO_STACK_PROTECTOR
 void ArtMethod::Invoke(Thread* self, uint32_t* args, uint32_t args_size, JValue* result,
                        const char* shorty) {
   if (UNLIKELY(__builtin_frame_address(0) < self->GetStackEnd())) {
@@ -617,6 +618,15 @@ const OatQuickMethodHeader* ArtMethod::GetOatQuickMethodHeader(uintptr_t pc) {
   }
 
   OatQuickMethodHeader* method_header = OatQuickMethodHeader::FromEntryPoint(oat_entry_point);
+  // We could have existing Oat code for native methods but we may not use it if the runtime is java
+  // debuggable or when profiling boot class path. There is no easy way to check if the pc
+  // corresponds to QuickGenericJniStub. Since we have eliminated all the other cases, if the pc
+  // doesn't correspond to the AOT code then we must be running QuickGenericJniStub.
+  if (IsNative() && !method_header->Contains(pc)) {
+    DCHECK_NE(pc, 0u) << "PC 0 for " << PrettyMethod();
+    return nullptr;
+  }
+
   DCHECK(method_header->Contains(pc))
       << PrettyMethod()
       << " " << std::hex << pc << " " << oat_entry_point

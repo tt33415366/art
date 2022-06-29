@@ -647,6 +647,7 @@ static void HandleDeoptimization(JValue* result,
                                               method_type);
 }
 
+NO_STACK_PROTECTOR
 extern "C" uint64_t artQuickToInterpreterBridge(ArtMethod* method, Thread* self, ArtMethod** sp)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   // Ensure we don't get thread suspension until the object arguments are safely in the shadow
@@ -855,7 +856,6 @@ extern "C" uint64_t artQuickProxyInvokeHandler(
     instr->MethodEnterEvent(soa.Self(), proxy_method);
     if (soa.Self()->IsExceptionPending()) {
       instr->MethodUnwindEvent(self,
-                               soa.Decode<mirror::Object>(rcvr_jobj),
                                proxy_method,
                                0);
       return 0;
@@ -865,7 +865,6 @@ extern "C" uint64_t artQuickProxyInvokeHandler(
   if (soa.Self()->IsExceptionPending()) {
     if (instr->HasMethodUnwindListeners()) {
       instr->MethodUnwindEvent(self,
-                               soa.Decode<mirror::Object>(rcvr_jobj),
                                proxy_method,
                                0);
     }
@@ -1030,22 +1029,11 @@ extern "C" const void* artInstrumentationMethodEntryFromCode(ArtMethod* method,
       << "Proxy method " << method->PrettyMethod()
       << " (declaring class: " << method->GetDeclaringClass()->PrettyClass() << ")"
       << " should not hit instrumentation entrypoint.";
-  DCHECK(!instrumentation->IsDeoptimized(method));
+  DCHECK(!instrumentation->IsDeoptimized(method)) << method->PrettyMethod();
   // This will get the entry point either from the oat file, the JIT or the appropriate bridge
   // method if none of those can be found.
   result = instrumentation->GetCodeForInvoke(method);
-  jit::Jit* jit = Runtime::Current()->GetJit();
   DCHECK_NE(result, GetQuickInstrumentationEntryPoint()) << method->PrettyMethod();
-  DCHECK(jit == nullptr ||
-         // Native methods come through here in Interpreter entrypoints. We might not have
-         // disabled jit-gc but that is fine since we won't return jit-code for native methods.
-         method->IsNative() ||
-         !jit->GetCodeCache()->GetGarbageCollectCode());
-  DCHECK(!method->IsNative() ||
-         jit == nullptr ||
-         !jit->GetCodeCache()->ContainsPc(result))
-      << method->PrettyMethod() << " code will jump to possibly cleaned up jit code!";
-
   bool interpreter_entry = Runtime::Current()->GetClassLinker()->IsQuickToInterpreterBridge(result);
   bool is_static = method->IsStatic();
   uint32_t shorty_len;
@@ -2096,7 +2084,7 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
   }
 
   // Fix up managed-stack things in Thread. After this we can walk the stack.
-  self->SetTopOfStackTagged(managed_sp);
+  self->SetTopOfStackGenericJniTagged(managed_sp);
 
   self->VerifyStack();
 
@@ -2190,7 +2178,7 @@ extern "C" uint64_t artQuickGenericJniEndTrampoline(Thread* self,
   // anything that requires a mutator lock before that would cause problems as GC may have the
   // exclusive mutator lock and may be moving objects, etc.
   ArtMethod** sp = self->GetManagedStack()->GetTopQuickFrame();
-  DCHECK(self->GetManagedStack()->GetTopQuickFrameTag());
+  DCHECK(self->GetManagedStack()->GetTopQuickFrameGenericJniTag());
   uint32_t* sp32 = reinterpret_cast<uint32_t*>(sp);
   ArtMethod* called = *sp;
   uint32_t cookie = *(sp32 - 1);
@@ -2675,7 +2663,7 @@ extern "C" void artMethodEntryHook(ArtMethod* method, Thread* self, ArtMethod** 
   }
 }
 
-extern "C" int artMethodExitHook(Thread* self,
+extern "C" void artMethodExitHook(Thread* self,
                                  ArtMethod* method,
                                  uint64_t* gpr_result,
                                  uint64_t* fpr_result)
@@ -2724,7 +2712,10 @@ extern "C" int artMethodExitHook(Thread* self,
   }
 
   if (self->IsExceptionPending() || self->ObserveAsyncException()) {
-    return 1;
+    // The exception was thrown from the method exit callback. We should not call  method unwind
+    // callbacks for this case.
+    self->QuickDeliverException(/* is_method_exit_exception= */ true);
+    UNREACHABLE();
   }
 
   if (deoptimize) {
@@ -2733,8 +2724,6 @@ extern "C" int artMethodExitHook(Thread* self,
     artDeoptimize(self);
     UNREACHABLE();
   }
-
-  return 0;
 }
 
 }  // namespace art

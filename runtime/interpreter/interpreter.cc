@@ -255,6 +255,7 @@ static JValue ExecuteSwitch(Thread* self,
   }
 }
 
+NO_STACK_PROTECTOR
 static inline JValue Execute(
     Thread* self,
     const CodeItemDataAccessor& accessor,
@@ -270,36 +271,10 @@ static inline JValue Execute(
       CHECK_EQ(shadow_frame.GetDexPC(), 0u);
       self->AssertNoPendingException();
     }
-    instrumentation::Instrumentation* instrumentation = Runtime::Current()->GetInstrumentation();
     ArtMethod *method = shadow_frame.GetMethod();
 
-    if (UNLIKELY(instrumentation->HasMethodEntryListeners())) {
-      instrumentation->MethodEnterEvent(self, method);
-      if (UNLIKELY(shadow_frame.GetForcePopFrame())) {
-        // The caller will retry this invoke or ignore the result. Just return immediately without
-        // any value.
-        DCHECK(Runtime::Current()->AreNonStandardExitsEnabled());
-        JValue ret = JValue();
-        PerformNonStandardReturn<MonitorState::kNoMonitorsLocked>(
-            self, shadow_frame, ret, instrumentation, accessor.InsSize());
-        return ret;
-      }
-      if (UNLIKELY(self->IsExceptionPending())) {
-        instrumentation->MethodUnwindEvent(self,
-                                           shadow_frame.GetThisObject(accessor.InsSize()),
-                                           method,
-                                           0);
-        JValue ret = JValue();
-        if (UNLIKELY(shadow_frame.GetForcePopFrame())) {
-          DCHECK(Runtime::Current()->AreNonStandardExitsEnabled());
-          PerformNonStandardReturn<MonitorState::kNoMonitorsLocked>(
-              self, shadow_frame, ret, instrumentation, accessor.InsSize());
-        }
-        return ret;
-      }
-    }
-
-    if (!stay_in_interpreter && !self->IsForceInterpreter()) {
+    // If we can continue in JIT and have JITed code available execute JITed code.
+    if (!stay_in_interpreter && !self->IsForceInterpreter() && !shadow_frame.GetForcePopFrame()) {
       jit::Jit* jit = Runtime::Current()->GetJit();
       if (jit != nullptr) {
         jit->MethodEntered(self, shadow_frame.GetMethod());
@@ -318,6 +293,32 @@ static inline JValue Execute(
 
           return result;
         }
+      }
+    }
+
+    instrumentation::Instrumentation* instrumentation = Runtime::Current()->GetInstrumentation();
+    if (UNLIKELY(instrumentation->HasMethodEntryListeners() || shadow_frame.GetForcePopFrame())) {
+      instrumentation->MethodEnterEvent(self, method);
+      if (UNLIKELY(shadow_frame.GetForcePopFrame())) {
+        // The caller will retry this invoke or ignore the result. Just return immediately without
+        // any value.
+        DCHECK(Runtime::Current()->AreNonStandardExitsEnabled());
+        JValue ret = JValue();
+        PerformNonStandardReturn<MonitorState::kNoMonitorsLocked>(
+            self, shadow_frame, ret, instrumentation, accessor.InsSize());
+        return ret;
+      }
+      if (UNLIKELY(self->IsExceptionPending())) {
+        instrumentation->MethodUnwindEvent(self,
+                                           method,
+                                           0);
+        JValue ret = JValue();
+        if (UNLIKELY(shadow_frame.GetForcePopFrame())) {
+          DCHECK(Runtime::Current()->AreNonStandardExitsEnabled());
+          PerformNonStandardReturn<MonitorState::kNoMonitorsLocked>(
+              self, shadow_frame, ret, instrumentation, accessor.InsSize());
+        }
+        return ret;
       }
     }
   }
@@ -570,6 +571,7 @@ void EnterInterpreterFromDeoptimize(Thread* self,
   ret_val->SetJ(value.GetJ());
 }
 
+NO_STACK_PROTECTOR
 JValue EnterInterpreterFromEntryPoint(Thread* self, const CodeItemDataAccessor& accessor,
                                       ShadowFrame* shadow_frame) {
   DCHECK_EQ(self, Thread::Current());
@@ -586,6 +588,7 @@ JValue EnterInterpreterFromEntryPoint(Thread* self, const CodeItemDataAccessor& 
   return Execute(self, accessor, *shadow_frame, JValue());
 }
 
+NO_STACK_PROTECTOR
 void ArtInterpreterToInterpreterBridge(Thread* self,
                                        const CodeItemDataAccessor& accessor,
                                        ShadowFrame* shadow_frame,
