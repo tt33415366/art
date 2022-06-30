@@ -398,6 +398,9 @@
       "name": "art-run-test-2030-long-running-child[com.google.android.art.apex]"
     },
     {
+      "name": "art-run-test-2042-checker-dce-always-throw[com.google.android.art.apex]"
+    },
+    {
       "name": "art-run-test-2231-checker-heap-poisoning[com.google.android.art.apex]"
     },
     {
@@ -752,6 +755,9 @@
       "name": "art-run-test-529-long-split[com.google.android.art.apex]"
     },
     {
+      "name": "art-run-test-530-checker-loops-try-catch[com.google.android.art.apex]"
+    },
+    {
       "name": "art-run-test-530-checker-loops1[com.google.android.art.apex]"
     },
     {
@@ -776,7 +782,7 @@
       "name": "art-run-test-530-checker-lse-simd[com.google.android.art.apex]"
     },
     {
-      "name": "art-run-test-530-checker-lse2[com.google.android.art.apex]"
+      "name": "art-run-test-530-checker-lse-try-catch[com.google.android.art.apex]"
     },
     {
       "name": "art-run-test-530-instanceof-checkcast[com.google.android.art.apex]"
@@ -1127,9 +1133,6 @@
       "name": "art-run-test-678-quickening[com.google.android.art.apex]"
     },
     {
-      "name": "art-run-test-680-sink-regression[com.google.android.art.apex]"
-    },
-    {
       "name": "art-run-test-684-checker-simd-dotprod[com.google.android.art.apex]"
     },
     {
@@ -1175,6 +1178,9 @@
       "name": "art-run-test-718-zipfile-finalizer[com.google.android.art.apex]"
     },
     {
+      "name": "art-run-test-719-varhandle-concurrency[com.google.android.art.apex]"
+    },
+    {
       "name": "art-run-test-721-osr[com.google.android.art.apex]"
     },
     {
@@ -1182,6 +1188,9 @@
     },
     {
       "name": "art-run-test-730-checker-inlining-super[com.google.android.art.apex]"
+    },
+    {
+      "name": "art-run-test-731-bounds-check-slow-path[com.google.android.art.apex]"
     },
     {
       "name": "art-run-test-805-TooDeepClassInstanceOf[com.google.android.art.apex]"
@@ -1215,6 +1224,9 @@
     },
     {
       "name": "art-run-test-963-default-range-smali[com.google.android.art.apex]"
+    },
+    {
+      "name": "art_libnativebridge_cts_tests[com.google.android.art.apex]"
     },
     {
       "name": "art_standalone_cmdline_tests[com.google.android.art.apex]"
@@ -1269,6 +1281,9 @@
     },
     {
       "name": "art_standalone_sigchain_tests[com.google.android.art.apex]"
+    },
+    {
+      "name": "libnativeloader_test[com.google.android.art.apex]"
     }
   ],
   "presubmit": [
@@ -1681,6 +1696,9 @@
       "name": "art-run-test-2030-long-running-child"
     },
     {
+      "name": "art-run-test-2042-checker-dce-always-throw"
+    },
+    {
       "name": "art-run-test-2231-checker-heap-poisoning"
     },
     {
@@ -2035,6 +2053,9 @@
       "name": "art-run-test-529-long-split"
     },
     {
+      "name": "art-run-test-530-checker-loops-try-catch"
+    },
+    {
       "name": "art-run-test-530-checker-loops1"
     },
     {
@@ -2059,7 +2080,7 @@
       "name": "art-run-test-530-checker-lse-simd"
     },
     {
-      "name": "art-run-test-530-checker-lse2"
+      "name": "art-run-test-530-checker-lse-try-catch"
     },
     {
       "name": "art-run-test-530-instanceof-checkcast"
@@ -2410,9 +2431,6 @@
       "name": "art-run-test-678-quickening"
     },
     {
-      "name": "art-run-test-680-sink-regression"
-    },
-    {
       "name": "art-run-test-684-checker-simd-dotprod"
     },
     {
@@ -2458,6 +2476,9 @@
       "name": "art-run-test-718-zipfile-finalizer"
     },
     {
+      "name": "art-run-test-719-varhandle-concurrency"
+    },
+    {
       "name": "art-run-test-721-osr"
     },
     {
@@ -2465,6 +2486,9 @@
     },
     {
       "name": "art-run-test-730-checker-inlining-super"
+    },
+    {
+      "name": "art-run-test-731-bounds-check-slow-path"
     },
     {
       "name": "art-run-test-805-TooDeepClassInstanceOf"
@@ -2498,6 +2522,9 @@
     },
     {
       "name": "art-run-test-963-default-range-smali"
+    },
+    {
+      "name": "art_libnativebridge_cts_tests"
     },
     {
       "name": "art_standalone_cmdline_tests"
@@ -2555,6 +2582,9 @@
     },
     {
       "name": "art_standalone_sigchain_tests"
+    },
+    {
+      "name": "libnativeloader_test"
     }
   ]
 }

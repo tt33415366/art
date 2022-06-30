@@ -222,8 +222,7 @@ while true; do
         option="$1"
         FLAGS="${FLAGS} $option"
         if [ "x$option" = "x-Xmethod-trace" ]; then
-            # Method tracing can slow some tests down a lot, in particular
-            # 530-checker-lse2.
+            # Method tracing can slow some tests down a lot.
             TIME_OUT_EXTRA=$((${TIME_OUT_EXTRA} + 1200))
         fi
         shift
@@ -651,11 +650,11 @@ if [ "$USE_JVMTI" = "y" ]; then
     # needed anymore since the plugin can do it for us now.
     FLAGS="${FLAGS} -Xplugin:${plugin}"
 
-    # For jvmti tests, set the threshold of compilation to 0, so we jit on the first
-    # use to provide better test coverage for jvmti + jit. This means we won't run
+    # For jvmti tests, set the threshold of compilation to 1, so we jit early to
+    # provide better test coverage for jvmti + jit. This means we won't run
     # the default --jit configuration but it is not too important test scenario for
     # jvmti tests. This is art specific flag, so don't use it with jvm.
-    FLAGS="${FLAGS} -Xjitthreshold:0"
+    FLAGS="${FLAGS} -Xjitthreshold:1"
   fi
 fi
 
@@ -759,14 +758,13 @@ if [ "$HAVE_IMAGE" = "n" ]; then
     # We'll abuse a second flag here to test different behavior. If --relocate, use the
     # existing image - relocation will fail as patching is disallowed. If --no-relocate,
     # pass a non-existent image - compilation will fail as dex2oat is disallowed.
-    if [ "${RELOCATE}" = "y" ] ; then
-      DALVIKVM_BOOT_OPT="-Ximage:${BOOT_IMAGE}"
-    else
-      DALVIKVM_BOOT_OPT="-Ximage:/system/non-existent/boot.art"
+    if [ "${RELOCATE}" = "n" ] ; then
+      BOOT_IMAGE="/system/non-existent/boot.art"
     fi
-else
-    DALVIKVM_BOOT_OPT="-Ximage:${BOOT_IMAGE}"
+    # App images cannot be generated without a boot image.
+    APP_IMAGE="n"
 fi
+DALVIKVM_BOOT_OPT="-Ximage:${BOOT_IMAGE}"
 
 if [ "$USE_GDB_DEX2OAT" = "y" ]; then
   if [ "$HOST" = "n" ]; then

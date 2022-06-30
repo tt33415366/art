@@ -469,11 +469,20 @@ filegroup {
     ],
 }
 
-// Same as above, but with a longer timeout.
+// Same as `art-run-test-target-template`, but with a longer timeout.
 filegroup {
     name: "art-run-test-target-slow-template",
     srcs: [
         "art-run-test-target-slow-template.xml",
+    ],
+}
+
+// Same as `art-run-test-target-template`, but contains additional
+// options to also make the test part of ART CTS.
+filegroup {
+    name: "art-run-test-target-cts-template",
+    srcs: [
+        "art-run-test-target-cts-template.xml",
     ],
 }
 
@@ -1373,7 +1382,6 @@ filegroup {
         ":art-gtest-jars-AbstractMethod",
         ":art-gtest-jars-AllFields",
         ":art-gtest-jars-DefaultMethods",
-        ":art-gtest-jars-DexToDexDecompiler",
         ":art-gtest-jars-ErroneousA",
         ":art-gtest-jars-ErroneousB",
         ":art-gtest-jars-ErroneousInit",
@@ -1452,12 +1460,6 @@ java_library {
 java_library {
     name: "art-gtest-jars-DefaultMethods",
     srcs: ["DefaultMethods/**/*.java"],
-    defaults: ["art-gtest-jars-defaults"],
-}
-
-java_library {
-    name: "art-gtest-jars-DexToDexDecompiler",
-    srcs: ["DexToDexDecompiler/**/*.java"],
     defaults: ["art-gtest-jars-defaults"],
 }
 
@@ -1852,7 +1854,7 @@ genrule_defaults {
     ],
     tool_files: [
         "run-test-build.py",
-        "knownfailures.json",
+        "buildfailures.json",
         "etc/default-build",
         "etc/default-run",
         "etc/default-check",

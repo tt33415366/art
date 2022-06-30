@@ -1041,18 +1041,7 @@ extern "C" const void* artInstrumentationMethodEntryFromCode(ArtMethod* method,
   // This will get the entry point either from the oat file, the JIT or the appropriate bridge
   // method if none of those can be found.
   result = instrumentation->GetCodeForInvoke(method);
-  jit::Jit* jit = Runtime::Current()->GetJit();
   DCHECK_NE(result, GetQuickInstrumentationEntryPoint()) << method->PrettyMethod();
-  DCHECK(jit == nullptr ||
-         // Native methods come through here in Interpreter entrypoints. We might not have
-         // disabled jit-gc but that is fine since we won't return jit-code for native methods.
-         method->IsNative() ||
-         !jit->GetCodeCache()->GetGarbageCollectCode());
-  DCHECK(!method->IsNative() ||
-         jit == nullptr ||
-         !jit->GetCodeCache()->ContainsPc(result))
-      << method->PrettyMethod() << " code will jump to possibly cleaned up jit code!";
-
   bool interpreter_entry = Runtime::Current()->GetClassLinker()->IsQuickToInterpreterBridge(result);
   bool is_static = method->IsStatic();
   uint32_t shorty_len;
@@ -1375,7 +1364,8 @@ extern "C" const void* artQuickResolutionTrampoline(
           DCHECK_NE(called_method.index, dex::kDexNoIndex);
         }
       }
-      MaybeUpdateBssMethodEntry(called, called_method);
+      ArtMethod* outer_method = QuickArgumentVisitor::GetOuterMethod(sp);
+      MaybeUpdateBssMethodEntry(called, called_method, outer_method);
     }
 
     // Static invokes need class initialization check but instance invokes can proceed even if
@@ -1390,7 +1380,10 @@ extern "C" const void* artQuickResolutionTrampoline(
     }
     if (success) {
       instrumentation::Instrumentation* instrumentation = Runtime::Current()->GetInstrumentation();
-      code = instrumentation->GetCodeForInvoke(called);
+      // Check if we need instrumented code here. Since resolution stubs could suspend, it is
+      // possible that we instrumented the entry points after we started executing the resolution
+      // stub.
+      code = instrumentation->GetMaybeInstrumentedCodeForInvoke(called);
     } else {
       DCHECK(called_class->IsErroneous());
       DCHECK(self->IsExceptionPending());
@@ -2405,7 +2398,9 @@ extern "C" TwoWordReturn artInvokeInterfaceTrampoline(ArtMethod* interface_metho
       CHECK(self->IsExceptionPending());
       return GetTwoWordFailureValue();  // Failure.
     }
-    MaybeUpdateBssMethodEntry(interface_method, MethodReference(&dex_file, dex_method_idx));
+    ArtMethod* outer_method = QuickArgumentVisitor::GetOuterMethod(sp);
+    MaybeUpdateBssMethodEntry(
+        interface_method, MethodReference(&dex_file, dex_method_idx), outer_method);
 
     // Refresh `raw_this_object` which may have changed after resolution.
     raw_this_object = this_object.Get();
@@ -2711,6 +2706,7 @@ extern "C" int artMethodExitHook(Thread* self,
     if (is_ref) {
       // Restore the return value if it's a reference since it might have moved.
       *reinterpret_cast<mirror::Object**>(gpr_result) = res.Get();
+      return_value.SetL(res.Get());
     }
   }
 
