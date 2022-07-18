@@ -22,6 +22,7 @@
 #include <sstream>
 
 #include "android-base/file.h"
+#include "android-base/logging.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
 #include "arch/instruction_set.h"
@@ -234,6 +235,48 @@ OatFileAssistant::OatFileAssistant(const char* dex_location,
   }
 }
 
+std::unique_ptr<OatFileAssistant> OatFileAssistant::Create(
+    const std::string& filename,
+    const std::string& isa_str,
+    const std::string& context_str,
+    bool load_executable,
+    bool only_load_trusted_executable,
+    std::unique_ptr<RuntimeOptions> runtime_options,
+    /*out*/ std::unique_ptr<ClassLoaderContext>* context,
+    /*out*/ std::string* error_msg) {
+  InstructionSet isa = GetInstructionSetFromString(isa_str.c_str());
+  if (isa == InstructionSet::kNone) {
+    *error_msg = StringPrintf("Instruction set '%s' is invalid", isa_str.c_str());
+    return nullptr;
+  }
+
+  std::unique_ptr<ClassLoaderContext> tmp_context = ClassLoaderContext::Create(context_str.c_str());
+  if (tmp_context == nullptr) {
+    *error_msg = StringPrintf("Class loader context '%s' is invalid", context_str.c_str());
+    return nullptr;
+  }
+
+  if (!tmp_context->OpenDexFiles(android::base::Dirname(filename.c_str()),
+                                 /*context_fds=*/{},
+                                 /*only_read_checksums=*/true)) {
+    *error_msg =
+        StringPrintf("Failed to load class loader context files for '%s' with context '%s'",
+                     filename.c_str(),
+                     context_str.c_str());
+    return nullptr;
+  }
+
+  auto assistant = std::make_unique<OatFileAssistant>(filename.c_str(),
+                                                      isa,
+                                                      tmp_context.get(),
+                                                      load_executable,
+                                                      only_load_trusted_executable,
+                                                      std::move(runtime_options));
+
+  *context = std::move(tmp_context);
+  return assistant;
+}
+
 bool OatFileAssistant::UseFdToReadFiles() {
   return zip_fd_ >= 0;
 }
@@ -252,17 +295,59 @@ bool OatFileAssistant::IsInBootClassPath() {
   return false;
 }
 
-int OatFileAssistant::GetDexOptNeeded(CompilerFilter::Filter target,
+OatFileAssistant::DexOptTrigger OatFileAssistant::GetDexOptTrigger(
+    CompilerFilter::Filter target_compiler_filter, bool profile_changed, bool downgrade) {
+  if (downgrade) {
+    // The caller's intention is to downgrade the compiler filter. We should only re-compile if the
+    // target compiler filter is worse than the current one.
+    return DexOptTrigger{.targetFilterIsWorse = true};
+  }
+
+  // This is the usual case. The caller's intention is to see if a better oat file can be generated.
+  DexOptTrigger dexopt_trigger{.targetFilterIsBetter = true, .primaryBootImageBecomesUsable = true};
+  if (profile_changed && CompilerFilter::DependsOnProfile(target_compiler_filter)) {
+    // Since the profile has been changed, we should re-compile even if the compilation does not
+    // make the compiler filter better.
+    dexopt_trigger.targetFilterIsSame = true;
+  }
+  return dexopt_trigger;
+}
+
+int OatFileAssistant::GetDexOptNeeded(CompilerFilter::Filter target_compiler_filter,
                                       bool profile_changed,
                                       bool downgrade) {
   OatFileInfo& info = GetBestInfo();
-  DexOptNeeded dexopt_needed = info.GetDexOptNeeded(target,
-                                                    profile_changed,
-                                                    downgrade);
+  DexOptNeeded dexopt_needed = info.GetDexOptNeeded(
+      target_compiler_filter, GetDexOptTrigger(target_compiler_filter, profile_changed, downgrade));
+  if (dexopt_needed != kNoDexOptNeeded && (&info == &dm_for_oat_ || &info == &dm_for_odex_)) {
+    // The usable vdex file is in the DM file. This information cannot be encoded in the integer.
+    // Return kDex2OatFromScratch so that neither the vdex in the "oat" location nor the vdex in the
+    // "odex" location will be picked by installd.
+    return kDex2OatFromScratch;
+  }
   if (info.IsOatLocation() || dexopt_needed == kDex2OatFromScratch) {
     return dexopt_needed;
   }
   return -dexopt_needed;
+}
+
+bool OatFileAssistant::GetDexOptNeeded(CompilerFilter::Filter target_compiler_filter,
+                                       DexOptTrigger dexopt_trigger,
+                                       /*out*/ DexOptStatus* dexopt_status) {
+  OatFileInfo& info = GetBestInfo();
+  DexOptNeeded dexopt_needed = info.GetDexOptNeeded(target_compiler_filter, dexopt_trigger);
+  if (info.IsUseable()) {
+    if (&info == &dm_for_oat_ || &info == &dm_for_odex_) {
+      dexopt_status->location_ = kLocationDm;
+    } else if (info.IsOatLocation()) {
+      dexopt_status->location_ = kLocationOat;
+    } else {
+      dexopt_status->location_ = kLocationOdex;
+    }
+  } else {
+    dexopt_status->location_ = kLocationNoneOrError;
+  }
+  return dexopt_needed != kNoDexOptNeeded;
 }
 
 bool OatFileAssistant::IsUpToDate() {
@@ -750,7 +835,7 @@ bool OatFileAssistant::IsPrimaryBootImageUsable() {
   // Only verify the primary boot image.
   cached_is_boot_image_usable_ = gc::space::ImageSpace::VerifyBootImages(
       ArrayRef<const std::string>(runtime_options_->image_locations)
-          .SubArray(/*pos=*/0u, /*size=*/1u),
+          .SubArray(/*pos=*/0u, /*length=*/1u),
       ArrayRef<const std::string>(runtime_options_->boot_class_path_locations),
       ArrayRef<const std::string>(runtime_options_->boot_class_path),
       runtime_options_->boot_class_path_fds != nullptr ?
@@ -882,14 +967,16 @@ OatFileAssistant::OatStatus OatFileAssistant::OatFileInfo::Status() {
 }
 
 OatFileAssistant::DexOptNeeded OatFileAssistant::OatFileInfo::GetDexOptNeeded(
-    CompilerFilter::Filter target,
-    bool profile_changed,
-    bool downgrade) {
-
+    CompilerFilter::Filter target_compiler_filter, const DexOptTrigger dexopt_trigger) {
   if (IsUseable()) {
-    return CompilerFilterIsOkay(target, profile_changed, downgrade)
-        ? kNoDexOptNeeded
-        : kDex2OatForFilter;
+    return ShouldRecompileForFilter(target_compiler_filter, dexopt_trigger) ? kDex2OatForFilter :
+                                                                              kNoDexOptNeeded;
+  }
+
+  // In this case, the oat file is not usable. If the caller doesn't seek for a better compiler
+  // filter (e.g., the caller wants to downgrade), then we should not recompile.
+  if (!dexopt_trigger.targetFilterIsBetter) {
+    return kNoDexOptNeeded;
   }
 
   if (Status() == kOatBootImageOutOfDate) {
@@ -1009,25 +1096,24 @@ const OatFile* OatFileAssistant::OatFileInfo::GetFile() {
   return file_.get();
 }
 
-bool OatFileAssistant::OatFileInfo::CompilerFilterIsOkay(
-    CompilerFilter::Filter target, bool profile_changed, bool downgrade) {
+bool OatFileAssistant::OatFileInfo::ShouldRecompileForFilter(CompilerFilter::Filter target,
+                                                             const DexOptTrigger dexopt_trigger) {
   const OatFile* file = GetFile();
-  if (file == nullptr) {
-    return false;
-  }
+  DCHECK(file != nullptr);
 
   CompilerFilter::Filter current = file->GetCompilerFilter();
-  if (profile_changed && CompilerFilter::DependsOnProfile(current)) {
-    VLOG(oat) << "Compiler filter not okay because Profile changed";
-    return false;
+  if (dexopt_trigger.targetFilterIsBetter && CompilerFilter::IsBetter(target, current)) {
+    return true;
+  }
+  if (dexopt_trigger.targetFilterIsSame && current == target) {
+    return true;
+  }
+  if (dexopt_trigger.targetFilterIsWorse && CompilerFilter::IsBetter(current, target)) {
+    return true;
   }
 
-  if (downgrade) {
-    return !CompilerFilter::IsBetter(current, target);
-  }
-
-  if (CompilerFilter::DependsOnImageChecksum(current) &&
-      CompilerFilter::IsAsGoodAs(current, target)) {
+  if (dexopt_trigger.primaryBootImageBecomesUsable &&
+      CompilerFilter::DependsOnImageChecksum(current)) {
     // If the oat file has been compiled without an image, and the runtime is
     // now running with an image loaded from disk, return that we need to
     // re-compile. The recompilation will generate a better oat file, and with an app
@@ -1038,11 +1124,11 @@ bool OatFileAssistant::OatFileInfo::CompilerFilterIsOkay(
         !StartsWith(oat_boot_class_path_checksums, "i") &&
         oat_file_assistant_->IsPrimaryBootImageUsable()) {
       DCHECK(!file->GetOatHeader().RequiresImage());
-      return false;
+      return true;
     }
   }
 
-  return CompilerFilter::IsAsGoodAs(current, target);
+  return false;
 }
 
 bool OatFileAssistant::ClassLoaderContextIsOkay(const OatFile& oat_file) const {
@@ -1141,57 +1227,6 @@ void OatFileAssistant::GetOptimizationStatus(const std::string& filename,
       &out_odex_status);
 }
 
-bool OatFileAssistant::GetOptimizationStatus(const std::string& filename,
-                                             const std::string& isa_str,
-                                             const std::string& context_str,
-                                             std::unique_ptr<RuntimeOptions> runtime_options,
-                                             /*out*/ std::string* compiler_filter,
-                                             /*out*/ std::string* compilation_reason,
-                                             /*out*/ std::string* odex_location,
-                                             /*out*/ std::string* error_msg) {
-  InstructionSet isa = GetInstructionSetFromString(isa_str.c_str());
-  if (isa == InstructionSet::kNone) {
-    *error_msg = StringPrintf("Instruction set '%s' is invalid", isa_str.c_str());
-    return false;
-  }
-
-  std::unique_ptr<ClassLoaderContext> context = ClassLoaderContext::Create(context_str.c_str());
-  if (context == nullptr) {
-    *error_msg = StringPrintf("Class loader context '%s' is invalid", context_str.c_str());
-    return false;
-  }
-
-  std::vector<int> context_fds;
-  if (!context->OpenDexFiles(android::base::Dirname(filename.c_str()),
-                             context_fds,
-                             /*only_read_checksums=*/true)) {
-    *error_msg =
-        StringPrintf("Failed to load class loader context files for '%s' with context '%s'",
-                     filename.c_str(),
-                     context_str.c_str());
-    return false;
-  }
-
-  OatFileAssistant oat_file_assistant(filename.c_str(),
-                                      isa,
-                                      context.get(),
-                                      /*load_executable=*/false,
-                                      /*only_load_trusted_executable=*/true,
-                                      std::move(runtime_options));
-
-  // We ignore the odex_status because it is not meaningful. It can never be
-  // "boot-image-more-recent" or "context-mismatch". In the case where the boot image has changed or
-  // there is a context mismatch, the value is "up-to-date" because the vdex file is still usable.
-  // I.e., it can only be either "up-to-date" or "apk-more-recent", which means it doesn't give us
-  // information in addition to what we can learn from compiler_filter.
-  std::string ignored_odex_status;
-
-  oat_file_assistant.GetOptimizationStatus(
-      odex_location, compiler_filter, compilation_reason, &ignored_odex_status);
-
-  return true;
-}
-
 void OatFileAssistant::GetOptimizationStatus(
     std::string* out_odex_location,
     std::string* out_compilation_filter,
@@ -1218,28 +1253,25 @@ void OatFileAssistant::GetOptimizationStatus(
   OatStatus status = oat_file_info.Status();
   const char* reason = oat_file->GetCompilationReason();
   *out_compilation_reason = reason == nullptr ? "unknown" : reason;
+
+  // If the oat file is invalid, the vdex file will be picked, so the status is `kOatUpToDate`. If
+  // the vdex file is also invalid, then either `oat_file` is nullptr, or `status` is
+  // `kOatDexOutOfDate`.
+  DCHECK(status == kOatUpToDate || status == kOatDexOutOfDate);
+
   switch (status) {
     case kOatUpToDate:
       *out_compilation_filter = CompilerFilter::NameOfFilter(oat_file->GetCompilerFilter());
       *out_odex_status = "up-to-date";
       return;
 
-    case kOatCannotOpen:  // This should never happen, but be robust.
-      *out_compilation_filter = "error";
-      *out_compilation_reason = "error";
-      // This mostly happens when we cannot open the vdex file,
-      // or the file is corrupt.
-      *out_odex_status = "io-error-or-corruption";
-      return;
-
+    case kOatCannotOpen:
     case kOatBootImageOutOfDate:
-      *out_compilation_filter = "run-from-apk-fallback";
-      *out_odex_status = "boot-image-more-recent";
-      return;
-
     case kOatContextOutOfDate:
-      *out_compilation_filter = "run-from-apk-fallback";
-      *out_odex_status = "context-mismatch";
+      // These should never happen, but be robust.
+      *out_compilation_filter = "unexpected";
+      *out_compilation_reason = "unexpected";
+      *out_odex_status = "unexpected";
       return;
 
     case kOatDexOutOfDate:
