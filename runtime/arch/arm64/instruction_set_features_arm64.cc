@@ -162,6 +162,25 @@ Arm64FeaturesUniquePtr Arm64InstructionSetFeatures::FromVariant(
     }
   }
 
+#if defined(ART_TARGET_ANDROID)
+  // Pixel3a(XL) is wrongly reported as cortex-a75, when it should be kryo360.
+  static const char* arm64_variants_validate_with_hwcaps[] = {
+      "cortex-a55",
+      "cortex-a75",
+  };
+  bool needs_hwcaps_validation = FindVariantInArray(arm64_variants_validate_with_hwcaps,
+                                                    arraysize(arm64_variants_validate_with_hwcaps),
+                                                    variant);
+  if (needs_hwcaps_validation) {
+    Arm64FeaturesUniquePtr hwcaps = Arm64InstructionSetFeatures::FromHwcap();
+    has_crc = has_crc && hwcaps->has_crc_;
+    has_lse = has_lse && hwcaps->has_lse_;
+    has_fp16 = has_fp16 && hwcaps->has_fp16_;
+    has_dotprod = has_dotprod && hwcaps->has_dotprod_;
+    has_sve = has_sve && hwcaps->has_sve_;
+  }
+#endif
+
   return Arm64FeaturesUniquePtr(new Arm64InstructionSetFeatures(needs_a53_835769_fix,
                                                                 needs_a53_843419_fix,
                                                                 has_crc,
