@@ -1,5 +1,5 @@
 //
-// Copyright (C) 2021 The Android Open Source Project
+// Copyright (C) 2022 The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,18 +23,23 @@ package {
     default_applicable_licenses: ["art_license"],
 }
 
-art_cc_test {
-    name: "art_standalone_dexpreopt_tests",
-    defaults: [
-        "art_standalone_gtest_defaults",
-    ],
-    host_supported: false,
+python_binary_host {
+    name: "art-run-test-checker",
     srcs: [
-        "dexpreopt_test.cc",
+        "**/*.py",
     ],
-    static_libs: [
-        "libgmock",
-        "libprocinfo",
+    main: "checker.py",
+    version: {
+        py2: {
+            enabled: false,
+        },
+        py3: {
+            enabled: true,
+            embedded_launcher: true,
+        },
+    },
+    test_suites: [
+        "general-tests",
+        "mts-art",
     ],
-    test_config_template: "art_standalone_dexpreopt_tests.xml",
 }

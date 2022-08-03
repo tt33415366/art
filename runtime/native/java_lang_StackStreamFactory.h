@@ -1,6 +1,5 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!--
- * Copyright (C) 2018 The Android Open Source Project
+/*
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,19 +12,17 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- -->
+ */
 
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="android.test.app.system">
+#ifndef ART_RUNTIME_NATIVE_JAVA_LANG_STACKSTREAMFACTORY_H_
+#define ART_RUNTIME_NATIVE_JAVA_LANG_STACKSTREAMFACTORY_H_
 
-    <application>
-        <activity android:name="android.test.app.TestActivity" >
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-    </application>
+#include <jni.h>
 
-</manifest>
+namespace art {
 
+void register_java_lang_StackStreamFactory(JNIEnv* env);
+
+}  // namespace art
+
+#endif  // ART_RUNTIME_NATIVE_JAVA_LANG_STACKSTREAMFACTORY_H_
