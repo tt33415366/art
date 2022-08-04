@@ -190,7 +190,7 @@ enum class WeakRefAccessState : int32_t {
 // This should match RosAlloc::kNumThreadLocalSizeBrackets.
 static constexpr size_t kNumRosAllocThreadLocalSizeBracketsInThread = 16;
 
-static constexpr size_t kSharedMethodHotnessThreshold = 0xffff;
+static constexpr size_t kSharedMethodHotnessThreshold = 0x1fff;
 
 // Thread's stack layout for implicit stack overflow checks:
 //
@@ -716,6 +716,16 @@ class Thread {
   static jobjectArray InternalStackTraceToStackTraceElementArray(
       const ScopedObjectAccessAlreadyRunnable& soa, jobject internal,
       jobjectArray output_array = nullptr, int* stack_depth = nullptr)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
+  static jint InternalStackTraceToStackFrameInfoArray(
+      const ScopedObjectAccessAlreadyRunnable& soa,
+      jlong mode,  // See java.lang.StackStreamFactory for the mode flags
+      jobject internal,
+      jint startLevel,
+      jint batchSize,
+      jint startIndex,
+      jobjectArray output_array)  // java.lang.StackFrameInfo[]
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   jobjectArray CreateAnnotatedStackTrace(const ScopedObjectAccessAlreadyRunnable& soa) const

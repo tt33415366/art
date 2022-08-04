@@ -1396,6 +1396,7 @@ filegroup {
     srcs: [
         ":art-gtest-jars-AbstractMethod",
         ":art-gtest-jars-AllFields",
+        ":art-gtest-jars-ArrayClassWithUnresolvedComponent",
         ":art-gtest-jars-DefaultMethods",
         ":art-gtest-jars-ErroneousA",
         ":art-gtest-jars-ErroneousB",
@@ -1847,6 +1848,13 @@ genrule {
 }
 
 genrule {
+    name: "art-gtest-jars-ArrayClassWithUnresolvedComponent",
+    defaults: ["art-gtest-jars-smali-defaults"],
+    srcs: ["ArrayClassWithUnresolvedComponent/*.smali"],
+    out: ["art-gtest-jars-ArrayClassWithUnresolvedComponent.dex"],
+}
+
+genrule {
     name: "art-gtest-jars-LinkageTest",
     defaults: ["art-gtest-jars-smali-defaults"],
     srcs: ["LinkageTest/*.smali"],
@@ -1868,11 +1876,13 @@ genrule_defaults {
         "art_module_source_build_genrule_defaults",
     ],
     tool_files: [
+        "art_build_rules.py",
         "run-test-build.py",
         "buildfailures.json",
-        "etc/default-build",
-        "etc/default-run",
+        "etc/default-build.py",
         "etc/default-check",
+        "etc/default-run",
+        "etc/run-test-jar",
         ":art-run-test-bootclasspath",
     ],
     tools: [

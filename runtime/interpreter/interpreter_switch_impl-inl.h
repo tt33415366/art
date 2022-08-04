@@ -144,7 +144,7 @@ class InstructionHandler {
     if (!CheckForceReturn()) {
       return false;
     }
-    if (UNLIKELY(Instrumentation()->HasDexPcListeners())) {
+    if (UNLIKELY(shadow_frame_.GetNotifyDexPcMoveEvents())) {
       uint8_t opcode = inst_->Opcode(inst_data_);
       bool is_move_result_object = (opcode == Instruction::MOVE_RESULT_OBJECT);
       JValue* save_ref = is_move_result_object ? &ctx_->result_register : nullptr;
@@ -1816,7 +1816,7 @@ class InstructionHandler {
 
 #define OPCODE_CASE(OPCODE, OPCODE_NAME, NAME, FORMAT, i, a, e, v)                                \
 template<bool do_access_check, bool transaction_active>                                           \
-ASAN_NO_INLINE static bool OP_##OPCODE_NAME(                                                      \
+ASAN_NO_INLINE NO_STACK_PROTECTOR static bool OP_##OPCODE_NAME(                                   \
     SwitchImplContext* ctx,                                                                       \
     const instrumentation::Instrumentation* instrumentation,                                      \
     Thread* self,                                                                                 \

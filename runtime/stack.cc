@@ -780,7 +780,6 @@ void StackVisitor::WalkStack(bool include_transitions) {
     DCHECK(thread_ == Thread::Current() || thread_->IsSuspended());
   }
   CHECK_EQ(cur_depth_, 0U);
-  size_t inlined_frames_count = 0;
 
   for (const ManagedStack* current_fragment = thread_->GetManagedStack();
        current_fragment != nullptr; current_fragment = current_fragment->GetLink()) {
@@ -788,6 +787,12 @@ void StackVisitor::WalkStack(bool include_transitions) {
     cur_quick_frame_ = current_fragment->GetTopQuickFrame();
     cur_quick_frame_pc_ = 0;
     DCHECK(cur_oat_quick_method_header_ == nullptr);
+
+    if (kDebugStackWalk) {
+      LOG(INFO) << "Tid=" << thread_-> GetThreadId()
+          << ", ManagedStack fragement: " << current_fragment;
+    }
+
     if (cur_quick_frame_ != nullptr) {  // Handle quick stack frames.
       // Can't be both a shadow and a quick fragment.
       DCHECK(current_fragment->GetTopShadowFrame() == nullptr);
@@ -848,8 +853,12 @@ void StackVisitor::WalkStack(bool include_transitions) {
           cur_oat_quick_method_header_ = method->GetOatQuickMethodHeader(cur_quick_frame_pc_);
         }
         header_retrieved = false;  // Force header retrieval in next iteration.
-        ValidateFrame();
 
+        if (kDebugStackWalk) {
+          LOG(INFO) << "Early print: Tid=" << thread_-> GetThreadId() << ", method: "
+              << ArtMethod::PrettyMethod(method) << "@" << method;
+        }
+        ValidateFrame();
         if ((walk_kind_ == StackWalkKind::kIncludeInlinedFrames)
             && (cur_oat_quick_method_header_ != nullptr)
             && cur_oat_quick_method_header_->IsOptimized()
@@ -868,7 +877,6 @@ void StackVisitor::WalkStack(bool include_transitions) {
                 return;
               }
               cur_depth_++;
-              inlined_frames_count++;
             }
           }
         }
@@ -922,7 +930,8 @@ void StackVisitor::WalkStack(bool include_transitions) {
         cur_quick_frame_ = reinterpret_cast<ArtMethod**>(next_frame);
 
         if (kDebugStackWalk) {
-          LOG(INFO) << ArtMethod::PrettyMethod(method) << "@" << method << " size=" << frame_size
+          LOG(INFO) << "Tid=" << thread_-> GetThreadId() << ", method: "
+              << ArtMethod::PrettyMethod(method) << "@" << method << " size=" << frame_size
               << std::boolalpha
               << " optimized=" << (cur_oat_quick_method_header_ != nullptr &&
                                    cur_oat_quick_method_header_->IsOptimized())
@@ -942,6 +951,12 @@ void StackVisitor::WalkStack(bool include_transitions) {
       cur_oat_quick_method_header_ = nullptr;
     } else if (cur_shadow_frame_ != nullptr) {
       do {
+        if (kDebugStackWalk) {
+          ArtMethod* method = cur_shadow_frame_->GetMethod();
+          LOG(INFO) << "Tid=" << thread_-> GetThreadId() << ", method: "
+              << ArtMethod::PrettyMethod(method) << "@" << method
+              << ", ShadowFrame";
+        }
         ValidateFrame();
         bool should_continue = VisitFrame();
         if (UNLIKELY(!should_continue)) {
