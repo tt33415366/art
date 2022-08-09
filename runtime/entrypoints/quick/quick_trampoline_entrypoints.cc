@@ -687,18 +687,25 @@ extern "C" uint64_t artQuickToInterpreterBridge(ArtMethod* method, Thread* self,
     BuildQuickShadowFrameVisitor shadow_frame_builder(sp, method->IsStatic(), shorty, shorty_len,
                                                       shadow_frame, first_arg_reg);
     shadow_frame_builder.VisitArguments();
-    self->EndAssertNoThreadSuspension(old_cause);
-
-    // Potentially run <clinit> before pushing the shadow frame. We do not want
-    // to have the called method on the stack if there is an exception.
-    if (!EnsureInitialized(self, shadow_frame)) {
-      DCHECK(self->IsExceptionPending());
-      return 0;
-    }
-
     // Push a transition back into managed code onto the linked list in thread.
     self->PushManagedStackFragment(&fragment);
     self->PushShadowFrame(shadow_frame);
+    self->EndAssertNoThreadSuspension(old_cause);
+
+    if (NeedsClinitCheckBeforeCall(method)) {
+      ObjPtr<mirror::Class> declaring_class = method->GetDeclaringClass();
+      if (UNLIKELY(!declaring_class->IsVisiblyInitialized())) {
+        // Ensure static method's class is initialized.
+        StackHandleScope<1> hs(self);
+        Handle<mirror::Class> h_class(hs.NewHandle(declaring_class));
+        if (!Runtime::Current()->GetClassLinker()->EnsureInitialized(self, h_class, true, true)) {
+          DCHECK(Thread::Current()->IsExceptionPending()) << method->PrettyMethod();
+          self->PopManagedStackFragment(fragment);
+          return 0;
+        }
+      }
+    }
+
     result = interpreter::EnterInterpreterFromEntryPoint(self, accessor, shadow_frame);
     force_frame_pop = shadow_frame->GetForcePopFrame();
   }
@@ -1364,6 +1371,11 @@ extern "C" const void* artQuickResolutionTrampoline(
       success = linker->EnsureInitialized(soa.Self(), h_called_class, true, true);
     }
     if (success) {
+      // When the clinit check is at entry of the AOT/nterp code, we do the clinit check
+      // before doing the suspend check. To ensure the code sees the latest
+      // version of the class (the code doesn't do a read barrier to reduce
+      // size), do a suspend check now.
+      self->CheckSuspend();
       instrumentation::Instrumentation* instrumentation = Runtime::Current()->GetInstrumentation();
       // Check if we need instrumented code here. Since resolution stubs could suspend, it is
       // possible that we instrumented the entry points after we started executing the resolution
