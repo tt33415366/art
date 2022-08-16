@@ -751,7 +751,7 @@ void Jit::NotifyZygoteCompilationDone() {
 
 class ScopedCompilation {
  public:
-  ScopedCompilation(ScopedCompilation&& other) :
+  ScopedCompilation(ScopedCompilation&& other) noexcept :
       jit_(other.jit_),
       method_(other.method_),
       compilation_kind_(other.compilation_kind_),
@@ -1366,9 +1366,10 @@ bool Jit::CompileMethodFromProfile(Thread* self,
   const void* entry_point = method->GetEntryPointFromQuickCompiledCode();
   if (class_linker->IsQuickToInterpreterBridge(entry_point) ||
       class_linker->IsQuickGenericJniStub(entry_point) ||
-      (entry_point == interpreter::GetNterpEntryPoint()) ||
-      // We explicitly check for the stub. The trampoline is for methods backed by
-      // a .oat file that has a compiled version of the method.
+      class_linker->IsNterpEntryPoint(entry_point) ||
+      // We explicitly check for the resolution stub, and not the resolution trampoline.
+      // The trampoline is for methods backed by a .oat file that has a compiled version of
+      // the method.
       (entry_point == GetQuickResolutionStub())) {
     VLOG(jit) << "JIT Zygote processing method " << ArtMethod::PrettyMethod(method)
               << " from profile";
@@ -1808,7 +1809,7 @@ void Jit::MaybeEnqueueCompilation(ArtMethod* method, Thread* self) {
     return;
   }
 
-  static constexpr size_t kIndividualSharedMethodHotnessThreshold = 0xff;
+  static constexpr size_t kIndividualSharedMethodHotnessThreshold = 0x3f;
   if (method->IsMemorySharedMethod()) {
     MutexLock mu(self, lock_);
     auto it = shared_method_counters_.find(method);

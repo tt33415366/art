@@ -1815,7 +1815,7 @@ class OatFileBackedByVdex final : public OatFileBase {
     store.Put(OatHeader::kCompilerFilter, CompilerFilter::NameOfFilter(CompilerFilter::kVerify));
     store.Put(OatHeader::kCompilationReasonKey, "vdex");
     store.Put(OatHeader::kConcurrentCopying,
-              kUseReadBarrier ? OatHeader::kTrueValue : OatHeader::kFalseValue);
+              gUseReadBarrier ? OatHeader::kTrueValue : OatHeader::kFalseValue);
     oat_header_.reset(OatHeader::Create(kRuntimeISA,
                                         isa_features.get(),
                                         number_of_dex_files,
@@ -1907,17 +1907,6 @@ OatFile* OatFile::Open(int zip_fd,
                                                                  reservation,
                                                                  error_msg);
   if (with_dlopen != nullptr) {
-    Runtime* runtime = Runtime::Current();
-    // The runtime might not be available at this point if we're running
-    // dex2oat or oatdump.
-    if (runtime != nullptr) {
-      size_t madvise_size_limit = runtime->GetMadviseWillNeedSizeOdex();
-      Runtime::MadviseFileForRange(madvise_size_limit,
-                                   with_dlopen->Size(),
-                                   with_dlopen->Begin(),
-                                   with_dlopen->End(),
-                                   oat_location);
-    }
     return with_dlopen;
   }
   if (kPrintDlOpenErrorMessage) {

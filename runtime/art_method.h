@@ -422,8 +422,10 @@ class ArtMethod final {
   bool CheckIncompatibleClassChange(InvokeType type) REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Throws the error that would result from trying to invoke this method (i.e.
-  // IncompatibleClassChangeError or AbstractMethodError). Only call if !IsInvokable();
-  void ThrowInvocationTimeError() REQUIRES_SHARED(Locks::mutator_lock_);
+  // IncompatibleClassChangeError, AbstractMethodError, or IllegalAccessError).
+  // Only call if !IsInvokable();
+  void ThrowInvocationTimeError(ObjPtr<mirror::Object> receiver)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   uint16_t GetMethodIndex() REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -633,7 +635,9 @@ class ArtMethod final {
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   // NO_THREAD_SAFETY_ANALYSIS since we don't know what the callback requires.
-  template<ReadBarrierOption kReadBarrierOption = kWithReadBarrier, typename RootVisitorType>
+  template<ReadBarrierOption kReadBarrierOption = kWithReadBarrier,
+           bool kVisitProxyMethod = true,
+           typename RootVisitorType>
   void VisitRoots(RootVisitorType& visitor, PointerSize pointer_size) NO_THREAD_SAFETY_ANALYSIS;
 
   const DexFile* GetDexFile() REQUIRES_SHARED(Locks::mutator_lock_);

@@ -505,6 +505,10 @@ class Runtime {
     return OFFSETOF_MEMBER(Runtime, callee_save_methods_[static_cast<size_t>(type)]);
   }
 
+  static constexpr MemberOffset GetInstrumentationOffset() {
+    return MemberOffset(OFFSETOF_MEMBER(Runtime, instrumentation_));
+  }
+
   InstructionSet GetInstructionSet() const {
     return instruction_set_;
   }
@@ -897,7 +901,8 @@ class Runtime {
 
   // Returns if the code can be deoptimized asynchronously. Code may be compiled with some
   // optimization that makes it impossible to deoptimize.
-  bool IsAsyncDeoptimizeable(uintptr_t code) const REQUIRES_SHARED(Locks::mutator_lock_);
+  bool IsAsyncDeoptimizeable(ArtMethod* method, uintptr_t code) const
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Returns a saved copy of the environment (getenv/setenv values).
   // Used by Fork to protect against overwriting LD_LIBRARY_PATH, etc.
@@ -1079,6 +1084,10 @@ class Runtime {
   // Return whether a boot image has a profile. This means it's an in-memory
   // image rather that an image loaded from disk.
   bool HasImageWithProfile() const;
+
+  bool GetNoSigChain() const {
+    return no_sig_chain_;
+  }
 
   // Trigger a flag reload from system properties or device congfigs.
   //
