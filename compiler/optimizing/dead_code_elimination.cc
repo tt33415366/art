@@ -16,11 +16,13 @@
 
 #include "dead_code_elimination.h"
 
+#include "android-base/logging.h"
 #include "base/array_ref.h"
 #include "base/bit_vector-inl.h"
 #include "base/scoped_arena_allocator.h"
 #include "base/scoped_arena_containers.h"
 #include "base/stl_util.h"
+#include "optimizing/nodes.h"
 #include "ssa_phi_elimination.h"
 
 namespace art {
@@ -209,7 +211,13 @@ static bool RemoveNonNullControlDependences(HBasicBlock* block, HBasicBlock* thr
 //
 //           B1
 //          /  \
+//          |   instr_1
+//          |   ...
+//          |   instr_n
 //          |   foo()  // always throws
+//          |   instr_n+2
+//          |   ...
+//          |   instr_n+m
 //          \   goto B2
 //           \ /
 //            B2
@@ -218,6 +226,9 @@ static bool RemoveNonNullControlDependences(HBasicBlock* block, HBasicBlock* thr
 //
 //           B1
 //          /  \
+//          |  instr_1
+//          |  ...
+//          |  instr_n
 //          |  foo()
 //          |  goto Exit
 //          |   |
@@ -227,12 +238,8 @@ static bool RemoveNonNullControlDependences(HBasicBlock* block, HBasicBlock* thr
 // Removal of the never taken edge to B2 may expose
 // other optimization opportunities, such as code sinking.
 bool HDeadCodeElimination::SimplifyAlwaysThrows() {
-  // Make sure exceptions go to exit.
-  if (graph_->HasTryCatch()) {
-    return false;
-  }
   HBasicBlock* exit = graph_->GetExitBlock();
-  if (exit == nullptr) {
+  if (!graph_->HasAlwaysThrowingInvokes() || exit == nullptr) {
     return false;
   }
 
@@ -240,26 +247,61 @@ bool HDeadCodeElimination::SimplifyAlwaysThrows() {
 
   // Order does not matter, just pick one.
   for (HBasicBlock* block : graph_->GetReversePostOrder()) {
-    HInstruction* first = block->GetFirstInstruction();
-    HInstruction* last = block->GetLastInstruction();
-    // Ensure only one throwing instruction appears before goto.
-    if (first->AlwaysThrows() &&
-        first->GetNext() == last &&
-        last->IsGoto() &&
+    if (block->GetTryCatchInformation() != nullptr) {
+      // We don't want to perform the simplify always throws optimizations for throws inside of
+      // tries since those throws might not go to the exit block. We do that by checking the
+      // TryCatchInformation of the blocks.
+      //
+      // As a special case the `catch_block` is the first block of the catch and it has
+      // TryCatchInformation. Other blocks in the catch don't have try catch information (as long as
+      // they are not part of an outer try). Knowing if a `catch_block` is part of an outer try is
+      // possible by checking its successors, but other restrictions of the simplify always throws
+      // optimization will block `catch_block` nevertheless (e.g. only one predecessor) so it is not
+      // worth the effort.
+
+      // TODO(solanes): Maybe we can do a `goto catch` if inside of a try catch instead of going to
+      // the exit. If we do so, we have to take into account that we should go to the nearest valid
+      // catch i.e. one that would accept our exception type.
+      continue;
+    }
+
+    if (block->GetLastInstruction()->IsGoto() &&
         block->GetPhis().IsEmpty() &&
         block->GetPredecessors().size() == 1u) {
-      DCHECK_EQ(block->GetSuccessors().size(), 1u);
       HBasicBlock* pred = block->GetSinglePredecessor();
       HBasicBlock* succ = block->GetSingleSuccessor();
-      // Ensure no computations are merged through throwing block.
-      // This does not prevent the optimization per se, but would
-      // require an elaborate clean up of the SSA graph.
+      // Ensure no computations are merged through throwing block. This does not prevent the
+      // optimization per se, but would require an elaborate clean up of the SSA graph.
       if (succ != exit &&
           !block->Dominates(pred) &&
           pred->Dominates(succ) &&
           succ->GetPredecessors().size() > 1u &&
           succ->GetPhis().IsEmpty()) {
-        block->ReplaceSuccessor(succ, exit);
+        // We iterate to find the first instruction that always throws. If two instructions always
+        // throw, the first one will throw and the second one will never be reached.
+        HInstruction* throwing_instruction = nullptr;
+        for (HInstructionIterator it(block->GetInstructions()); !it.Done(); it.Advance()) {
+          if (it.Current()->AlwaysThrows()) {
+            throwing_instruction = it.Current();
+            break;
+          }
+        }
+
+        if (throwing_instruction == nullptr) {
+          // No always-throwing instruction found. Continue with the rest of the blocks.
+          continue;
+        }
+
+        // We split the block at the throwing instruction, and the instructions after the throwing
+        // instructions will be disconnected from the graph after `block` points to the exit.
+        // `RemoveDeadBlocks` will take care of removing this new block and its instructions.
+        // Even though `SplitBefore` doesn't guarantee the graph to remain in SSA form, it is fine
+        // since we do not break it.
+        HBasicBlock* new_block = block->SplitBefore(throwing_instruction->GetNext(),
+                                                    /* require_graph_not_in_ssa_form= */ false);
+        DCHECK_EQ(block->GetSingleSuccessor(), new_block);
+        block->ReplaceSuccessor(new_block, exit);
+
         rerun_dominance_and_loop_analysis = true;
         MaybeRecordStat(stats_, MethodCompilationStat::kSimplifyThrowingInvoke);
         // Perform a quick follow up optimization on object != null control dependences

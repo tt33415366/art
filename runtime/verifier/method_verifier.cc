@@ -3636,8 +3636,14 @@ const RegType& MethodVerifier<kVerifierDebug>::ResolveClass(dex::TypeIndex class
     const RegType& referrer = GetDeclaringClass();
     if ((IsSdkVersionSetAndAtLeast(api_level_, SdkVersion::kP) || !referrer.IsUnresolvedTypes()) &&
         !referrer.CanAccess(*result)) {
-      Fail(VERIFY_ERROR_ACCESS_CLASS) << "(possibly) illegal class access: '"
-                                      << referrer << "' -> '" << *result << "'";
+      if (IsAotMode()) {
+        Fail(VERIFY_ERROR_ACCESS_CLASS);
+        VLOG(verifier)
+            << "(possibly) illegal class access: '" << referrer << "' -> '" << *result << "'";
+      } else {
+        Fail(VERIFY_ERROR_ACCESS_CLASS)
+            << "(possibly) illegal class access: '" << referrer << "' -> '" << *result << "'";
+      }
     }
   }
   return *result;
@@ -4893,7 +4899,7 @@ const RegType& MethodVerifier<kVerifierDebug>::DetermineCat1Constant(int32_t val
 
 template <bool kVerifierDebug>
 bool MethodVerifier<kVerifierDebug>::PotentiallyMarkRuntimeThrow() {
-  if (IsAotMode() || IsSdkVersionSetAndAtLeast(api_level_, SdkVersion::kT)) {
+  if (IsAotMode() || IsSdkVersionSetAndAtLeast(api_level_, SdkVersion::kS_V2)) {
     return false;
   }
   // Compatibility mode: we treat the following code unreachable and the verifier

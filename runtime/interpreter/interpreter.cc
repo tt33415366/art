@@ -255,6 +255,7 @@ static JValue ExecuteSwitch(Thread* self,
   }
 }
 
+NO_STACK_PROTECTOR
 static inline JValue Execute(
     Thread* self,
     const CodeItemDataAccessor& accessor,
@@ -265,41 +266,22 @@ static inline JValue Execute(
   DCHECK(!shadow_frame.GetMethod()->IsAbstract());
   DCHECK(!shadow_frame.GetMethod()->IsNative());
 
+  // We cache the result of NeedsDexPcEvents in the shadow frame so we don't need to call
+  // NeedsDexPcEvents on every instruction for better performance. NeedsDexPcEvents only gets
+  // updated asynchronoulsy in a SuspendAll scope and any existing shadow frames are updated with
+  // new value. So it is safe to cache it here.
+  shadow_frame.SetNotifyDexPcMoveEvents(
+      Runtime::Current()->GetInstrumentation()->NeedsDexPcEvents(shadow_frame.GetMethod(), self));
+
   if (LIKELY(!from_deoptimize)) {  // Entering the method, but not via deoptimization.
     if (kIsDebugBuild) {
       CHECK_EQ(shadow_frame.GetDexPC(), 0u);
       self->AssertNoPendingException();
     }
-    instrumentation::Instrumentation* instrumentation = Runtime::Current()->GetInstrumentation();
     ArtMethod *method = shadow_frame.GetMethod();
 
-    if (UNLIKELY(instrumentation->HasMethodEntryListeners())) {
-      instrumentation->MethodEnterEvent(self, method);
-      if (UNLIKELY(shadow_frame.GetForcePopFrame())) {
-        // The caller will retry this invoke or ignore the result. Just return immediately without
-        // any value.
-        DCHECK(Runtime::Current()->AreNonStandardExitsEnabled());
-        JValue ret = JValue();
-        PerformNonStandardReturn<MonitorState::kNoMonitorsLocked>(
-            self, shadow_frame, ret, instrumentation, accessor.InsSize());
-        return ret;
-      }
-      if (UNLIKELY(self->IsExceptionPending())) {
-        instrumentation->MethodUnwindEvent(self,
-                                           shadow_frame.GetThisObject(accessor.InsSize()),
-                                           method,
-                                           0);
-        JValue ret = JValue();
-        if (UNLIKELY(shadow_frame.GetForcePopFrame())) {
-          DCHECK(Runtime::Current()->AreNonStandardExitsEnabled());
-          PerformNonStandardReturn<MonitorState::kNoMonitorsLocked>(
-              self, shadow_frame, ret, instrumentation, accessor.InsSize());
-        }
-        return ret;
-      }
-    }
-
-    if (!stay_in_interpreter && !self->IsForceInterpreter()) {
+    // If we can continue in JIT and have JITed code available execute JITed code.
+    if (!stay_in_interpreter && !self->IsForceInterpreter() && !shadow_frame.GetForcePopFrame()) {
       jit::Jit* jit = Runtime::Current()->GetJit();
       if (jit != nullptr) {
         jit->MethodEntered(self, shadow_frame.GetMethod());
@@ -318,6 +300,32 @@ static inline JValue Execute(
 
           return result;
         }
+      }
+    }
+
+    instrumentation::Instrumentation* instrumentation = Runtime::Current()->GetInstrumentation();
+    if (UNLIKELY(instrumentation->HasMethodEntryListeners() || shadow_frame.GetForcePopFrame())) {
+      instrumentation->MethodEnterEvent(self, method);
+      if (UNLIKELY(shadow_frame.GetForcePopFrame())) {
+        // The caller will retry this invoke or ignore the result. Just return immediately without
+        // any value.
+        DCHECK(Runtime::Current()->AreNonStandardExitsEnabled());
+        JValue ret = JValue();
+        PerformNonStandardReturn<MonitorState::kNoMonitorsLocked>(
+            self, shadow_frame, ret, instrumentation, accessor.InsSize());
+        return ret;
+      }
+      if (UNLIKELY(self->IsExceptionPending())) {
+        instrumentation->MethodUnwindEvent(self,
+                                           method,
+                                           0);
+        JValue ret = JValue();
+        if (UNLIKELY(shadow_frame.GetForcePopFrame())) {
+          DCHECK(Runtime::Current()->AreNonStandardExitsEnabled());
+          PerformNonStandardReturn<MonitorState::kNoMonitorsLocked>(
+              self, shadow_frame, ret, instrumentation, accessor.InsSize());
+        }
+        return ret;
       }
     }
   }
@@ -366,7 +374,7 @@ void EnterInterpreterFromInvoke(Thread* self,
     num_ins = accessor.InsSize();
   } else if (!method->IsInvokable()) {
     self->EndAssertNoThreadSuspension(old_cause);
-    method->ThrowInvocationTimeError();
+    method->ThrowInvocationTimeError(receiver);
     return;
   } else {
     DCHECK(method->IsNative()) << method->PrettyMethod();
@@ -476,6 +484,7 @@ void EnterInterpreterFromDeoptimize(Thread* self,
     const uint32_t dex_pc = shadow_frame->GetDexPC();
     uint32_t new_dex_pc = dex_pc;
     if (UNLIKELY(self->IsExceptionPending())) {
+      DCHECK(self->GetException() != Thread::GetDeoptimizationException());
       // If we deoptimize from the QuickExceptionHandler, we already reported the exception throw
       // event to the instrumentation. Skip throw listeners for the first frame. The deopt check
       // should happen after the throw listener is called as throw listener can trigger a
@@ -514,7 +523,7 @@ void EnterInterpreterFromDeoptimize(Thread* self,
         new_dex_pc = dex_pc + instr->SizeInCodeUnits();
       } else if (instr->IsInvoke()) {
         DCHECK(deopt_method_type == DeoptimizationMethodType::kDefault);
-        if (IsStringInit(instr, shadow_frame->GetMethod())) {
+        if (IsStringInit(*instr, shadow_frame->GetMethod())) {
           uint16_t this_obj_vreg = GetReceiverRegisterForStringInit(instr);
           // Move the StringFactory.newStringFromChars() result into the register representing
           // "this object" when invoking the string constructor in the original dex instruction.
@@ -569,6 +578,7 @@ void EnterInterpreterFromDeoptimize(Thread* self,
   ret_val->SetJ(value.GetJ());
 }
 
+NO_STACK_PROTECTOR
 JValue EnterInterpreterFromEntryPoint(Thread* self, const CodeItemDataAccessor& accessor,
                                       ShadowFrame* shadow_frame) {
   DCHECK_EQ(self, Thread::Current());
@@ -585,6 +595,7 @@ JValue EnterInterpreterFromEntryPoint(Thread* self, const CodeItemDataAccessor& 
   return Execute(self, accessor, *shadow_frame, JValue());
 }
 
+NO_STACK_PROTECTOR
 void ArtInterpreterToInterpreterBridge(Thread* self,
                                        const CodeItemDataAccessor& accessor,
                                        ShadowFrame* shadow_frame,

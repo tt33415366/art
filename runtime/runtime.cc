@@ -16,15 +16,13 @@
 
 #include "runtime.h"
 
-// sys/mount.h has to come before linux/fs.h due to redefinition of MS_RDONLY, MS_BIND, etc
-#include <sys/mount.h>
 #ifdef __linux__
-#include <linux/fs.h>
 #include <sys/prctl.h>
 #endif
 
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/mount.h>
 #include <sys/syscall.h>
 
 #if defined(__APPLE__)
@@ -125,6 +123,7 @@
 #include "native/dalvik_system_ZygoteHooks.h"
 #include "native/java_lang_Class.h"
 #include "native/java_lang_Object.h"
+#include "native/java_lang_StackStreamFactory.h"
 #include "native/java_lang_String.h"
 #include "native/java_lang_StringFactory.h"
 #include "native/java_lang_System.h"
@@ -143,6 +142,7 @@
 #include "native/java_lang_reflect_Parameter.h"
 #include "native/java_lang_reflect_Proxy.h"
 #include "native/java_util_concurrent_atomic_AtomicLong.h"
+#include "native/libcore_io_Memory.h"
 #include "native/libcore_util_CharsetUtils.h"
 #include "native/org_apache_harmony_dalvik_ddmc_DdmServer.h"
 #include "native/org_apache_harmony_dalvik_ddmc_DdmVmInternal.h"
@@ -151,6 +151,7 @@
 #include "native_bridge_art_interface.h"
 #include "native_stack_dump.h"
 #include "nativehelper/scoped_local_ref.h"
+#include "nterp_helpers.h"
 #include "oat.h"
 #include "oat_file_manager.h"
 #include "oat_quick_method_header.h"
@@ -177,6 +178,7 @@
 #include "well_known_classes.h"
 
 #ifdef ART_TARGET_ANDROID
+#include <android/api-level.h>
 #include <android/set_abort_message.h>
 #include "com_android_apex.h"
 namespace apex = com::android::apex;
@@ -198,10 +200,6 @@ static constexpr double kLowMemoryMinLoadFactor = 0.5;
 static constexpr double kLowMemoryMaxLoadFactor = 0.8;
 static constexpr double kNormalMinLoadFactor = 0.4;
 static constexpr double kNormalMaxLoadFactor = 0.7;
-
-// Extra added to the default heap growth multiplier. Used to adjust the GC ergonomics for the read
-// barrier config.
-static constexpr double kExtraDefaultHeapGrowthMultiplier = kUseReadBarrier ? 1.0 : 0.0;
 
 Runtime* Runtime::instance_ = nullptr;
 
@@ -405,6 +403,12 @@ Runtime::~Runtime() {
   if (oat_file_manager_ != nullptr) {
     oat_file_manager_->WaitForWorkersToBeCreated();
   }
+  // Disable GC before deleting the thread-pool and shutting down runtime as it
+  // restricts attaching new threads.
+  heap_->DisableGCForShutdown();
+  heap_->WaitForWorkersToBeCreated();
+  // Make sure to let the GC complete if it is running.
+  heap_->WaitForGcToComplete(gc::kGcCauseBackground, self);
 
   {
     ScopedTrace trace2("Wait for shutdown cond");
@@ -439,8 +443,6 @@ Runtime::~Runtime() {
     self = nullptr;
   }
 
-  // Make sure to let the GC complete if it is running.
-  heap_->WaitForGcToComplete(gc::kGcCauseBackground, self);
   heap_->DeleteThreadPool();
   if (oat_file_manager_ != nullptr) {
     oat_file_manager_->DeleteThreadPool();
@@ -542,7 +544,7 @@ struct AbortState {
     os << "Runtime aborting...\n";
     if (Runtime::Current() == nullptr) {
       os << "(Runtime does not yet exist!)\n";
-      DumpNativeStack(os, GetTid(), nullptr, "  native: ", nullptr);
+      DumpNativeStack(os, GetTid(), "  native: ", nullptr);
       return;
     }
     Thread* self = Thread::Current();
@@ -554,7 +556,7 @@ struct AbortState {
 
     if (self == nullptr) {
       os << "(Aborting thread was not attached to runtime!)\n";
-      DumpNativeStack(os, GetTid(), nullptr, "  native: ", nullptr);
+      DumpNativeStack(os, GetTid(), "  native: ", nullptr);
     } else {
       os << "Aborting thread:\n";
       if (Locks::mutator_lock_->IsExclusiveHeld(self) || Locks::mutator_lock_->IsSharedHeld(self)) {
@@ -696,26 +698,39 @@ void Runtime::Abort(const char* msg) {
   // notreached
 }
 
-class FindNativeMethodsVisitor : public ClassVisitor {
+/**
+ * Update entrypoints (native and Java) of methods before the first fork. This
+ * helps sharing pages where ArtMethods are allocated between the zygote and
+ * forked apps.
+ */
+class UpdateMethodsPreFirstForkVisitor : public ClassVisitor {
  public:
-  FindNativeMethodsVisitor(Thread* self, ClassLinker* class_linker)
+  UpdateMethodsPreFirstForkVisitor(Thread* self, ClassLinker* class_linker)
       : vm_(down_cast<JNIEnvExt*>(self->GetJniEnv())->GetVm()),
         self_(self),
-        class_linker_(class_linker) {}
+        class_linker_(class_linker),
+        can_use_nterp_(interpreter::CanRuntimeUseNterp()) {}
 
   bool operator()(ObjPtr<mirror::Class> klass) override REQUIRES_SHARED(Locks::mutator_lock_) {
     bool is_initialized = klass->IsVisiblyInitialized();
     for (ArtMethod& method : klass->GetDeclaredMethods(kRuntimePointerSize)) {
-      if (method.IsNative() && (is_initialized || !NeedsClinitCheckBeforeCall(&method))) {
-        const void* existing = method.GetEntryPointFromJni();
-        if (method.IsCriticalNative()
-                ? class_linker_->IsJniDlsymLookupCriticalStub(existing)
-                : class_linker_->IsJniDlsymLookupStub(existing)) {
-          const void* native_code =
-              vm_->FindCodeForNativeMethod(&method, /*error_msg=*/ nullptr, /*can_suspend=*/ false);
-          if (native_code != nullptr) {
-            class_linker_->RegisterNative(self_, &method, native_code);
+      if (is_initialized || !NeedsClinitCheckBeforeCall(&method)) {
+        if (method.IsNative()) {
+          const void* existing = method.GetEntryPointFromJni();
+          if (method.IsCriticalNative()
+                  ? class_linker_->IsJniDlsymLookupCriticalStub(existing)
+                  : class_linker_->IsJniDlsymLookupStub(existing)) {
+            const void* native_code =
+                vm_->FindCodeForNativeMethod(&method, /*error_msg=*/ nullptr, /*can_suspend=*/ false);
+            if (native_code != nullptr) {
+              class_linker_->RegisterNative(self_, &method, native_code);
+            }
           }
+        }
+      } else if (can_use_nterp_) {
+        const void* existing = method.GetEntryPointFromQuickCompiledCode();
+        if (class_linker_->IsQuickResolutionStub(existing) && CanMethodUseNterp(&method)) {
+          method.SetEntryPointFromQuickCompiledCode(interpreter::GetNterpWithClinitEntryPoint());
         }
       }
     }
@@ -723,11 +738,12 @@ class FindNativeMethodsVisitor : public ClassVisitor {
   }
 
  private:
-  JavaVMExt* vm_;
-  Thread* self_;
-  ClassLinker* class_linker_;
+  JavaVMExt* const vm_;
+  Thread* const self_;
+  ClassLinker* const class_linker_;
+  const bool can_use_nterp_;
 
-  DISALLOW_COPY_AND_ASSIGN(FindNativeMethodsVisitor);
+  DISALLOW_COPY_AND_ASSIGN(UpdateMethodsPreFirstForkVisitor);
 };
 
 void Runtime::PreZygoteFork() {
@@ -741,8 +757,7 @@ void Runtime::PreZygoteFork() {
     // Ensure we call FixupStaticTrampolines on all methods that are
     // initialized.
     class_linker_->MakeInitializedClassesVisiblyInitialized(soa.Self(), /*wait=*/ true);
-    // Update native method JNI entrypoints.
-    FindNativeMethodsVisitor visitor(soa.Self(), class_linker_);
+    UpdateMethodsPreFirstForkVisitor visitor(soa.Self(), class_linker_);
     class_linker_->VisitClasses(&visitor);
   }
   heap_->PreZygoteFork();
@@ -989,6 +1004,22 @@ bool Runtime::Start() {
     }
     CreateJitCodeCache(/*rwx_memory_allowed=*/true);
     CreateJit();
+#ifdef ADDRESS_SANITIZER
+    // (b/238730394): In older implementations of sanitizer + glibc there is a race between
+    // pthread_create and dlopen that could cause a deadlock. pthread_create interceptor in ASAN
+    // uses dl_pthread_iterator with a callback that could request a dl_load_lock via call to
+    // __tls_get_addr [1]. dl_pthread_iterate would already hold dl_load_lock so this could cause a
+    // deadlock. __tls_get_addr needs a dl_load_lock only when there is a dlopen happening in
+    // parallel. As a workaround we wait for the pthread_create (i.e JIT thread pool creation) to
+    // finish before going to the next phase. Creating a system class loader could need a dlopen so
+    // we wait here till threads are initialized.
+    // [1] https://github.com/llvm/llvm-project/blob/main/compiler-rt/lib/sanitizer_common/sanitizer_linux_libcdep.cpp#L408
+    // See this for more context: https://reviews.llvm.org/D98926
+    // TODO(b/238730394): Revisit this workaround once we migrate to musl libc.
+    if (jit_ != nullptr) {
+      jit_->GetThreadPool()->WaitForWorkersToBeCreated();
+    }
+#endif
   }
 
   // Send the start phase event. We have to wait till here as this is when the main thread peer
@@ -1127,8 +1158,8 @@ void Runtime::InitNonZygoteOrPostFork(
       std::vector<std::string> jars = android::base::Split(system_server_classpath, ":");
       app_info_.RegisterAppInfo("android",
                                 jars,
-                                /*cur_profile_path=*/ "",
-                                /*ref_profile_path=*/ "",
+                                /*profile_output_filename=*/ "",
+                                /*ref_profile_filename=*/ "",
                                 AppInfo::CodeType::kPrimaryApk);
     }
 
@@ -1143,7 +1174,6 @@ void Runtime::InitNonZygoteOrPostFork(
   }
 
   // Create the thread pools.
-  heap_->CreateThreadPool();
   // Avoid creating the runtime thread pool for system server since it will not be used and would
   // waste memory.
   if (!is_system_server) {
@@ -1327,9 +1357,9 @@ static inline void CreatePreAllocatedException(Thread* self,
   detailMessageField->SetObject</* kTransactionActive= */ false>(exception->Read(), message);
 }
 
-void Runtime::InitializeApexVersions() {
+std::string Runtime::GetApexVersions(ArrayRef<const std::string> boot_class_path_locations) {
   std::vector<std::string_view> bcp_apexes;
-  for (std::string_view jar : Runtime::Current()->GetBootClassPathLocations()) {
+  for (std::string_view jar : boot_class_path_locations) {
     std::string_view apex = ApexNameFromLocation(jar);
     if (!apex.empty()) {
       bcp_apexes.push_back(apex);
@@ -1337,20 +1367,20 @@ void Runtime::InitializeApexVersions() {
   }
   static const char* kApexFileName = "/apex/apex-info-list.xml";
   // Start with empty markers.
-  apex_versions_ = std::string(bcp_apexes.size(), '/');
+  std::string empty_apex_versions(bcp_apexes.size(), '/');
   // When running on host or chroot, we just use empty markers.
   if (!kIsTargetBuild || !OS::FileExists(kApexFileName)) {
-    return;
+    return empty_apex_versions;
   }
 #ifdef ART_TARGET_ANDROID
   if (access(kApexFileName, R_OK) != 0) {
     PLOG(WARNING) << "Failed to read " << kApexFileName;
-    return;
+    return empty_apex_versions;
   }
   auto info_list = apex::readApexInfoList(kApexFileName);
   if (!info_list.has_value()) {
     LOG(WARNING) << "Failed to parse " << kApexFileName;
-    return;
+    return empty_apex_versions;
   }
 
   std::string result;
@@ -1374,8 +1404,15 @@ void Runtime::InitializeApexVersions() {
       android::base::StringAppendF(&result, "/%" PRIu64, version);
     }
   }
-  apex_versions_ = result;
+  return result;
+#else
+  return empty_apex_versions;  // Not an Android build.
 #endif
+}
+
+void Runtime::InitializeApexVersions() {
+  apex_versions_ =
+      GetApexVersions(ArrayRef<const std::string>(Runtime::Current()->GetBootClassPathLocations()));
 }
 
 void Runtime::ReloadAllFlags(const std::string& caller) {
@@ -1586,9 +1623,11 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
     // If low memory mode, use 1.0 as the multiplier by default.
     foreground_heap_growth_multiplier = 1.0f;
   } else {
+    // Extra added to the default heap growth multiplier for concurrent GC
+    // compaction algorithms. This is done for historical reasons.
+    // TODO: remove when we revisit heap configurations.
     foreground_heap_growth_multiplier =
-        runtime_options.GetOrDefault(Opt::ForegroundHeapGrowthMultiplier) +
-            kExtraDefaultHeapGrowthMultiplier;
+        runtime_options.GetOrDefault(Opt::ForegroundHeapGrowthMultiplier) + 1.0f;
   }
   XGcOption xgc_option = runtime_options.GetOrDefault(Opt::GcOption);
 
@@ -1616,9 +1655,9 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
                        image_locations_,
                        instruction_set_,
                        // Override the collector type to CC if the read barrier config.
-                       kUseReadBarrier ? gc::kCollectorTypeCC : xgc_option.collector_type_,
-                       kUseReadBarrier ? BackgroundGcOption(gc::kCollectorTypeCCBackground)
-                                       : runtime_options.GetOrDefault(Opt::BackgroundGc),
+                       gUseReadBarrier ? gc::kCollectorTypeCC : xgc_option.collector_type_,
+                       gUseReadBarrier ? BackgroundGcOption(gc::kCollectorTypeCCBackground)
+                                       : BackgroundGcOption(xgc_option.collector_type_),
                        runtime_options.GetOrDefault(Opt::LargeObjectSpace),
                        runtime_options.GetOrDefault(Opt::LargeObjectThreshold),
                        runtime_options.GetOrDefault(Opt::ParallelGCThreads),
@@ -2236,6 +2275,7 @@ void Runtime::RegisterRuntimeNativeMethods(JNIEnv* env) {
   register_java_lang_reflect_Parameter(env);
   register_java_lang_reflect_Proxy(env);
   register_java_lang_ref_Reference(env);
+  register_java_lang_StackStreamFactory(env);
   register_java_lang_String(env);
   register_java_lang_StringFactory(env);
   register_java_lang_System(env);
@@ -2244,6 +2284,7 @@ void Runtime::RegisterRuntimeNativeMethods(JNIEnv* env) {
   register_java_lang_VMClassLoader(env);
   register_java_util_concurrent_atomic_AtomicLong(env);
   register_jdk_internal_misc_Unsafe(env);
+  register_libcore_io_Memory(env);
   register_libcore_util_CharsetUtils(env);
   register_org_apache_harmony_dalvik_ddmc_DdmServer(env);
   register_org_apache_harmony_dalvik_ddmc_DdmVmInternal(env);
@@ -2455,6 +2496,9 @@ void Runtime::VisitConcurrentRoots(RootVisitor* visitor, VisitRootFlags flags) {
   class_linker_->VisitRoots(visitor, flags);
   jni_id_manager_->VisitRoots(visitor);
   heap_->VisitAllocationRecords(visitor);
+  if (jit_ != nullptr) {
+    jit_->GetCodeCache()->VisitRoots(visitor);
+  }
   if ((flags & kVisitRootFlagNewRoots) == 0) {
     // Guaranteed to have no new roots in the constant roots.
     VisitConstantRoots(visitor);
@@ -2583,7 +2627,7 @@ ArtMethod* Runtime::CreateCalleeSaveMethod() {
 }
 
 void Runtime::DisallowNewSystemWeaks() {
-  CHECK(!kUseReadBarrier);
+  CHECK(!gUseReadBarrier);
   monitor_list_->DisallowNewMonitors();
   intern_table_->ChangeWeakRootState(gc::kWeakRootStateNoReadsOrWrites);
   java_vm_->DisallowNewWeakGlobals();
@@ -2599,7 +2643,7 @@ void Runtime::DisallowNewSystemWeaks() {
 }
 
 void Runtime::AllowNewSystemWeaks() {
-  CHECK(!kUseReadBarrier);
+  CHECK(!gUseReadBarrier);
   monitor_list_->AllowNewMonitors();
   intern_table_->ChangeWeakRootState(gc::kWeakRootStateNormal);  // TODO: Do this in the sweeping.
   java_vm_->AllowNewWeakGlobals();
@@ -3041,12 +3085,13 @@ bool Runtime::IsVerificationSoftFail() const {
   return verify_ == verifier::VerifyMode::kSoftFail;
 }
 
-bool Runtime::IsAsyncDeoptimizeable(uintptr_t code) const {
+bool Runtime::IsAsyncDeoptimizeable(ArtMethod* method, uintptr_t code) const {
   if (OatQuickMethodHeader::NterpMethodHeader != nullptr) {
     if (OatQuickMethodHeader::NterpMethodHeader->Contains(code)) {
       return true;
     }
   }
+
   // We only support async deopt (ie the compiled code is not explicitly asking for
   // deopt, but something else like the debugger) in debuggable JIT code.
   // We could look at the oat file where `code` is being defined,
@@ -3054,8 +3099,14 @@ bool Runtime::IsAsyncDeoptimizeable(uintptr_t code) const {
   // only rely on the JIT for debuggable apps.
   // The JIT-zygote is not debuggable so we need to be sure to exclude code from the non-private
   // region as well.
-  return IsJavaDebuggable() && GetJit() != nullptr &&
-         GetJit()->GetCodeCache()->PrivateRegionContainsPc(reinterpret_cast<const void*>(code));
+  if (GetJit() != nullptr &&
+      GetJit()->GetCodeCache()->PrivateRegionContainsPc(reinterpret_cast<const void*>(code))) {
+    // If the code is JITed code then check if it was compiled as debuggable.
+    const OatQuickMethodHeader* header = method->GetOatQuickMethodHeader(code);
+    return CodeInfo::IsDebuggable(header->GetOptimizedCodeInfoPtr());
+  }
+
+  return false;
 }
 
 LinearAlloc* Runtime::CreateLinearAlloc() {
@@ -3142,15 +3193,19 @@ class UpdateEntryPointsClassVisitor : public ClassVisitor {
     auto pointer_size = Runtime::Current()->GetClassLinker()->GetImagePointerSize();
     for (auto& m : klass->GetMethods(pointer_size)) {
       const void* code = m.GetEntryPointFromQuickCompiledCode();
+      // For java debuggable runtimes we also deoptimize native methods. For other cases (boot
+      // image profiling) we don't need to deoptimize native methods. If this changes also
+      // update Instrumentation::CanUseAotCode.
+      bool deoptimize_native_methods = Runtime::Current()->IsJavaDebuggable();
       if (Runtime::Current()->GetHeap()->IsInBootImageOatFile(code) &&
-          !m.IsNative() &&
+          (!m.IsNative() || deoptimize_native_methods) &&
           !m.IsProxyMethod()) {
         instrumentation_->InitializeMethodsCode(&m, /*aot_code=*/ nullptr);
       }
 
       if (Runtime::Current()->GetJit() != nullptr &&
           Runtime::Current()->GetJit()->GetCodeCache()->IsInZygoteExecSpace(code) &&
-          !m.IsNative()) {
+          (!m.IsNative() || deoptimize_native_methods)) {
         DCHECK(!m.IsProxyMethod());
         instrumentation_->InitializeMethodsCode(&m, /*aot_code=*/ nullptr);
       }
@@ -3178,14 +3233,12 @@ void Runtime::DeoptimizeBootImage() {
   // If we've already started and we are setting this runtime to debuggable,
   // we patch entry points of methods in boot image to interpreter bridge, as
   // boot image code may be AOT compiled as not debuggable.
-  if (!GetInstrumentation()->IsForcedInterpretOnly()) {
-    UpdateEntryPointsClassVisitor visitor(GetInstrumentation());
-    GetClassLinker()->VisitClasses(&visitor);
-    jit::Jit* jit = GetJit();
-    if (jit != nullptr) {
-      // Code previously compiled may not be compiled debuggable.
-      jit->GetCodeCache()->TransitionToDebuggable();
-    }
+  UpdateEntryPointsClassVisitor visitor(GetInstrumentation());
+  GetClassLinker()->VisitClasses(&visitor);
+  jit::Jit* jit = GetJit();
+  if (jit != nullptr) {
+    // Code previously compiled may not be compiled debuggable.
+    jit->GetCodeCache()->TransitionToDebuggable();
   }
 }
 
@@ -3356,6 +3409,22 @@ void Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
                                   const uint8_t* map_begin,
                                   const uint8_t* map_end,
                                   const std::string& file_name) {
+#ifdef ART_TARGET_ANDROID
+  // Short-circuit the madvise optimization for background processes. This
+  // avoids IO and memory contention with foreground processes, particularly
+  // those involving app startup.
+  // Note: We can only safely short-circuit the madvise on T+, as it requires
+  // the framework to always immediately notify ART of process states.
+  static const int kApiLevel = android_get_device_api_level();
+  const bool accurate_process_state_at_startup = kApiLevel >= __ANDROID_API_T__;
+  if (accurate_process_state_at_startup) {
+    const Runtime* runtime = Runtime::Current();
+    if (runtime != nullptr && !runtime->InJankPerceptibleProcessState()) {
+      return;
+    }
+  }
+#endif  // ART_TARGET_ANDROID
+
   // Ideal blockTransferSize for madvising files (128KiB)
   static constexpr size_t kIdealIoTransferSizeBytes = 128*1024;
 
@@ -3394,6 +3463,31 @@ void Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
         break;
       }
     }
+  }
+}
+
+// Return whether a boot image has a profile. This means we'll need to pre-JIT
+// methods in that profile for performance.
+bool Runtime::HasImageWithProfile() const {
+  for (gc::space::ImageSpace* space : GetHeap()->GetBootImageSpaces()) {
+    if (!space->GetProfileFiles().empty()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void Runtime::AppendToBootClassPath(
+    const std::string& filename,
+    const std::string& location,
+    const std::vector<std::unique_ptr<const art::DexFile>>& dex_files) {
+  boot_class_path_.push_back(filename);
+  if (!boot_class_path_locations_.empty()) {
+    boot_class_path_locations_.push_back(location);
+  }
+  ScopedObjectAccess soa(Thread::Current());
+  for (const std::unique_ptr<const art::DexFile>& dex_file : dex_files) {
+    GetClassLinker()->AppendToBootClassPath(Thread::Current(), dex_file.get());
   }
 }
 

@@ -359,7 +359,6 @@ class OptimizingCompiler final : public Compiler {
                         const DexCompilationUnit& dex_compilation_unit,
                         PassObserver* pass_observer) const;
 
- private:
   // Create a 'CompiledMethod' for an optimized graph.
   CompiledMethod* Emit(ArenaAllocator* allocator,
                        CodeVectorAllocator* code_allocator,
@@ -637,7 +636,7 @@ void OptimizingCompiler::RunOptimizations(HGraph* graph,
            "dead_code_elimination$initial"),
     // Inlining.
     OptDef(OptimizationPass::kInliner),
-    // Simplification (only if inlining occurred).
+    // Simplification (if inlining occurred, or if we analyzed the invoke as "always throwing").
     OptDef(OptimizationPass::kConstantFolding,
            "constant_folding$after_inlining",
            OptimizationPass::kInliner),
@@ -1115,17 +1114,18 @@ CompiledMethod* OptimizingCompiler::Compile(const dex::CodeItem* code_item,
 
 static ScopedArenaVector<uint8_t> CreateJniStackMap(ScopedArenaAllocator* allocator,
                                                     const JniCompiledMethod& jni_compiled_method,
-                                                    size_t code_size) {
+                                                    size_t code_size,
+                                                    bool debuggable) {
   // StackMapStream is quite large, so allocate it using the ScopedArenaAllocator
   // to stay clear of the frame size limit.
   std::unique_ptr<StackMapStream> stack_map_stream(
       new (allocator) StackMapStream(allocator, jni_compiled_method.GetInstructionSet()));
-  stack_map_stream->BeginMethod(
-      jni_compiled_method.GetFrameSize(),
-      jni_compiled_method.GetCoreSpillMask(),
-      jni_compiled_method.GetFpSpillMask(),
-      /* num_dex_registers= */ 0,
-      /* baseline= */ false);
+  stack_map_stream->BeginMethod(jni_compiled_method.GetFrameSize(),
+                                jni_compiled_method.GetCoreSpillMask(),
+                                jni_compiled_method.GetFpSpillMask(),
+                                /* num_dex_registers= */ 0,
+                                /* baseline= */ false,
+                                debuggable);
   stack_map_stream->EndMethod(code_size);
   return stack_map_stream->Encode();
 }
@@ -1183,12 +1183,15 @@ CompiledMethod* OptimizingCompiler::JniCompile(uint32_t access_flags,
   }
 
   JniCompiledMethod jni_compiled_method = ArtQuickJniCompileMethod(
-      compiler_options, access_flags, method_idx, dex_file);
+      compiler_options, access_flags, method_idx, dex_file, &allocator);
   MaybeRecordStat(compilation_stats_.get(), MethodCompilationStat::kCompiledNativeStub);
 
   ScopedArenaAllocator stack_map_allocator(&arena_stack);  // Will hold the stack map.
-  ScopedArenaVector<uint8_t> stack_map = CreateJniStackMap(
-      &stack_map_allocator, jni_compiled_method, jni_compiled_method.GetCode().size());
+  ScopedArenaVector<uint8_t> stack_map =
+      CreateJniStackMap(&stack_map_allocator,
+                        jni_compiled_method,
+                        jni_compiled_method.GetCode().size(),
+                        compiler_options.GetDebuggable() && compiler_options.IsJitCompiler());
   return CompiledMethod::SwapAllocCompiledMethod(
       GetCompiledMethodStorage(),
       jni_compiled_method.GetInstructionSet(),
@@ -1233,16 +1236,27 @@ bool OptimizingCompiler::JitCompile(Thread* self,
   ArenaAllocator allocator(runtime->GetJitArenaPool());
 
   if (UNLIKELY(method->IsNative())) {
+    // Use GenericJniTrampoline for critical native methods in debuggable runtimes. We don't
+    // support calling method entry / exit hooks for critical native methods yet.
+    // TODO(mythria): Add support for calling method entry / exit hooks in JITed stubs for critical
+    // native methods too.
+    if (runtime->IsJavaDebuggable() && method->IsCriticalNative()) {
+      DCHECK(compiler_options.IsJitCompiler());
+      return false;
+    }
     JniCompiledMethod jni_compiled_method = ArtQuickJniCompileMethod(
-        compiler_options, access_flags, method_idx, *dex_file);
+        compiler_options, access_flags, method_idx, *dex_file, &allocator);
     std::vector<Handle<mirror::Object>> roots;
     ArenaSet<ArtMethod*, std::less<ArtMethod*>> cha_single_implementation_list(
         allocator.Adapter(kArenaAllocCHA));
     ArenaStack arena_stack(runtime->GetJitArenaPool());
     // StackMapStream is large and it does not fit into this frame, so we need helper method.
     ScopedArenaAllocator stack_map_allocator(&arena_stack);  // Will hold the stack map.
-    ScopedArenaVector<uint8_t> stack_map = CreateJniStackMap(
-        &stack_map_allocator, jni_compiled_method, jni_compiled_method.GetCode().size());
+    ScopedArenaVector<uint8_t> stack_map =
+        CreateJniStackMap(&stack_map_allocator,
+                          jni_compiled_method,
+                          jni_compiled_method.GetCode().size(),
+                          compiler_options.GetDebuggable() && compiler_options.IsJitCompiler());
 
     ArrayRef<const uint8_t> reserved_code;
     ArrayRef<const uint8_t> reserved_data;

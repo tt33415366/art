@@ -48,7 +48,9 @@
 #include "runtime_stats.h"
 #include "thread_state.h"
 
-class BacktraceMap;
+namespace unwindstack {
+class AndroidLocalUnwinder;
+}  // namespace unwindstack
 
 namespace art {
 
@@ -188,7 +190,7 @@ enum class WeakRefAccessState : int32_t {
 // This should match RosAlloc::kNumThreadLocalSizeBrackets.
 static constexpr size_t kNumRosAllocThreadLocalSizeBracketsInThread = 16;
 
-static constexpr size_t kSharedMethodHotnessThreshold = 0xffff;
+static constexpr size_t kSharedMethodHotnessThreshold = 0x1fff;
 
 // Thread's stack layout for implicit stack overflow checks:
 //
@@ -270,7 +272,11 @@ class Thread {
   // Dumps the detailed thread state and the thread stack (used for SIGQUIT).
   void Dump(std::ostream& os,
             bool dump_native_stack = true,
-            BacktraceMap* backtrace_map = nullptr,
+            bool force_dump_stack = false) const
+      REQUIRES_SHARED(Locks::mutator_lock_);
+  void Dump(std::ostream& os,
+            unwindstack::AndroidLocalUnwinder& unwinder,
+            bool dump_native_stack = true,
             bool force_dump_stack = false) const
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -373,11 +379,11 @@ class Thread {
   void WaitForFlipFunction(Thread* self) REQUIRES_SHARED(Locks::mutator_lock_);
 
   gc::accounting::AtomicStack<mirror::Object>* GetThreadLocalMarkStack() {
-    CHECK(kUseReadBarrier);
+    CHECK(gUseReadBarrier);
     return tlsPtr_.thread_local_mark_stack;
   }
   void SetThreadLocalMarkStack(gc::accounting::AtomicStack<mirror::Object>* stack) {
-    CHECK(kUseReadBarrier);
+    CHECK(gUseReadBarrier);
     tlsPtr_.thread_local_mark_stack = stack;
   }
 
@@ -546,8 +552,12 @@ class Thread {
   // that needs to be dealt with, false otherwise.
   bool ObserveAsyncException() REQUIRES_SHARED(Locks::mutator_lock_);
 
-  // Find catch block and perform long jump to appropriate exception handle
-  NO_RETURN void QuickDeliverException() REQUIRES_SHARED(Locks::mutator_lock_);
+  // Find catch block and perform long jump to appropriate exception handle. When
+  // is_method_exit_exception is true, the exception was thrown by the method exit callback and we
+  // should not send method unwind for the method on top of the stack since method exit callback was
+  // already called.
+  NO_RETURN void QuickDeliverException(bool is_method_exit_exception = false)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   Context* GetLongJumpContext();
   void ReleaseLongJumpContext(Context* context) {
@@ -573,8 +583,8 @@ class Thread {
     tlsPtr_.managed_stack.SetTopQuickFrame(top_method);
   }
 
-  void SetTopOfStackTagged(ArtMethod** top_method) {
-    tlsPtr_.managed_stack.SetTopQuickFrameTagged(top_method);
+  void SetTopOfStackGenericJniTagged(ArtMethod** top_method) {
+    tlsPtr_.managed_stack.SetTopQuickFrameGenericJniTagged(top_method);
   }
 
   void SetTopOfShadowStack(ShadowFrame* top) {
@@ -708,6 +718,16 @@ class Thread {
       jobjectArray output_array = nullptr, int* stack_depth = nullptr)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+  static jint InternalStackTraceToStackFrameInfoArray(
+      const ScopedObjectAccessAlreadyRunnable& soa,
+      jlong mode,  // See java.lang.StackStreamFactory for the mode flags
+      jobject internal,
+      jint startLevel,
+      jint batchSize,
+      jint startIndex,
+      jobjectArray output_array)  // java.lang.StackFrameInfo[]
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
   jobjectArray CreateAnnotatedStackTrace(const ScopedObjectAccessAlreadyRunnable& soa) const
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -739,6 +759,13 @@ class Thread {
   }
 
   template<PointerSize pointer_size>
+  static constexpr ThreadOffset<pointer_size> TidOffset() {
+    return ThreadOffset<pointer_size>(
+        OFFSETOF_MEMBER(Thread, tls32_) +
+        OFFSETOF_MEMBER(tls_32bit_sized_values, tid));
+  }
+
+  template<PointerSize pointer_size>
   static constexpr ThreadOffset<pointer_size> InterruptedOffset() {
     return ThreadOffset<pointer_size>(
         OFFSETOF_MEMBER(Thread, tls32_) +
@@ -764,6 +791,13 @@ class Thread {
     return ThreadOffset<pointer_size>(
         OFFSETOF_MEMBER(Thread, tls32_) +
         OFFSETOF_MEMBER(tls_32bit_sized_values, is_gc_marking));
+  }
+
+  template <PointerSize pointer_size>
+  static constexpr ThreadOffset<pointer_size> DeoptCheckRequiredOffset() {
+    return ThreadOffset<pointer_size>(
+        OFFSETOF_MEMBER(Thread, tls32_) +
+        OFFSETOF_MEMBER(tls_32bit_sized_values, is_deopt_check_required));
   }
 
   static constexpr size_t IsGcMarkingSize() {
@@ -1011,33 +1045,34 @@ class Thread {
   }
 
   bool GetIsGcMarking() const {
-    CHECK(kUseReadBarrier);
+    CHECK(gUseReadBarrier);
     return tls32_.is_gc_marking;
   }
 
   void SetIsGcMarkingAndUpdateEntrypoints(bool is_marking);
 
+  bool IsDeoptCheckRequired() const { return tls32_.is_deopt_check_required; }
+
+  void SetDeoptCheckRequired(bool flag) { tls32_.is_deopt_check_required = flag; }
+
   bool GetWeakRefAccessEnabled() const;  // Only safe for current thread.
 
   void SetWeakRefAccessEnabled(bool enabled) {
-    CHECK(kUseReadBarrier);
+    DCHECK(gUseReadBarrier);
     WeakRefAccessState new_state = enabled ?
         WeakRefAccessState::kEnabled : WeakRefAccessState::kDisabled;
     tls32_.weak_ref_access_enabled.store(new_state, std::memory_order_release);
   }
 
   uint32_t GetDisableThreadFlipCount() const {
-    CHECK(kUseReadBarrier);
     return tls32_.disable_thread_flip_count;
   }
 
   void IncrementDisableThreadFlipCount() {
-    CHECK(kUseReadBarrier);
     ++tls32_.disable_thread_flip_count;
   }
 
   void DecrementDisableThreadFlipCount() {
-    CHECK(kUseReadBarrier);
     DCHECK_GT(tls32_.disable_thread_flip_count, 0U);
     --tls32_.disable_thread_flip_count;
   }
@@ -1205,6 +1240,10 @@ class Thread {
     tlsPtr_.thread_local_end += bytes;
     DCHECK_LE(tlsPtr_.thread_local_end, tlsPtr_.thread_local_limit);
   }
+
+  // Called from Concurrent mark-compact GC to slide the TLAB pointers backwards
+  // to adjust to post-compact addresses.
+  void AdjustTlab(size_t slide_bytes);
 
   // Doesn't check that there is room.
   mirror::Object* AllocTlab(size_t bytes);
@@ -1481,7 +1520,11 @@ class Thread {
   void DumpState(std::ostream& os) const REQUIRES_SHARED(Locks::mutator_lock_);
   void DumpStack(std::ostream& os,
                  bool dump_native_stack = true,
-                 BacktraceMap* backtrace_map = nullptr,
+                 bool force_dump_stack = false) const
+      REQUIRES_SHARED(Locks::mutator_lock_);
+  void DumpStack(std::ostream& os,
+                 unwindstack::AndroidLocalUnwinder& unwinder,
+                 bool dump_native_stack = true,
                  bool force_dump_stack = false) const
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -1712,6 +1755,7 @@ class Thread {
           thread_exit_check_count(0),
           is_transitioning_to_runnable(false),
           is_gc_marking(false),
+          is_deopt_check_required(false),
           weak_ref_access_enabled(WeakRefAccessState::kVisiblyEnabled),
           disable_thread_flip_count(0),
           user_code_suspend_count(0),
@@ -1765,6 +1809,12 @@ class Thread {
     // thread local so that we can simplify the logic to check for the fast path of read barriers of
     // GC roots.
     bool32_t is_gc_marking;
+
+    // True if we need to check for deoptimization when returning from the runtime functions. This
+    // is required only when a class is redefined to prevent executing code that has field offsets
+    // embedded. For non-debuggable apps redefinition is not allowed and this flag should always be
+    // set to false.
+    bool32_t is_deopt_check_required;
 
     // Thread "interrupted" status; stays raised until queried or thrown.
     Atomic<bool32_t> interrupted;
@@ -2186,13 +2236,13 @@ class ScopedTransitioningToRunnable : public ValueObject {
   explicit ScopedTransitioningToRunnable(Thread* self)
       : self_(self) {
     DCHECK_EQ(self, Thread::Current());
-    if (kUseReadBarrier) {
+    if (gUseReadBarrier) {
       self_->SetIsTransitioningToRunnable(true);
     }
   }
 
   ~ScopedTransitioningToRunnable() {
-    if (kUseReadBarrier) {
+    if (gUseReadBarrier) {
       self_->SetIsTransitioningToRunnable(false);
     }
   }

@@ -521,7 +521,6 @@ PRIVATE_ART_APEX_DEPENDENCY_LIBS := \
   lib/libart-disassembler.so \
   lib/libartpalette.so \
   lib/libart.so \
-  lib/libbacktrace.so \
   lib/libdexfile.so \
   lib/libdt_fd_forward.so \
   lib/libdt_socket.so \
@@ -551,7 +550,6 @@ PRIVATE_ART_APEX_DEPENDENCY_LIBS := \
   lib64/libart-disassembler.so \
   lib64/libartpalette.so \
   lib64/libart.so \
-  lib64/libbacktrace.so \
   lib64/libdexfile.so \
   lib64/libdt_fd_forward.so \
   lib64/libdt_socket.so \
@@ -649,6 +647,13 @@ endef
 #
 # TODO(b/129332183): Remove this when Golem has full support for the
 # ART APEX.
+#
+# TODO(b/129332183): This approach is flawed: We mix DSOs from prebuilt APEXes
+# and prebuilts/runtime/mainline/platform/impl with source built ones, and both
+# may depend on the same DSOs, and some of them don't have stable ABIs.
+# libbase.so in particular is such a problematic dependency. When those
+# dependencies eventually don't work anymore we don't have much choice but to
+# update all prebuilts.
 .PHONY: standalone-apex-files
 standalone-apex-files: deapexer \
                        $(RELEASE_ART_APEX) \
@@ -882,8 +887,10 @@ endef
 define create_public_sdk_dex
 public_sdk_$(1)_stub := $$(call get_public_sdk_stub_dex,$(1))
 $$(public_sdk_$(1)_stub): PRIVATE_MIN_SDK_VERSION := $(1)
-$$(public_sdk_$(1)_stub): $$(call resolve-prebuilt-sdk-jar-path,$(1)) $$(DX) $$(ZIP2ZIP)
+$$(public_sdk_$(1)_stub): $$(call resolve-prebuilt-sdk-jar-path,$(1)) $$(D8) $$(ZIP2ZIP)
 	$$(transform-classes.jar-to-dex)
+
+$$(call declare-1p-target,$$(public_sdk_$(1)_stub),art)
 endef
 
 $(foreach version,$(SDK_VERSIONS),$(eval $(call create_public_sdk_dex,$(version))))
@@ -899,6 +906,9 @@ $$(PUBLIC_SDK_$(1)_STUB_ZIP_PATH): PRIVATE_SDK_STUBS_DEX_DIR := $$(dir $$(public
 $$(PUBLIC_SDK_$(1)_STUB_ZIP_PATH): $$(SOONG_ZIP) $$(public_sdk_$(1)_stub)
 	rm -f $$@
 	$$(SOONG_ZIP) -o $$@ -C $$(PRIVATE_SDK_STUBS_DEX_DIR) -D $$(PRIVATE_SDK_STUBS_DEX_DIR)
+
+$$(call declare-1p-container,$$(PUBLIC_SDK_$(1)_STUB_ZIP_PATH),art)
+$$(call declare-container-license-deps,$$(PUBLIC_SDK_$(1)_STUB_ZIP_PATH),$$(public_sdk_$(1)_stub),$$(PUBLIC_SDK_$(1)_STUB_PATH):)
 endef
 
 $(foreach version,$(SDK_VERSIONS),$(eval $(call create_public_sdk_zip,$(version))))

@@ -99,7 +99,7 @@ ENTRY art_jni_dlsym_lookup_stub
     // Call artFindNativeMethod() for normal native and artFindNativeMethodRunnable()
     // for @FastNative or @CriticalNative.
     ldr    ip, [r0, #THREAD_TOP_QUICK_FRAME_OFFSET]   // uintptr_t tagged_quick_frame
-    bic    ip, #1                                     // ArtMethod** sp
+    bic    ip, #TAGGED_JNI_SP_MASK                    // ArtMethod** sp
     ldr    ip, [ip]                                   // ArtMethod* method
     ldr    ip, [ip, #ART_METHOD_ACCESS_FLAGS_OFFSET]  // uint32_t access_flags
     tst    ip, #(ACCESS_FLAGS_METHOD_IS_FAST_NATIVE | ACCESS_FLAGS_METHOD_IS_CRITICAL_NATIVE)
@@ -114,11 +114,13 @@ ENTRY art_jni_dlsym_lookup_stub
     add    sp, #12                        @ restore stack pointer
     .cfi_adjust_cfa_offset -12
     cbz    r0, 1f                         @ is method code null?
+    .cfi_remember_state
     pop    {r0, r1, r2, r3, lr}           @ restore regs
     .cfi_adjust_cfa_offset -20
     .cfi_restore lr
     bx     r12                            @ if non-null, tail call to method's code
 1:
+    CFI_RESTORE_STATE_AND_DEF_CFA sp, 20
     pop    {r0, r1, r2, r3, pc}           @ restore regs and return to caller to handle exception
 END art_jni_dlsym_lookup_stub
 
@@ -323,6 +325,11 @@ JNI_SAVE_MANAGED_ARGS_TRAMPOLINE art_jni_read_barrier, artJniReadBarrier
      * Trampoline to `artJniMethodStart()` that preserves all managed arguments.
      */
 JNI_SAVE_MANAGED_ARGS_TRAMPOLINE art_jni_method_start, artJniMethodStart, rSELF
+
+    /*
+     * Trampoline to `artJniMethodEntryHook()` that preserves all managed arguments.
+     */
+JNI_SAVE_MANAGED_ARGS_TRAMPOLINE art_jni_method_entry_hook, artJniMethodEntryHook, rSELF
 
     /*
      * Trampoline to `artJniMonitoredMethodStart()` that preserves all managed arguments.

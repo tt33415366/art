@@ -30,6 +30,7 @@ import android.cts.install.lib.host.InstallUtilsHost;
 import com.android.tradefed.device.DeviceNotAvailableException;
 import com.android.tradefed.device.ITestDevice;
 import com.android.tradefed.device.ITestDevice.ApexInfo;
+import com.android.tradefed.device.TestDeviceOptions;
 import com.android.tradefed.invoker.TestInformation;
 import com.android.tradefed.result.FileInputStreamSource;
 import com.android.tradefed.result.LogDataType;
@@ -65,8 +66,6 @@ public class OdsignTestUtils {
     private static final Duration RESTART_ZYGOTE_COMPLETE_TIMEOUT = Duration.ofMinutes(3);
 
     private static final String TAG = "OdsignTestUtils";
-    private static final String WAS_ADB_ROOT_KEY = TAG + ":WAS_ADB_ROOT";
-    private static final String ADB_ROOT_ENABLED_KEY = TAG + ":ADB_ROOT_ENABLED";
     private static final String PACKAGE_NAME_KEY = TAG + ":PACKAGE_NAME";
 
     private final InstallUtilsHost mInstallUtils;
@@ -87,7 +86,8 @@ public class OdsignTestUtils {
         String packagesOutput =
                 mTestInfo.getDevice().executeShellCommand("pm list packages -f --apex-only");
         Pattern p = Pattern.compile(
-                "^package:(.*)=(com(?:\\.google)?\\.android\\.art)$", Pattern.MULTILINE);
+                "^package:(.*)=(com(?:\\.google)?\\.android(?:\\.go)?\\.art)$",
+                Pattern.MULTILINE);
         Matcher m = p.matcher(packagesOutput);
         assertTrue("ART module not found. Packages are:\n" + packagesOutput, m.find());
         String artApexPath = m.group(1);
@@ -242,9 +242,23 @@ public class OdsignTestUtils {
     }
 
     public void reboot() throws Exception {
+        TestDeviceOptions options = mTestInfo.getDevice().getOptions();
+        // store default value and increase time-out for reboot
+        int rebootTimeout = options.getRebootTimeout();
+        long onlineTimeout = options.getOnlineTimeout();
+        options.setRebootTimeout((int)BOOT_COMPLETE_TIMEOUT.toMillis());
+        options.setOnlineTimeout(BOOT_COMPLETE_TIMEOUT.toMillis());
+        mTestInfo.getDevice().setOptions(options);
+
         mTestInfo.getDevice().reboot();
         boolean success =
                 mTestInfo.getDevice().waitForBootComplete(BOOT_COMPLETE_TIMEOUT.toMillis());
+
+        // restore default values
+        options.setRebootTimeout(rebootTimeout);
+        options.setOnlineTimeout(onlineTimeout);
+        mTestInfo.getDevice().setOptions(options);
+
         assertWithMessage("Device didn't boot in %s", BOOT_COMPLETE_TIMEOUT).that(success).isTrue();
     }
 
@@ -256,25 +270,6 @@ public class OdsignTestUtils {
                 .waitForBootComplete(RESTART_ZYGOTE_COMPLETE_TIMEOUT.toMillis());
         assertWithMessage("Zygote didn't start in %s", BOOT_COMPLETE_TIMEOUT).that(success)
                 .isTrue();
-    }
-
-    /**
-     * Enables adb root or skips the test if adb root is not supported.
-     */
-    public void enableAdbRootOrSkipTest() throws Exception {
-        setBoolean(WAS_ADB_ROOT_KEY, mTestInfo.getDevice().isAdbRoot());
-        boolean adbRootEnabled = mTestInfo.getDevice().enableAdbRoot();
-        assumeTrue("ADB root failed and required to get process maps", adbRootEnabled);
-        setBoolean(ADB_ROOT_ENABLED_KEY, adbRootEnabled);
-    }
-
-    /**
-     * Restores the device to the state before {@link enableAdbRootOrSkipTest} was called.
-     */
-    public void restoreAdbRoot() throws Exception {
-        if (getBooleanOrDefault(ADB_ROOT_ENABLED_KEY) && !getBooleanOrDefault(WAS_ADB_ROOT_KEY)) {
-            mTestInfo.getDevice().disableAdbRoot();
-        }
     }
 
     /**
@@ -319,18 +314,14 @@ public class OdsignTestUtils {
         // We can't use the "-c '%.3Y'" flag when to get the timestamp because the Toybox's `stat`
         // implementation truncates the timestamp to seconds, which is not accurate enough, so we
         // use "-c '%%y'" and parse the time ourselves.
-        String dateTimeStr = mTestInfo.getDevice()
-                .executeShellCommand(String.format("stat -c '%%y' '%s'", filename))
-                .trim();
+        String dateTimeStr = assertCommandSucceeds(String.format("stat -c '%%y' '%s'", filename));
         return parseFormattedDateTime(dateTimeStr);
     }
 
     public long getCurrentTimeMs() throws Exception {
         // We can't use getDevice().getDeviceDate() because it truncates the timestamp to seconds,
         // which is not accurate enough.
-        String dateTimeStr = mTestInfo.getDevice()
-                .executeShellCommand("date +'%Y-%m-%d %H:%M:%S.%N %z'")
-                .trim();
+        String dateTimeStr = assertCommandSucceeds("date +'%Y-%m-%d %H:%M:%S.%N %z'");
         return parseFormattedDateTime(dateTimeStr);
     }
 

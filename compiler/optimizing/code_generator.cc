@@ -389,7 +389,8 @@ void CodeGenerator::Compile(CodeAllocator* allocator) {
                                    core_spill_mask_,
                                    fpu_spill_mask_,
                                    GetGraph()->GetNumberOfVRegs(),
-                                   GetGraph()->IsCompilingBaseline());
+                                   GetGraph()->IsCompilingBaseline(),
+                                   GetGraph()->IsDebuggable());
 
   size_t frame_start = GetAssembler()->CodeSize();
   GenerateFrameEntry();
@@ -412,7 +413,7 @@ void CodeGenerator::Compile(CodeAllocator* allocator) {
     for (HInstructionIterator it(block->GetInstructions()); !it.Done(); it.Advance()) {
       HInstruction* current = it.Current();
       if (current->HasEnvironment()) {
-        // Create stackmap for HNativeDebugInfo or any instruction which calls native code.
+        // Create stackmap for HNop or any instruction which calls native code.
         // Note that we need correct mapping for the native PC of the call instruction,
         // so the runtime's stackmap is not sufficient since it is at PC after the call.
         MaybeRecordNativeDebugInfo(current, block->GetDexPc());
@@ -1123,7 +1124,7 @@ static void CheckLoopEntriesCanBeUsedForOsr(const HGraph& graph,
   for (HBasicBlock* block : graph.GetReversePostOrder()) {
     if (block->IsLoopHeader()) {
       HSuspendCheck* suspend_check = block->GetLoopInformation()->GetSuspendCheck();
-      if (!suspend_check->GetEnvironment()->IsFromInlinedInvoke()) {
+      if (suspend_check != nullptr && !suspend_check->GetEnvironment()->IsFromInlinedInvoke()) {
         loop_headers.push_back(suspend_check);
       }
     }
@@ -1671,7 +1672,7 @@ void CodeGenerator::ValidateInvokeRuntime(QuickEntrypointEnum entrypoint,
              // When (non-Baker) read barriers are enabled, some instructions
              // use a slow path to emit a read barrier, which does not trigger
              // GC.
-             (kEmitCompilerReadBarrier &&
+             (gUseReadBarrier &&
               !kUseBakerReadBarrier &&
               (instruction->IsInstanceFieldGet() ||
                instruction->IsPredicatedInstanceFieldGet() ||

@@ -218,10 +218,13 @@ void Arm64JNIMacroAssembler::StoreStackOffsetToThread(ThreadOffset64 tr_offs, Fr
   ___ Str(scratch, MEM_OP(reg_x(TR), tr_offs.Int32Value()));
 }
 
-void Arm64JNIMacroAssembler::StoreStackPointerToThread(ThreadOffset64 tr_offs) {
+void Arm64JNIMacroAssembler::StoreStackPointerToThread(ThreadOffset64 tr_offs, bool tag_sp) {
   UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
   Register scratch = temps.AcquireX();
   ___ Mov(scratch, reg_x(SP));
+  if (tag_sp) {
+    ___ Orr(scratch, scratch, 0x2);
+  }
   ___ Str(scratch, MEM_OP(reg_x(TR), tr_offs.Int32Value()));
 }
 
@@ -989,7 +992,7 @@ void Arm64JNIMacroAssembler::TestGcMarking(JNIMacroLabel* label, JNIMacroUnaryCo
   UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
   Register test_reg;
   DCHECK_EQ(Thread::IsGcMarkingSize(), 4u);
-  DCHECK(kUseReadBarrier);
+  DCHECK(gUseReadBarrier);
   if (kUseBakerReadBarrier) {
     // TestGcMarking() is used in the JNI stub entry when the marking register is up to date.
     if (kIsDebugBuild && emit_run_time_checks_in_debug_mode_) {
@@ -1035,6 +1038,14 @@ void Arm64JNIMacroAssembler::TestMarkBit(ManagedRegister m_ref,
       LOG(FATAL) << "Not implemented unary condition: " << static_cast<int>(cond);
       UNREACHABLE();
   }
+}
+
+void Arm64JNIMacroAssembler::TestByteAndJumpIfNotZero(uintptr_t address, JNIMacroLabel* label) {
+  UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
+  Register scratch = temps.AcquireX();
+  ___ Mov(scratch, address);
+  ___ Ldrb(scratch.W(), MEM_OP(scratch, 0));
+  ___ Cbnz(scratch.W(), Arm64JNIMacroLabel::Cast(label)->AsArm64());
 }
 
 void Arm64JNIMacroAssembler::Bind(JNIMacroLabel* label) {
@@ -1107,7 +1118,9 @@ void Arm64JNIMacroAssembler::RemoveFrame(size_t frame_size,
   asm_.UnspillRegisters(core_reg_list, frame_size - core_reg_size);
   asm_.UnspillRegisters(fp_reg_list, frame_size - core_reg_size - fp_reg_size);
 
-  if (kEmitCompilerReadBarrier && kUseBakerReadBarrier) {
+  // Emit marking register refresh even with uffd-GC as we are still using the
+  // register due to nterp's dependency.
+  if ((gUseReadBarrier || gUseUserfaultfd) && kUseBakerReadBarrier) {
     vixl::aarch64::Register mr = reg_x(MR);  // Marking Register.
     vixl::aarch64::Register tr = reg_x(TR);  // Thread Register.
 

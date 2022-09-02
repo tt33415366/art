@@ -14,14 +14,17 @@
  * limitations under the License.
  */
 
+#include "dexopt_test.h"
+
+#include <gtest/gtest.h>
+#include <procinfo/process_map.h>
+
 #include <string>
 #include <vector>
 
-#include <backtrace/BacktraceMap.h>
-#include <gtest/gtest.h>
-
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
+#include "arch/instruction_set.h"
 #include "base/file_utils.h"
 #include "base/mem_map.h"
 #include "common_runtime_test.h"
@@ -29,10 +32,10 @@
 #include "dex/art_dex_file_loader.h"
 #include "dex/dex_file_loader.h"
 #include "dex2oat_environment_test.h"
-#include "dexopt_test.h"
 #include "gc/space/image_space.h"
 #include "hidden_api.h"
 #include "oat.h"
+#include "oat_file_assistant.h"
 #include "profile/profile_compilation_info.h"
 
 namespace art {
@@ -163,22 +166,13 @@ void DexoptTest::GenerateOatForTest(const std::string& dex_location,
   EXPECT_EQ(filter, odex_file->GetCompilerFilter());
 
   if (CompilerFilter::DependsOnImageChecksum(filter)) {
-    const OatHeader& oat_header = odex_file->GetOatHeader();
-    const char* oat_bcp = oat_header.GetStoreValueByKey(OatHeader::kBootClassPathKey);
-    ASSERT_TRUE(oat_bcp != nullptr);
-    ASSERT_EQ(oat_bcp, android::base::Join(Runtime::Current()->GetBootClassPathLocations(), ':'));
-    const char* checksums = oat_header.GetStoreValueByKey(OatHeader::kBootClassPathChecksumsKey);
-    ASSERT_TRUE(checksums != nullptr);
+    std::unique_ptr<ClassLoaderContext> context = ClassLoaderContext::Create(/*spec=*/"");
+    OatFileAssistant oat_file_assistant(dex_location.c_str(),
+                                        kRuntimeISA,
+                                        context.get(),
+                                        /*load_executable=*/false);
 
-    bool match = gc::space::ImageSpace::VerifyBootClassPathChecksums(
-        checksums,
-        oat_bcp,
-        ArrayRef<const std::string>(&image_location, 1),
-        ArrayRef<const std::string>(Runtime::Current()->GetBootClassPathLocations()),
-        ArrayRef<const std::string>(Runtime::Current()->GetBootClassPath()),
-        ArrayRef<const int>(Runtime::Current()->GetBootClassPathFds()),
-        kRuntimeISA,
-        &error_msg);
+    bool match = oat_file_assistant.ValidateBootClassPathChecksums(*odex_file);
     ASSERT_EQ(!with_alternate_image, match) << error_msg;
   }
 }
@@ -220,13 +214,14 @@ void DexoptTest::ReserveImageSpace() {
   uint64_t reservation_start = ART_BASE_ADDRESS;
   uint64_t reservation_end = ART_BASE_ADDRESS + 384 * MB;
 
-  std::unique_ptr<BacktraceMap> map(BacktraceMap::Create(getpid(), true));
-  ASSERT_TRUE(map.get() != nullptr) << "Failed to build process map";
-  for (BacktraceMap::iterator it = map->begin();
-      reservation_start < reservation_end && it != map->end(); ++it) {
-    const backtrace_map_t* entry = *it;
-    ReserveImageSpaceChunk(reservation_start, std::min(entry->start, reservation_end));
-    reservation_start = std::max(reservation_start, entry->end);
+  std::vector<android::procinfo::MapInfo> maps;
+  ASSERT_TRUE(android::procinfo::ReadProcessMaps(getpid(), &maps));
+  for (const android::procinfo::MapInfo& map_info : maps) {
+    ReserveImageSpaceChunk(reservation_start, std::min(map_info.start, reservation_end));
+    reservation_start = std::max(reservation_start, map_info.end);
+    if (reservation_start >= reservation_end) {
+      break;
+    }
   }
   ReserveImageSpaceChunk(reservation_start, reservation_end);
 }

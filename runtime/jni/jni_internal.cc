@@ -899,6 +899,8 @@ class JNI {
       // going quite the way they expect.
       LOG(WARNING) << "JNI WARNING: DeleteLocalRef(" << obj << ") "
                    << "failed to find entry";
+      // Investigating b/228295454: Scudo ERROR: internal map failure (NO MEMORY).
+      soa.Self()->DumpJavaStack(LOG_STREAM(WARNING));
     }
   }
 
@@ -1948,6 +1950,7 @@ class JNI {
     return InvokeWithJValues(soa, nullptr, mid, args).GetD();
   }
 
+  NO_STACK_PROTECTOR
   static void CallStaticVoidMethod(JNIEnv* env, jclass, jmethodID mid, ...) {
     va_list ap;
     va_start(ap, mid);
@@ -1957,6 +1960,7 @@ class JNI {
     InvokeWithVarArgs(soa, nullptr, mid, ap);
   }
 
+  NO_STACK_PROTECTOR
   static void CallStaticVoidMethodV(JNIEnv* env, jclass, jmethodID mid, va_list args) {
     CHECK_NON_NULL_ARGUMENT_RETURN_VOID(mid);
     ScopedObjectAccess soa(env);
@@ -2174,14 +2178,17 @@ class JNI {
       if (heap->IsMovableObject(s)) {
         StackHandleScope<1> hs(soa.Self());
         HandleWrapperObjPtr<mirror::String> h(hs.NewHandleWrapper(&s));
-        if (!kUseReadBarrier) {
+        if (!gUseReadBarrier && !gUseUserfaultfd) {
           heap->IncrementDisableMovingGC(soa.Self());
         } else {
-          // For the CC collector, we only need to wait for the thread flip rather
+          // For the CC and CMC collector, we only need to wait for the thread flip rather
           // than the whole GC to occur thanks to the to-space invariant.
           heap->IncrementDisableThreadFlip(soa.Self());
         }
       }
+      // Ensure that the string doesn't cause userfaults in case passed on to
+      // the kernel.
+      heap->EnsureObjectUserfaulted(s);
       if (is_copy != nullptr) {
         *is_copy = JNI_FALSE;
       }
@@ -2197,7 +2204,7 @@ class JNI {
     gc::Heap* heap = Runtime::Current()->GetHeap();
     ObjPtr<mirror::String> s = soa.Decode<mirror::String>(java_string);
     if (!s->IsCompressed() && heap->IsMovableObject(s)) {
-      if (!kUseReadBarrier) {
+      if (!gUseReadBarrier && !gUseUserfaultfd) {
         heap->DecrementDisableMovingGC(soa.Self());
       } else {
         heap->DecrementDisableThreadFlip(soa.Self());
@@ -2364,16 +2371,18 @@ class JNI {
     }
     gc::Heap* heap = Runtime::Current()->GetHeap();
     if (heap->IsMovableObject(array)) {
-      if (!kUseReadBarrier) {
+      if (!gUseReadBarrier && !gUseUserfaultfd) {
         heap->IncrementDisableMovingGC(soa.Self());
       } else {
-        // For the CC collector, we only need to wait for the thread flip rather than the whole GC
-        // to occur thanks to the to-space invariant.
+        // For the CC and CMC collector, we only need to wait for the thread flip rather
+        // than the whole GC to occur thanks to the to-space invariant.
         heap->IncrementDisableThreadFlip(soa.Self());
       }
       // Re-decode in case the object moved since IncrementDisableGC waits for GC to complete.
       array = soa.Decode<mirror::Array>(java_array);
     }
+    // Ensure that the array doesn't cause userfaults in case passed on to the kernel.
+    heap->EnsureObjectUserfaulted(array);
     if (is_copy != nullptr) {
       *is_copy = JNI_FALSE;
     }
@@ -2845,17 +2854,19 @@ class JNI {
   static jint EnsureLocalCapacityInternal(ScopedObjectAccess& soa, jint desired_capacity,
                                           const char* caller)
       REQUIRES_SHARED(Locks::mutator_lock_) {
-    if (desired_capacity < 0) {
+    if (desired_capacity > 0) {
+      std::string error_msg;
+      if (!soa.Env()->locals_.EnsureFreeCapacity(static_cast<size_t>(desired_capacity),
+                                                 &error_msg)) {
+        std::string caller_error = android::base::StringPrintf("%s: %s", caller,
+                                                               error_msg.c_str());
+        soa.Self()->ThrowOutOfMemoryError(caller_error.c_str());
+        return JNI_ERR;
+      }
+    } else if (desired_capacity < 0) {
       LOG(ERROR) << "Invalid capacity given to " << caller << ": " << desired_capacity;
       return JNI_ERR;
-    }
-
-    std::string error_msg;
-    if (!soa.Env()->locals_.EnsureFreeCapacity(static_cast<size_t>(desired_capacity), &error_msg)) {
-      std::string caller_error = android::base::StringPrintf("%s: %s", caller, error_msg.c_str());
-      soa.Self()->ThrowOutOfMemoryError(caller_error.c_str());
-      return JNI_ERR;
-    }
+    }  // The zero case is a no-op.
     return JNI_OK;
   }
 
@@ -2963,7 +2974,7 @@ class JNI {
         delete[] reinterpret_cast<uint64_t*>(elements);
       } else if (heap->IsMovableObject(array)) {
         // Non copy to a movable object must means that we had disabled the moving GC.
-        if (!kUseReadBarrier) {
+        if (!gUseReadBarrier && !gUseUserfaultfd) {
           heap->DecrementDisableMovingGC(soa.Self());
         } else {
           heap->DecrementDisableThreadFlip(soa.Self());

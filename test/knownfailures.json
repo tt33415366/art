@@ -375,7 +375,6 @@
     },
     {
         "tests": ["530-checker-lse",
-                  "530-checker-lse2",
                   "030-bad-finalizer",
                   "080-oom-throw",
                   "1336-short-finalizer-timeout",
@@ -1098,6 +1097,12 @@
         "description": ["Failing on RI. Needs further investigating. Some of these use smali."]
     },
     {
+        "tests": ["2042-reference-processing",
+                  "2043-reference-pauses"],
+        "variant": "jvm",
+        "description": ["Flakey behavior of RI."]
+    },
+    {
       "tests": [
                   "1974-resize-array",
                   "1975-hello-structural-transformation",
@@ -1169,6 +1174,7 @@
                   "831-unresolved-field",
                   "833-background-verification",
                   "836-32768classes",
+                  "837-deopt",
                   "999-redefine-hiddenapi",
                   "1000-non-moving-space-stress",
                   "1001-app-image-regions",
@@ -1259,10 +1265,10 @@
         "description" : ["Gcstress requires the ability to open at least one file which means this test fails when it runs out."]
     },
     {
-        "tests": ["530-checker-lse2", "141-class-unload", "071-dexfile"],
+        "tests": ["141-class-unload", "071-dexfile"],
         "variant": "gcstress",
         "bug": "b/111543628",
-        "description" : ["Test seems to timeout when run with gcstress due to slower unwinding by libbacktrace"]
+        "description" : ["Test seems to timeout when run with gcstress due to slower unwinding by libunwindstack"]
     },
     {
         "tests": ["708-jit-cache-churn"],
@@ -1274,7 +1280,7 @@
         "tests": ["712-varhandle-invocations"],
         "variant": "gcstress",
         "bug": "b/111630237",
-        "description": ["Test timing out under gcstress possibly due to slower unwinding by libbacktrace"]
+        "description": ["Test timing out under gcstress possibly due to slower unwinding by libunwindstack"]
     },
     {
         "tests": ["1336-short-finalizer-timeout"],
@@ -1327,6 +1333,16 @@
         "description": ["Test containing Checker assertions expecting Baker read barriers."]
     },
     {
+        "tests": ["2009-structural-local-ref",
+                  "2035-structural-native-method",
+	          "2036-structural-subclass-shadow",
+	          "2040-huge-native-alloc",
+	          "905-object-free"],
+        "env_vars": {"ART_USE_READ_BARRIER": "false"},
+        "bug": "b/242181443",
+        "description": ["Tests temporarily disabled for userfaultfd GC. Remove once native GC-root updation is implemented."]
+    },
+    {
         "tests": ["1004-checker-volatile-ref-load"],
         "env_vars": {"ART_READ_BARRIER_TYPE": "TABLELOOKUP"},
         "bug": "b/140507091",
@@ -1359,9 +1375,21 @@
         "description": "Interpreting BigInteger.add() is too slow (timeouts)"
     },
     {
-        "tests": ["2029-contended-monitors"],
+        "tests": ["2029-contended-monitors", "2043-reference-pauses"],
         "variant": "interpreter | interp-ac | gcstress | trace",
+        "description": ["Slow tests. Prone to timeouts."]
+    },
+    {
+        "tests": ["2042-reference-processing"],
+        "variant": "interpreter | interp-ac | gcstress | trace | debuggable",
         "description": ["Slow test. Prone to timeouts."]
+    },
+    {
+        "tests": ["2043-reference-pauses"],
+        "env_vars": {"ART_USE_READ_BARRIER": "false"},
+        "variant": "host",
+        "bug": "b/232459100",
+        "description": ["Fails intermittently for CMS."]
     },
     {
         "tests": ["096-array-copy-concurrent-gc"],
@@ -1478,12 +1506,6 @@
         "description": ["jit-on-first-use disables jit GC but this test requires jit GC"]
     },
     {
-        "tests": ["835-b216762268"],
-        "variant": "jit | optimizing | jit-on-first-use",
-        "bug": "b/216762268",
-        "description": ["bug in the loop optimization"]
-    },
-    {
         "tests": ["445-checker-licm",
                   "449-checker-bce",
                   "455-checker-gvn",
@@ -1504,5 +1526,27 @@
         "variant": "target & ndebug & 64",
         "bug": "b/224733324",
         "description": ["segfault in VarHandle::GetMethodTypeMatchForAccessMode"]
+    },
+    {
+        "tests": ["2043-reference-pauses"],
+        "env_vars": {"ART_TEST_DEBUG_GC": "true"},
+        "description": ["Test timing out on debug gc."]
+    },
+    {
+        "tests": ["837-deopt"],
+        "description": ["Tests deoptimization and OSR, which never happens when tracing."],
+        "variant": "trace | stream | jit-on-first-use"
+    },
+    {
+        "tests": ["1912-get-set-local-primitive"],
+        "description": ["JVMTI error code used changed in JDK 17."],
+        "bug": "b/243356199",
+        "variant": "jvm"
+    },
+    {
+        "tests": ["715-clinit-implicit-parameter-annotations"],
+        "description": ["Change for Annotation.toString() in JDK 17."],
+        "bug": "b/243500721",
+        "variant": "jvm"
     }
 ]

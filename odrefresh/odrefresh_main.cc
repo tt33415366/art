@@ -18,6 +18,7 @@
 
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 #include "android-base/properties.h"
 #include "android-base/stringprintf.h"
@@ -34,14 +35,21 @@
 
 namespace {
 
+using ::android::base::GetProperty;
+using ::android::base::StartsWith;
 using ::art::odrefresh::CompilationOptions;
 using ::art::odrefresh::ExitCode;
+using ::art::odrefresh::kCheckedSystemPropertyPrefixes;
+using ::art::odrefresh::kSystemProperties;
 using ::art::odrefresh::OdrCompilationLog;
 using ::art::odrefresh::OdrConfig;
 using ::art::odrefresh::OdrMetrics;
 using ::art::odrefresh::OnDeviceRefresh;
 using ::art::odrefresh::QuotePath;
+using ::art::odrefresh::ShouldDisablePartialCompilation;
 using ::art::odrefresh::ShouldDisableRefresh;
+using ::art::odrefresh::SystemPropertyConfig;
+using ::art::odrefresh::SystemPropertyForeach;
 using ::art::odrefresh::ZygoteKind;
 
 void UsageMsgV(const char* fmt, va_list ap) {
@@ -136,6 +144,8 @@ int InitializeConfig(int argc, char** argv, OdrConfig* config) {
       config->SetArtifactDirectory(GetApexDataDalvikCacheDirectory(art::InstructionSet::kNone));
     } else if (ArgumentMatches(arg, "--zygote-arch=", &value)) {
       zygote = value;
+    } else if (ArgumentMatches(arg, "--boot-image-compiler-filter=", &value)) {
+      config->SetBootImageCompilerFilter(value);
     } else if (ArgumentMatches(arg, "--system-server-compiler-filter=", &value)) {
       config->SetSystemServerCompilerFilter(value);
     } else if (ArgumentMatches(arg, "--staging-dir=", &value)) {
@@ -155,7 +165,7 @@ int InitializeConfig(int argc, char** argv, OdrConfig* config) {
 
   if (zygote.empty()) {
     // Use ro.zygote by default, if not overridden by --zygote-arch flag.
-    zygote = android::base::GetProperty("ro.zygote", {});
+    zygote = GetProperty("ro.zygote", {});
   }
   ZygoteKind zygote_kind;
   if (!ParseZygoteKind(zygote.c_str(), &zygote_kind)) {
@@ -164,17 +174,38 @@ int InitializeConfig(int argc, char** argv, OdrConfig* config) {
   config->SetZygoteKind(zygote_kind);
 
   if (config->GetSystemServerCompilerFilter().empty()) {
-    std::string filter =
-        android::base::GetProperty("dalvik.vm.systemservercompilerfilter", "speed");
+    std::string filter = GetProperty("dalvik.vm.systemservercompilerfilter", "");
     config->SetSystemServerCompilerFilter(filter);
   }
 
-  if (ShouldDisableRefresh(
-          android::base::GetProperty("ro.build.version.sdk", /*default_value=*/""))) {
+  if (!config->HasPartialCompilation() &&
+      ShouldDisablePartialCompilation(
+          GetProperty("ro.build.version.security_patch", /*default_value=*/""))) {
+    config->SetPartialCompilation(false);
+  }
+
+  if (ShouldDisableRefresh(GetProperty("ro.build.version.sdk", /*default_value=*/""))) {
     config->SetRefresh(false);
   }
 
   return n;
+}
+
+void GetSystemProperties(std::unordered_map<std::string, std::string>* system_properties) {
+  SystemPropertyForeach([&](const char* name, const char* value) {
+    if (strlen(value) == 0) {
+      return;
+    }
+    for (const char* prefix : kCheckedSystemPropertyPrefixes) {
+      if (StartsWith(name, prefix)) {
+        (*system_properties)[name] = value;
+      }
+    }
+  });
+  for (const SystemPropertyConfig& system_property_config : *kSystemProperties.get()) {
+    (*system_properties)[system_property_config.name] =
+        GetProperty(system_property_config.name, system_property_config.default_value);
+  }
 }
 
 NO_RETURN void UsageHelp(const char* argv0) {
@@ -203,6 +234,9 @@ NO_RETURN void UsageHelp(const char* argv0) {
   UsageMsg("--staging-dir=<DIR>              Write temporary artifacts to <DIR> rather than");
   UsageMsg("                                 .../staging");
   UsageMsg("--zygote-arch=<STRING>           Zygote kind that overrides ro.zygote");
+  UsageMsg("--boot-image-compiler-filter=<STRING>");
+  UsageMsg("                                 Compiler filter for the boot image. Default: ");
+  UsageMsg("                                 speed-profile");
   UsageMsg("--system-server-compiler-filter=<STRING>");
   UsageMsg("                                 Compiler filter that overrides");
   UsageMsg("                                 dalvik.vm.systemservercompilerfilter");
@@ -229,6 +263,7 @@ int main(int argc, char** argv) {
   if (argc != 1) {
     ArgumentError("Expected 1 argument, but have %d.", argc);
   }
+  GetSystemProperties(config.MutableSystemProperties());
 
   OdrMetrics metrics(config.GetArtifactDirectory());
   OnDeviceRefresh odr(config);
@@ -268,6 +303,6 @@ int main(int argc, char** argv) {
   } else if (action == "--help") {
     UsageHelp(argv[0]);
   } else {
-    ArgumentError("Unknown argument: ", action);
+    ArgumentError("Unknown argument: %s", action.data());
   }
 }

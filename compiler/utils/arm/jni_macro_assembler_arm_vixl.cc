@@ -155,7 +155,7 @@ void ArmVIXLJNIMacroAssembler::RemoveFrame(size_t frame_size,
 
   // Pop LR to PC unless we need to emit some read barrier code just before returning.
   bool emit_code_before_return =
-      (kEmitCompilerReadBarrier && kUseBakerReadBarrier) &&
+      (gUseReadBarrier && kUseBakerReadBarrier) &&
       (may_suspend || (kIsDebugBuild && emit_run_time_checks_in_debug_mode_));
   if ((core_spill_mask & (1u << lr.GetCode())) != 0u && !emit_code_before_return) {
     DCHECK_EQ(core_spill_mask & (1u << pc.GetCode()), 0u);
@@ -215,7 +215,9 @@ void ArmVIXLJNIMacroAssembler::RemoveFrame(size_t frame_size,
     }
   }
 
-  if (kEmitCompilerReadBarrier && kUseBakerReadBarrier) {
+  // Emit marking register refresh even with uffd-GC as we are still using the
+  // register due to nterp's dependency.
+  if ((gUseReadBarrier || gUseUserfaultfd) && kUseBakerReadBarrier) {
     if (may_suspend) {
       // The method may be suspended; refresh the Marking Register.
       ___ Ldr(mr, MemOperand(tr, Thread::IsGcMarkingOffset<kArmPointerSize>().Int32Value()));
@@ -428,8 +430,15 @@ void ArmVIXLJNIMacroAssembler::StoreStackOffsetToThread(ThreadOffset32 thr_offs,
   asm_.StoreToOffset(kStoreWord, scratch, tr, thr_offs.Int32Value());
 }
 
-void ArmVIXLJNIMacroAssembler::StoreStackPointerToThread(ThreadOffset32 thr_offs) {
-  asm_.StoreToOffset(kStoreWord, sp, tr, thr_offs.Int32Value());
+void ArmVIXLJNIMacroAssembler::StoreStackPointerToThread(ThreadOffset32 thr_offs, bool tag_sp) {
+  if (tag_sp) {
+    UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
+    vixl32::Register reg = temps.Acquire();
+    ___ Orr(reg, sp, 0x2);
+    asm_.StoreToOffset(kStoreWord, reg, tr, thr_offs.Int32Value());
+  } else {
+    asm_.StoreToOffset(kStoreWord, sp, tr, thr_offs.Int32Value());
+  }
 }
 
 void ArmVIXLJNIMacroAssembler::SignExtend(ManagedRegister mreg ATTRIBUTE_UNUSED,
@@ -1165,7 +1174,7 @@ void ArmVIXLJNIMacroAssembler::TestGcMarking(JNIMacroLabel* label, JNIMacroUnary
   UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
   vixl32::Register test_reg;
   DCHECK_EQ(Thread::IsGcMarkingSize(), 4u);
-  DCHECK(kUseReadBarrier);
+  DCHECK(gUseReadBarrier);
   if (kUseBakerReadBarrier) {
     // TestGcMarking() is used in the JNI stub entry when the marking register is up to date.
     if (kIsDebugBuild && emit_run_time_checks_in_debug_mode_) {
@@ -1211,6 +1220,14 @@ void ArmVIXLJNIMacroAssembler::TestMarkBit(ManagedRegister mref,
       LOG(FATAL) << "Not implemented unary condition: " << static_cast<int>(cond);
       UNREACHABLE();
   }
+}
+
+void ArmVIXLJNIMacroAssembler::TestByteAndJumpIfNotZero(uintptr_t address, JNIMacroLabel* label) {
+  UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
+  vixl32::Register scratch = temps.Acquire();
+  ___ Mov(scratch, static_cast<uint32_t>(address));
+  ___ Ldrb(scratch, MemOperand(scratch, 0));
+  ___ CompareAndBranchIfNonZero(scratch, ArmVIXLJNIMacroLabel::Cast(label)->AsArm());
 }
 
 void ArmVIXLJNIMacroAssembler::Bind(JNIMacroLabel* label) {

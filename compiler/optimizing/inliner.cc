@@ -140,7 +140,12 @@ bool HInliner::Run() {
     return false;
   }
 
-  bool didInline = false;
+  bool did_inline = false;
+  // The inliner is the only phase that sets invokes as `always throwing`, and since we only run the
+  // inliner once per graph this value should always be false at the beginning of the inlining
+  // phase. This is important since we use `HasAlwaysThrowingInvokes` to know whether the inliner
+  // phase performed a relevant change in the graph.
+  DCHECK(!graph_->HasAlwaysThrowingInvokes());
 
   // Initialize the number of instructions for the method being compiled. Recursive calls
   // to HInliner::Run have already updated the instruction count.
@@ -182,7 +187,7 @@ bool HInliner::Run() {
           // Tests prevent inlining by having $noinline$ in their method names.
           if (callee_name.find("$noinline$") == std::string::npos) {
             if (TryInline(call)) {
-              didInline = true;
+              did_inline = true;
             } else if (honor_inline_directives) {
               bool should_have_inlined = (callee_name.find("$inline$") != std::string::npos);
               CHECK(!should_have_inlined) << "Could not inline " << callee_name;
@@ -192,7 +197,7 @@ bool HInliner::Run() {
           DCHECK(!honor_inline_directives);
           // Normal case: try to inline.
           if (TryInline(call)) {
-            didInline = true;
+            did_inline = true;
           }
         }
       }
@@ -200,7 +205,9 @@ bool HInliner::Run() {
     }
   }
 
-  return didInline;
+  // We return true if we either inlined at least one method, or we marked one of our methods as
+  // always throwing.
+  return did_inline || graph_->HasAlwaysThrowingInvokes();
 }
 
 static bool IsMethodOrDeclaringClassFinal(ArtMethod* method)
@@ -486,10 +493,10 @@ bool HInliner::TryInline(HInvoke* invoke_instruction) {
       } else {
         invoke_to_analyze = invoke_instruction;
       }
-      // Set always throws property for non-inlined method call with single
-      // target.
+      // Set always throws property for non-inlined method call with single target.
       if (AlwaysThrows(actual_method)) {
-        invoke_to_analyze->SetAlwaysThrows(true);
+        invoke_to_analyze->SetAlwaysThrows(/* always_throws= */ true);
+        graph_->SetHasAlwaysThrowingInvokes(/* value= */ true);
       }
     }
     return result;
@@ -800,7 +807,6 @@ bool HInliner::TryInlineMonomorphicCall(
   // Run type propagation to get the guard typed, and eventually propagate the
   // type of the receiver.
   ReferenceTypePropagation rtp_fixup(graph_,
-                                     outer_compilation_unit_.GetClassLoader(),
                                      outer_compilation_unit_.GetDexCache(),
                                      /* is_first_run= */ false);
   rtp_fixup.Run();
@@ -1022,7 +1028,6 @@ bool HInliner::TryInlinePolymorphicCall(
 
   // Run type propagation to get the guards typed.
   ReferenceTypePropagation rtp_fixup(graph_,
-                                     outer_compilation_unit_.GetClassLoader(),
                                      outer_compilation_unit_.GetDexCache(),
                                      /* is_first_run= */ false);
   rtp_fixup.Run();
@@ -1213,7 +1218,6 @@ bool HInliner::TryInlinePolymorphicCallToSameTarget(
 
   // Run type propagation to get the guard typed.
   ReferenceTypePropagation rtp_fixup(graph_,
-                                     outer_compilation_unit_.GetClassLoader(),
                                      outer_compilation_unit_.GetDexCache(),
                                      /* is_first_run= */ false);
   rtp_fixup.Run();
@@ -1230,7 +1234,6 @@ void HInliner::MaybeRunReferenceTypePropagation(HInstruction* replacement,
     // Actual return value has a more specific type than the method's declared
     // return type. Run RTP again on the outer graph to propagate it.
     ReferenceTypePropagation(graph_,
-                             outer_compilation_unit_.GetClassLoader(),
                              outer_compilation_unit_.GetDexCache(),
                              /* is_first_run= */ false).Run();
   }
@@ -1682,7 +1685,6 @@ HInstanceFieldGet* HInliner::CreateInstanceFieldGet(uint32_t field_index,
     Handle<mirror::DexCache> dex_cache =
         graph_->GetHandleCache()->NewHandle(referrer->GetDexCache());
     ReferenceTypePropagation rtp(graph_,
-                                 outer_compilation_unit_.GetClassLoader(),
                                  dex_cache,
                                  /* is_first_run= */ false);
     rtp.Visit(iget);
@@ -1744,13 +1746,11 @@ static bool CanEncodeInlinedMethodInStackMap(const DexFile& outer_dex_file,
 
   // Inline across dexfiles if the callee's DexFile is:
   // 1) in the bootclasspath, or
-  if (callee->GetDeclaringClass()->GetClassLoader() == nullptr) {
+  if (callee->GetDeclaringClass()->IsBootStrapClassLoaded()) {
     // In multi-image, each BCP DexFile has their own OatWriter. Since they don't cooperate with
     // each other, we request the BSS check for them.
-    // TODO(solanes): Add .bss support for BCP multi-image.
-    const bool is_multi_image = codegen->GetCompilerOptions().IsBootImage() ||
-                                codegen->GetCompilerOptions().IsBootImageExtension();
-    *out_needs_bss_check = is_multi_image;
+    // TODO(solanes, 154012332): Add .bss support for BCP multi-image.
+    *out_needs_bss_check = codegen->GetCompilerOptions().IsMultiImage();
     return true;
   }
 
@@ -1807,7 +1807,6 @@ void HInliner::SubstituteArguments(HGraph* callee_graph,
   // are more specific than the declared ones, run RTP again on the inner graph.
   if (run_rtp || ArgumentTypesMoreSpecific(invoke_instruction, resolved_method)) {
     ReferenceTypePropagation(callee_graph,
-                             outer_compilation_unit_.GetClassLoader(),
                              dex_compilation_unit.GetDexCache(),
                              /* is_first_run= */ false).Run();
   }
@@ -1821,8 +1820,9 @@ void HInliner::SubstituteArguments(HGraph* callee_graph,
 // If this function returns true, it will also set out_number_of_instructions to
 // the number of instructions in the inlined body.
 bool HInliner::CanInlineBody(const HGraph* callee_graph,
-                             const HBasicBlock* target_block,
+                             HInvoke* invoke,
                              size_t* out_number_of_instructions) const {
+  const HBasicBlock* target_block = invoke->GetBlock();
   ArtMethod* const resolved_method = callee_graph->GetArtMethod();
 
   HBasicBlock* exit_block = callee_graph->GetExitBlock();
@@ -1864,6 +1864,11 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
   }
 
   if (!has_one_return) {
+    // If we know that the method always throws with the particular parameters, set it as such. This
+    // is better than using the dex instructions as we have more information about this particular
+    // call.
+    invoke->SetAlwaysThrows(/* always_throws= */ true);
+    graph_->SetHasAlwaysThrowingInvokes(/* value= */ true);
     LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedAlwaysThrows)
         << "Method " << resolved_method->PrettyMethod()
         << " could not be inlined because it always throws";
@@ -1939,13 +1944,14 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
         return false;
       }
 
-      // We currently don't have support for inlining across dex files if the inlined method needs a
-      // .bss entry. This only happens when we are:
+      // We currently don't have support for inlining across dex files if we are:
       // 1) In AoT,
-      // 2) cross-dex inlining, and
-      // 3) have an instruction that needs a bss entry, which will always be
-      // 3)b) an instruction that needs an environment.
-      // TODO(solanes, 154012332): Add this support.
+      // 2) cross-dex inlining,
+      // 3) the callee is a BCP DexFile,
+      // 4) we are compiling multi image, and
+      // 5) have an instruction that needs a bss entry, which will always be
+      // 5)b) an instruction that needs an environment.
+      // 1) - 4) are encoded in `needs_bss_check` (see CanEncodeInlinedMethodInStackMap).
       if (needs_bss_check && current->NeedsBss()) {
         DCHECK(current->NeedsEnvironment());
         LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedBss)
@@ -2059,7 +2065,7 @@ bool HInliner::TryBuildAndInlineHelper(HInvoke* invoke_instruction,
   RunOptimizations(callee_graph, code_item, dex_compilation_unit);
 
   size_t number_of_instructions = 0;
-  if (!CanInlineBody(callee_graph, invoke_instruction->GetBlock(), &number_of_instructions)) {
+  if (!CanInlineBody(callee_graph, invoke_instruction, &number_of_instructions)) {
     return false;
   }
 
@@ -2098,7 +2104,7 @@ void HInliner::RunOptimizations(HGraph* callee_graph,
   // Note: if the outermost_graph_ is being compiled OSR, we should not run any
   // optimization that could lead to a HDeoptimize. The following optimizations do not.
   HDeadCodeElimination dce(callee_graph, inline_stats_, "dead_code_elimination$inliner");
-  HConstantFolding fold(callee_graph, "constant_folding$inliner");
+  HConstantFolding fold(callee_graph, inline_stats_, "constant_folding$inliner");
   InstructionSimplifier simplify(callee_graph, codegen_, inline_stats_);
 
   HOptimization* optimizations[] = {

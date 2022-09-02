@@ -71,7 +71,7 @@ class ReadBarrierSystemArrayCopySlowPathX86_64 : public SlowPathCode {
  public:
   explicit ReadBarrierSystemArrayCopySlowPathX86_64(HInstruction* instruction)
       : SlowPathCode(instruction) {
-    DCHECK(kEmitCompilerReadBarrier);
+    DCHECK(gUseReadBarrier);
     DCHECK(kUseBakerReadBarrier);
   }
 
@@ -836,7 +836,7 @@ void IntrinsicLocationsBuilderX86_64::VisitSystemArrayCopyInt(HInvoke* invoke) {
 void IntrinsicLocationsBuilderX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
   // The only read barrier implementation supporting the
   // SystemArrayCopy intrinsic is the Baker-style read barriers.
-  if (kEmitCompilerReadBarrier && !kUseBakerReadBarrier) {
+  if (gUseReadBarrier && !kUseBakerReadBarrier) {
     return;
   }
 
@@ -887,7 +887,7 @@ static void GenSystemArrayCopyAddresses(X86_64Assembler* assembler,
 void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
   // The only read barrier implementation supporting the
   // SystemArrayCopy intrinsic is the Baker-style read barriers.
-  DCHECK_IMPLIES(kEmitCompilerReadBarrier, kUseBakerReadBarrier);
+  DCHECK_IMPLIES(gUseReadBarrier, kUseBakerReadBarrier);
 
   X86_64Assembler* assembler = GetAssembler();
   LocationSummary* locations = invoke->GetLocations();
@@ -1002,7 +1002,7 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
     // slow path.
 
     bool did_unpoison = false;
-    if (kEmitCompilerReadBarrier && kUseBakerReadBarrier) {
+    if (gUseReadBarrier && kUseBakerReadBarrier) {
       // /* HeapReference<Class> */ temp1 = dest->klass_
       codegen_->GenerateFieldLoadWithBakerReadBarrier(
           invoke, temp1_loc, dest, class_offset, /* needs_null_check= */ false);
@@ -1034,7 +1034,7 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
 
     if (!optimizations.GetDestinationIsNonPrimitiveArray()) {
       // Bail out if the destination is not a non primitive array.
-      if (kEmitCompilerReadBarrier && kUseBakerReadBarrier) {
+      if (gUseReadBarrier && kUseBakerReadBarrier) {
         // /* HeapReference<Class> */ TMP = temp1->component_type_
         codegen_->GenerateFieldLoadWithBakerReadBarrier(
             invoke, TMP_loc, temp1, component_offset, /* needs_null_check= */ false);
@@ -1055,7 +1055,7 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
 
     if (!optimizations.GetSourceIsNonPrimitiveArray()) {
       // Bail out if the source is not a non primitive array.
-      if (kEmitCompilerReadBarrier && kUseBakerReadBarrier) {
+      if (gUseReadBarrier && kUseBakerReadBarrier) {
         // For the same reason given earlier, `temp1` is not trashed by the
         // read barrier emitted by GenerateFieldLoadWithBakerReadBarrier below.
         // /* HeapReference<Class> */ TMP = temp2->component_type_
@@ -1081,7 +1081,7 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
     if (optimizations.GetDestinationIsTypedObjectArray()) {
       NearLabel do_copy;
       __ j(kEqual, &do_copy);
-      if (kEmitCompilerReadBarrier && kUseBakerReadBarrier) {
+      if (gUseReadBarrier && kUseBakerReadBarrier) {
         // /* HeapReference<Class> */ temp1 = temp1->component_type_
         codegen_->GenerateFieldLoadWithBakerReadBarrier(
             invoke, temp1_loc, temp1, component_offset, /* needs_null_check= */ false);
@@ -1109,7 +1109,7 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
   } else if (!optimizations.GetSourceIsNonPrimitiveArray()) {
     DCHECK(optimizations.GetDestinationIsNonPrimitiveArray());
     // Bail out if the source is not a non primitive array.
-    if (kEmitCompilerReadBarrier && kUseBakerReadBarrier) {
+    if (gUseReadBarrier && kUseBakerReadBarrier) {
       // /* HeapReference<Class> */ temp1 = src->klass_
       codegen_->GenerateFieldLoadWithBakerReadBarrier(
           invoke, temp1_loc, src, class_offset, /* needs_null_check= */ false);
@@ -1141,7 +1141,7 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
   GenSystemArrayCopyAddresses(
       GetAssembler(), type, src, src_pos, dest, dest_pos, length, temp1, temp2, temp3);
 
-  if (kEmitCompilerReadBarrier && kUseBakerReadBarrier) {
+  if (gUseReadBarrier && kUseBakerReadBarrier) {
     // SystemArrayCopy implementation for Baker read barriers (see
     // also CodeGeneratorX86_64::GenerateReferenceLoadWithBakerReadBarrier):
     //
@@ -1888,7 +1888,7 @@ static void GenUnsafeGet(HInvoke* invoke,
       break;
 
     case DataType::Type::kReference: {
-      if (kEmitCompilerReadBarrier) {
+      if (gUseReadBarrier) {
         if (kUseBakerReadBarrier) {
           Address src(base, offset, ScaleFactor::TIMES_1, 0);
           codegen->GenerateReferenceLoadWithBakerReadBarrier(
@@ -1930,7 +1930,7 @@ static bool UnsafeGetIntrinsicOnCallList(Intrinsics intrinsic) {
 }
 
 static void CreateIntIntIntToIntLocations(ArenaAllocator* allocator, HInvoke* invoke) {
-  bool can_call = kEmitCompilerReadBarrier && UnsafeGetIntrinsicOnCallList(invoke->GetIntrinsic());
+  bool can_call = gUseReadBarrier && UnsafeGetIntrinsicOnCallList(invoke->GetIntrinsic());
   LocationSummary* locations =
       new (allocator) LocationSummary(invoke,
                                       can_call
@@ -2230,7 +2230,7 @@ void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePutLongRelease(HInvoke* invoke)
 static void CreateUnsafeCASLocations(ArenaAllocator* allocator,
                                      DataType::Type type,
                                      HInvoke* invoke) {
-  const bool can_call = kEmitCompilerReadBarrier &&
+  const bool can_call = gUseReadBarrier &&
                         kUseBakerReadBarrier &&
                         IsUnsafeCASObject(invoke);
   LocationSummary* locations =
@@ -2253,7 +2253,7 @@ static void CreateUnsafeCASLocations(ArenaAllocator* allocator,
     // Need two temporaries for MarkGCCard.
     locations->AddTemp(Location::RequiresRegister());  // Possibly used for reference poisoning too.
     locations->AddTemp(Location::RequiresRegister());
-    if (kEmitCompilerReadBarrier) {
+    if (gUseReadBarrier) {
       // Need three temporaries for GenerateReferenceLoadWithBakerReadBarrier.
       DCHECK(kUseBakerReadBarrier);
       locations->AddTemp(Location::RequiresRegister());
@@ -2298,7 +2298,7 @@ void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeCompareAndSetLong(HInvoke* i
 
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeCompareAndSetObject(HInvoke* invoke) {
   // The only supported read barrier implementation is the Baker-style read barriers.
-  if (kEmitCompilerReadBarrier && !kUseBakerReadBarrier) {
+  if (gUseReadBarrier && !kUseBakerReadBarrier) {
     return;
   }
 
@@ -2438,7 +2438,7 @@ static void GenCompareAndSetOrExchangeRef(CodeGeneratorX86_64* codegen,
                                           CpuRegister temp3,
                                           bool is_cmpxchg) {
   // The only supported read barrier implementation is the Baker-style read barriers.
-  DCHECK_IMPLIES(kEmitCompilerReadBarrier, kUseBakerReadBarrier);
+  DCHECK_IMPLIES(gUseReadBarrier, kUseBakerReadBarrier);
 
   X86_64Assembler* assembler = down_cast<X86_64Assembler*>(codegen->GetAssembler());
 
@@ -2447,7 +2447,7 @@ static void GenCompareAndSetOrExchangeRef(CodeGeneratorX86_64* codegen,
   codegen->MarkGCCard(temp1, temp2, base, value, value_can_be_null);
 
   Address field_addr(base, offset, TIMES_1, 0);
-  if (kEmitCompilerReadBarrier && kUseBakerReadBarrier) {
+  if (gUseReadBarrier && kUseBakerReadBarrier) {
     // Need to make sure the reference stored in the field is a to-space
     // one before attempting the CAS or the CAS could fail incorrectly.
     codegen->GenerateReferenceLoadWithBakerReadBarrier(
@@ -2556,7 +2556,7 @@ static void GenCompareAndSetOrExchange(CodeGeneratorX86_64* codegen,
       CpuRegister new_value_reg = new_value.AsRegister<CpuRegister>();
       CpuRegister temp1 = locations->GetTemp(temp1_index).AsRegister<CpuRegister>();
       CpuRegister temp2 = locations->GetTemp(temp2_index).AsRegister<CpuRegister>();
-      CpuRegister temp3 = kEmitCompilerReadBarrier
+      CpuRegister temp3 = gUseReadBarrier
           ? locations->GetTemp(temp3_index).AsRegister<CpuRegister>()
           : CpuRegister(kNoRegister);
       DCHECK(RegsAreAllDifferent({base, offset, temp1, temp2, temp3}));
@@ -2624,7 +2624,7 @@ void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeCompareAndSetLong(HInvoke* invo
 
 void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeCompareAndSetObject(HInvoke* invoke) {
   // The only supported read barrier implementation is the Baker-style read barriers.
-  DCHECK_IMPLIES(kEmitCompilerReadBarrier, kUseBakerReadBarrier);
+  DCHECK_IMPLIES(gUseReadBarrier, kUseBakerReadBarrier);
 
   GenCAS(DataType::Type::kReference, invoke, codegen_);
 }
@@ -3128,7 +3128,7 @@ void IntrinsicCodeGeneratorX86_64::VisitReferenceGetReferent(HInvoke* invoke) {
   SlowPathCode* slow_path = new (GetAllocator()) IntrinsicSlowPathX86_64(invoke);
   codegen_->AddSlowPath(slow_path);
 
-  if (kEmitCompilerReadBarrier) {
+  if (gUseReadBarrier) {
     // Check self->GetWeakRefAccessEnabled().
     ThreadOffset64 offset = Thread::WeakRefAccessEnabledOffset<kX86_64PointerSize>();
     __ gs()->cmpl(Address::Absolute(offset, /* no_rip= */ true),
@@ -3150,7 +3150,7 @@ void IntrinsicCodeGeneratorX86_64::VisitReferenceGetReferent(HInvoke* invoke) {
 
   // Load the value from the field.
   uint32_t referent_offset = mirror::Reference::ReferentOffset().Uint32Value();
-  if (kEmitCompilerReadBarrier && kUseBakerReadBarrier) {
+  if (gUseReadBarrier && kUseBakerReadBarrier) {
     codegen_->GenerateFieldLoadWithBakerReadBarrier(invoke,
                                                     out,
                                                     obj.AsRegister<CpuRegister>(),
@@ -3191,7 +3191,7 @@ void IntrinsicCodeGeneratorX86_64::VisitReferenceRefersTo(HInvoke* invoke) {
 
   __ cmpl(out, other);
 
-  if (kEmitCompilerReadBarrier) {
+  if (gUseReadBarrier) {
     DCHECK(kUseBakerReadBarrier);
 
     NearLabel calculate_result;
@@ -3569,20 +3569,22 @@ static void GenerateVarHandleInstanceFieldChecks(HInvoke* invoke,
     __ j(kZero, slow_path->GetEntryLabel());
   }
 
-  // Check that the VarHandle references an instance field by checking that
-  // coordinateType1 == null. coordinateType0 should be not null, but this is handled by the
-  // type compatibility check with the source object's type, which will fail for null.
-  __ cmpl(Address(varhandle, coordinate_type1_offset), Immediate(0));
-  __ j(kNotEqual, slow_path->GetEntryLabel());
+  if (!optimizations.GetUseKnownBootImageVarHandle()) {
+    // Check that the VarHandle references an instance field by checking that
+    // coordinateType1 == null. coordinateType0 should be not null, but this is handled by the
+    // type compatibility check with the source object's type, which will fail for null.
+    __ cmpl(Address(varhandle, coordinate_type1_offset), Immediate(0));
+    __ j(kNotEqual, slow_path->GetEntryLabel());
 
-  // Check that the object has the correct type.
-  // We deliberately avoid the read barrier, letting the slow path handle the false negatives.
-  GenerateSubTypeObjectCheckNoReadBarrier(codegen,
-                                          slow_path,
-                                          object,
-                                          temp,
-                                          Address(varhandle, coordinate_type0_offset),
-                                          /*object_can_be_null=*/ false);
+    // Check that the object has the correct type.
+    // We deliberately avoid the read barrier, letting the slow path handle the false negatives.
+    GenerateSubTypeObjectCheckNoReadBarrier(codegen,
+                                            slow_path,
+                                            object,
+                                            temp,
+                                            Address(varhandle, coordinate_type0_offset),
+                                            /*object_can_be_null=*/ false);
+  }
 }
 
 static void GenerateVarHandleArrayChecks(HInvoke* invoke,
@@ -3685,11 +3687,22 @@ static void GenerateVarHandleCoordinateChecks(HInvoke* invoke,
 static VarHandleSlowPathX86_64* GenerateVarHandleChecks(HInvoke* invoke,
                                                         CodeGeneratorX86_64* codegen,
                                                         DataType::Type type) {
+  size_t expected_coordinates_count = GetExpectedVarHandleCoordinatesCount(invoke);
+  VarHandleOptimizations optimizations(invoke);
+  if (optimizations.GetUseKnownBootImageVarHandle()) {
+    DCHECK_NE(expected_coordinates_count, 2u);
+    if (expected_coordinates_count == 0u || optimizations.GetSkipObjectNullCheck()) {
+      return nullptr;
+    }
+  }
+
   VarHandleSlowPathX86_64* slow_path =
       new (codegen->GetScopedAllocator()) VarHandleSlowPathX86_64(invoke);
   codegen->AddSlowPath(slow_path);
 
-  GenerateVarHandleAccessModeAndVarTypeChecks(invoke, codegen, slow_path, type);
+  if (!optimizations.GetUseKnownBootImageVarHandle()) {
+    GenerateVarHandleAccessModeAndVarTypeChecks(invoke, codegen, slow_path, type);
+  }
   GenerateVarHandleCoordinateChecks(invoke, codegen, slow_path);
 
   return slow_path;
@@ -3724,25 +3737,42 @@ static void GenerateVarHandleTarget(HInvoke* invoke,
   CpuRegister varhandle = locations->InAt(0).AsRegister<CpuRegister>();
 
   if (expected_coordinates_count <= 1u) {
-    // For static fields, we need to fill the `target.object` with the declaring class,
-    // so we can use `target.object` as temporary for the `ArtMethod*`. For instance fields,
-    // we do not need the declaring class, so we can forget the `ArtMethod*` when
-    // we load the `target.offset`, so use the `target.offset` to hold the `ArtMethod*`.
-    CpuRegister method((expected_coordinates_count == 0) ? target.object : target.offset);
+    if (VarHandleOptimizations(invoke).GetUseKnownBootImageVarHandle()) {
+      ScopedObjectAccess soa(Thread::Current());
+      ArtField* target_field = GetBootImageVarHandleField(invoke);
+      if (expected_coordinates_count == 0u) {
+        ObjPtr<mirror::Class> declaring_class = target_field->GetDeclaringClass();
+        __ movl(CpuRegister(target.object),
+                Address::Absolute(CodeGeneratorX86_64::kPlaceholder32BitOffset, /*no_rip=*/ false));
+        if (Runtime::Current()->GetHeap()->ObjectIsInBootImageSpace(declaring_class)) {
+          codegen->RecordBootImageRelRoPatch(CodeGenerator::GetBootImageOffset(declaring_class));
+        } else {
+          codegen->RecordBootImageTypePatch(declaring_class->GetDexFile(),
+                                            declaring_class->GetDexTypeIndex());
+        }
+      }
+      __ movl(CpuRegister(target.offset), Immediate(target_field->GetOffset().Uint32Value()));
+    } else {
+      // For static fields, we need to fill the `target.object` with the declaring class,
+      // so we can use `target.object` as temporary for the `ArtMethod*`. For instance fields,
+      // we do not need the declaring class, so we can forget the `ArtMethod*` when
+      // we load the `target.offset`, so use the `target.offset` to hold the `ArtMethod*`.
+      CpuRegister method((expected_coordinates_count == 0) ? target.object : target.offset);
 
-    const MemberOffset art_field_offset = mirror::FieldVarHandle::ArtFieldOffset();
-    const MemberOffset offset_offset = ArtField::OffsetOffset();
+      const MemberOffset art_field_offset = mirror::FieldVarHandle::ArtFieldOffset();
+      const MemberOffset offset_offset = ArtField::OffsetOffset();
 
-    // Load the ArtField, the offset and, if needed, declaring class.
-    __ movq(method, Address(varhandle, art_field_offset));
-    __ movl(CpuRegister(target.offset), Address(method, offset_offset));
-    if (expected_coordinates_count == 0u) {
-      InstructionCodeGeneratorX86_64* instr_codegen = codegen->GetInstructionCodegen();
-      instr_codegen->GenerateGcRootFieldLoad(invoke,
-                                             Location::RegisterLocation(target.object),
-                                             Address(method, ArtField::DeclaringClassOffset()),
-                                             /*fixup_label=*/ nullptr,
-                                             kCompilerReadBarrierOption);
+      // Load the ArtField, the offset and, if needed, declaring class.
+      __ movq(method, Address(varhandle, art_field_offset));
+      __ movl(CpuRegister(target.offset), Address(method, offset_offset));
+      if (expected_coordinates_count == 0u) {
+        InstructionCodeGeneratorX86_64* instr_codegen = codegen->GetInstructionCodegen();
+        instr_codegen->GenerateGcRootFieldLoad(invoke,
+                                               Location::RegisterLocation(target.object),
+                                               Address(method, ArtField::DeclaringClassOffset()),
+                                               /*fixup_label=*/ nullptr,
+                                               gCompilerReadBarrierOption);
+      }
     }
   } else {
     DCHECK_EQ(expected_coordinates_count, 2u);
@@ -3760,7 +3790,7 @@ static void GenerateVarHandleTarget(HInvoke* invoke,
 
 static bool HasVarHandleIntrinsicImplementation(HInvoke* invoke) {
   // The only supported read barrier implementation is the Baker-style read barriers.
-  if (kEmitCompilerReadBarrier && !kUseBakerReadBarrier) {
+  if (gUseReadBarrier && !kUseBakerReadBarrier) {
     return false;
   }
 
@@ -3836,7 +3866,9 @@ static void GenerateVarHandleGet(HInvoke* invoke,
   if (!byte_swap) {
     slow_path = GenerateVarHandleChecks(invoke, codegen, type);
     GenerateVarHandleTarget(invoke, target, codegen);
-    __ Bind(slow_path->GetNativeByteOrderLabel());
+    if (slow_path != nullptr) {
+      __ Bind(slow_path->GetNativeByteOrderLabel());
+    }
   }
 
   // Load the value from the field
@@ -3844,7 +3876,7 @@ static void GenerateVarHandleGet(HInvoke* invoke,
   Location out = locations->Out();
 
   if (type == DataType::Type::kReference) {
-    if (kEmitCompilerReadBarrier) {
+    if (gUseReadBarrier) {
       DCHECK(kUseBakerReadBarrier);
       codegen->GenerateReferenceLoadWithBakerReadBarrier(
           invoke, out, CpuRegister(target.object), src, /* needs_null_check= */ false);
@@ -3861,7 +3893,8 @@ static void GenerateVarHandleGet(HInvoke* invoke,
     }
   }
 
-  if (!byte_swap) {
+  if (slow_path != nullptr) {
+    DCHECK(!byte_swap);
     __ Bind(slow_path->GetExitLabel());
   }
 }
@@ -3929,10 +3962,12 @@ static void GenerateVarHandleSet(HInvoke* invoke,
   VarHandleSlowPathX86_64* slow_path = nullptr;
   if (!byte_swap) {
     slow_path = GenerateVarHandleChecks(invoke, codegen, value_type);
-    slow_path->SetVolatile(is_volatile);
-    slow_path->SetAtomic(is_atomic);
     GenerateVarHandleTarget(invoke, target, codegen);
-    __ Bind(slow_path->GetNativeByteOrderLabel());
+    if (slow_path != nullptr) {
+      slow_path->SetVolatile(is_volatile);
+      slow_path->SetAtomic(is_atomic);
+      __ Bind(slow_path->GetNativeByteOrderLabel());
+    }
   }
 
   switch (invoke->GetIntrinsic()) {
@@ -3963,7 +3998,8 @@ static void GenerateVarHandleSet(HInvoke* invoke,
 
   // setVolatile needs kAnyAny barrier, but HandleFieldSet takes care of that.
 
-  if (!byte_swap) {
+  if (slow_path != nullptr) {
+    DCHECK(!byte_swap);
     __ Bind(slow_path->GetExitLabel());
   }
 }
@@ -4034,7 +4070,7 @@ static void CreateVarHandleCompareAndSetOrExchangeLocations(HInvoke* invoke) {
       // Need two temporaries for MarkGCCard.
       locations->AddTemp(Location::RequiresRegister());
       locations->AddTemp(Location::RequiresRegister());
-      if (kEmitCompilerReadBarrier) {
+      if (gUseReadBarrier) {
         // Need three temporaries for GenerateReferenceLoadWithBakerReadBarrier.
         DCHECK(kUseBakerReadBarrier);
         locations->AddTemp(Location::RequiresRegister());
@@ -4049,7 +4085,7 @@ static void GenerateVarHandleCompareAndSetOrExchange(HInvoke* invoke,
                                                      CodeGeneratorX86_64* codegen,
                                                      bool is_cmpxchg,
                                                      bool byte_swap = false) {
-  DCHECK_IMPLIES(kEmitCompilerReadBarrier, kUseBakerReadBarrier);
+  DCHECK_IMPLIES(gUseReadBarrier, kUseBakerReadBarrier);
 
   X86_64Assembler* assembler = codegen->GetAssembler();
   LocationSummary* locations = invoke->GetLocations();
@@ -4064,7 +4100,9 @@ static void GenerateVarHandleCompareAndSetOrExchange(HInvoke* invoke,
   if (!byte_swap) {
     slow_path = GenerateVarHandleChecks(invoke, codegen, type);
     GenerateVarHandleTarget(invoke, target, codegen);
-    __ Bind(slow_path->GetNativeByteOrderLabel());
+    if (slow_path != nullptr) {
+      __ Bind(slow_path->GetNativeByteOrderLabel());
+    }
   }
 
   uint32_t temp_count = locations->GetTempCount();
@@ -4085,7 +4123,8 @@ static void GenerateVarHandleCompareAndSetOrExchange(HInvoke* invoke,
   // We are using LOCK CMPXCHG in all cases because there is no CAS equivalent that has weak
   // failure semantics. LOCK CMPXCHG has full barrier semantics, so we don't need barriers.
 
-  if (!byte_swap) {
+  if (slow_path != nullptr) {
+    DCHECK(!byte_swap);
     __ Bind(slow_path->GetExitLabel());
   }
 }
@@ -4179,7 +4218,7 @@ static void CreateVarHandleGetAndSetLocations(HInvoke* invoke) {
       // Need two temporaries for MarkGCCard.
       locations->AddTemp(Location::RequiresRegister());
       locations->AddTemp(Location::RequiresRegister());
-      if (kEmitCompilerReadBarrier) {
+      if (gUseReadBarrier) {
         // Need a third temporary for GenerateReferenceLoadWithBakerReadBarrier.
         DCHECK(kUseBakerReadBarrier);
         locations->AddTemp(Location::RequiresRegister());
@@ -4228,7 +4267,7 @@ static void GenerateVarHandleGetAndSet(HInvoke* invoke,
     CpuRegister temp2 = locations->GetTemp(temp_count - 2).AsRegister<CpuRegister>();
     CpuRegister valreg = value.AsRegister<CpuRegister>();
 
-    if (kEmitCompilerReadBarrier && kUseBakerReadBarrier) {
+    if (gUseReadBarrier && kUseBakerReadBarrier) {
       codegen->GenerateReferenceLoadWithBakerReadBarrier(
           invoke,
           locations->GetTemp(temp_count - 3),
@@ -4608,7 +4647,7 @@ static void GenerateVarHandleGetAndUpdate(HInvoke* invoke,
                                           bool need_any_store_barrier,
                                           bool need_any_any_barrier,
                                           bool byte_swap = false) {
-  DCHECK_IMPLIES(kEmitCompilerReadBarrier, kUseBakerReadBarrier);
+  DCHECK_IMPLIES(gUseReadBarrier, kUseBakerReadBarrier);
 
   X86_64Assembler* assembler = codegen->GetAssembler();
   LocationSummary* locations = invoke->GetLocations();
@@ -4621,11 +4660,13 @@ static void GenerateVarHandleGetAndUpdate(HInvoke* invoke,
   VarHandleTarget target = GetVarHandleTarget(invoke);
   if (!byte_swap) {
     slow_path = GenerateVarHandleChecks(invoke, codegen, type);
-    slow_path->SetGetAndUpdateOp(get_and_update_op);
-    slow_path->SetNeedAnyStoreBarrier(need_any_store_barrier);
-    slow_path->SetNeedAnyAnyBarrier(need_any_any_barrier);
     GenerateVarHandleTarget(invoke, target, codegen);
-    __ Bind(slow_path->GetNativeByteOrderLabel());
+    if (slow_path != nullptr) {
+      slow_path->SetGetAndUpdateOp(get_and_update_op);
+      slow_path->SetNeedAnyStoreBarrier(need_any_store_barrier);
+      slow_path->SetNeedAnyAnyBarrier(need_any_any_barrier);
+      __ Bind(slow_path->GetNativeByteOrderLabel());
+    }
   }
 
   CpuRegister ref(target.object);
@@ -4654,7 +4695,8 @@ static void GenerateVarHandleGetAndUpdate(HInvoke* invoke,
     codegen->GenerateMemoryBarrier(MemBarrierKind::kAnyAny);
   }
 
-  if (!byte_swap) {
+  if (slow_path != nullptr) {
+    DCHECK(!byte_swap);
     __ Bind(slow_path->GetExitLabel());
   }
 }

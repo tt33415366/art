@@ -78,15 +78,15 @@ class ClassTable {
       return MaskHash(other) == Hash();
     }
 
-    static uint32_t HashDescriptor(ObjPtr<mirror::Class> klass)
-        REQUIRES_SHARED(Locks::mutator_lock_);
-
     template<ReadBarrierOption kReadBarrierOption = kWithReadBarrier>
     ObjPtr<mirror::Class> Read() const REQUIRES_SHARED(Locks::mutator_lock_);
 
     // NO_THREAD_SAFETY_ANALYSIS since the visitor may require heap bitmap lock.
     template<typename Visitor>
     void VisitRoot(const Visitor& visitor) const NO_THREAD_SAFETY_ANALYSIS;
+
+    template<typename Visitor>
+    class ClassAndRootVisitor;
 
    private:
     // Extract a raw pointer from an address.
@@ -188,6 +188,12 @@ class ClassTable {
       REQUIRES(!lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+  template<class Visitor>
+  void VisitClassesAndRoots(Visitor& visitor)
+      NO_THREAD_SAFETY_ANALYSIS
+      REQUIRES(!lock_)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
   // Stops visit if the visitor returns false.
   template <ReadBarrierOption kReadBarrierOption = kWithReadBarrier, typename Visitor>
   bool Visit(Visitor& visitor)
@@ -214,11 +220,6 @@ class ClassTable {
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   void InsertWithHash(ObjPtr<mirror::Class> klass, size_t hash)
-      REQUIRES(!lock_)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  // Returns true if the class was found and removed, false otherwise.
-  bool Remove(const char* descriptor)
       REQUIRES(!lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 

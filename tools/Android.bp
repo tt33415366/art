@@ -28,14 +28,6 @@ python_binary_host {
     srcs: [
         "generate_operator_out.py",
     ],
-    version: {
-        py2: {
-            enabled: true,
-        },
-        py3: {
-            enabled: false,
-        },
-    },
 }
 
 soong_config_module_type_import {
@@ -104,24 +96,4 @@ sh_binary {
             enabled: false,
         },
     },
-}
-
-python_binary_host {
-    name: "art-run-test-checker",
-    srcs: [
-        "checker/**/*.py",
-    ],
-    main: "checker/checker.py",
-    version: {
-        py2: {
-            enabled: false,
-        },
-        py3: {
-            enabled: true,
-        },
-    },
-    test_suites: [
-        "general-tests",
-        "mts-art",
-    ],
 }

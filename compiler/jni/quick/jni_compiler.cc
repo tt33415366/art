@@ -28,7 +28,6 @@
 #include "base/enums.h"
 #include "base/logging.h"  // For VLOG.
 #include "base/macros.h"
-#include "base/malloc_arena_pool.h"
 #include "base/memory_region.h"
 #include "base/utils.h"
 #include "calling_convention.h"
@@ -37,7 +36,9 @@
 #include "dex/dex_file-inl.h"
 #include "driver/compiler_options.h"
 #include "entrypoints/quick/quick_entrypoints.h"
+#include "instrumentation.h"
 #include "jni/jni_env_ext.h"
+#include "runtime.h"
 #include "thread.h"
 #include "utils/arm/managed_register_arm.h"
 #include "utils/arm64/managed_register_arm64.h"
@@ -84,7 +85,8 @@ template <PointerSize kPointerSize>
 static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& compiler_options,
                                                      uint32_t access_flags,
                                                      uint32_t method_idx,
-                                                     const DexFile& dex_file) {
+                                                     const DexFile& dex_file,
+                                                     ArenaAllocator* allocator) {
   constexpr size_t kRawPointerSize = static_cast<size_t>(kPointerSize);
   const bool is_native = (access_flags & kAccNative) != 0;
   CHECK(is_native);
@@ -100,6 +102,20 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
 
   // i.e. if the method was annotated with @CriticalNative
   const bool is_critical_native = (access_flags & kAccCriticalNative) != 0u;
+
+  bool needs_entry_exit_hooks =
+      compiler_options.GetDebuggable() && compiler_options.IsJitCompiler();
+  // We don't support JITing stubs for critical native methods in debuggable runtimes yet.
+  // TODO(mythria): Add support required for calling method entry / exit hooks from critical native
+  // methods.
+  DCHECK_IMPLIES(needs_entry_exit_hooks, !is_critical_native);
+
+  // When  walking the stack the top frame doesn't have a pc associated with it. We then depend on
+  // the invariant that we don't have JITed code when AOT code is available. In debuggable runtimes
+  // this invariant doesn't hold. So we tag the SP for JITed code to indentify if we are executing
+  // JITed code or AOT code. Since tagging involves additional instructions we tag only in
+  // debuggable runtimes.
+  bool should_tag_sp = needs_entry_exit_hooks;
 
   VLOG(jni) << "JniCompile: Method :: "
               << dex_file.PrettyMethod(method_idx, /* with signature */ true)
@@ -143,12 +159,9 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     }
   }
 
-  MallocArenaPool pool;
-  ArenaAllocator allocator(&pool);
-
   // Calling conventions used to iterate over parameters to method
   std::unique_ptr<JniCallingConvention> main_jni_conv =
-      JniCallingConvention::Create(&allocator,
+      JniCallingConvention::Create(allocator,
                                    is_static,
                                    is_synchronized,
                                    is_fast_native,
@@ -159,11 +172,11 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
 
   std::unique_ptr<ManagedRuntimeCallingConvention> mr_conv(
       ManagedRuntimeCallingConvention::Create(
-          &allocator, is_static, is_synchronized, shorty, instruction_set));
+          allocator, is_static, is_synchronized, shorty, instruction_set));
 
   // Assembler that holds generated instructions
   std::unique_ptr<JNIMacroAssembler<kPointerSize>> jni_asm =
-      GetMacroAssembler<kPointerSize>(&allocator, instruction_set, instruction_set_features);
+      GetMacroAssembler<kPointerSize>(allocator, instruction_set, instruction_set_features);
   jni_asm->cfi().SetEnabled(compiler_options.GenerateAnyDebugInfo());
   jni_asm->SetEmitRunTimeChecksInDebugMode(compiler_options.EmitRunTimeChecksInDebugMode());
 
@@ -185,7 +198,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   //      Skip this for @CriticalNative because we're not passing a `jclass` to the native method.
   std::unique_ptr<JNIMacroLabel> jclass_read_barrier_slow_path;
   std::unique_ptr<JNIMacroLabel> jclass_read_barrier_return;
-  if (kUseReadBarrier && is_static && LIKELY(!is_critical_native)) {
+  if (gUseReadBarrier && is_static && LIKELY(!is_critical_native)) {
     jclass_read_barrier_slow_path = __ CreateLabel();
     jclass_read_barrier_return = __ CreateLabel();
 
@@ -199,9 +212,9 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   // 1.3 Spill reference register arguments.
   constexpr FrameOffset kInvalidReferenceOffset =
       JNIMacroAssembler<kPointerSize>::kInvalidReferenceOffset;
-  ArenaVector<ArgumentLocation> src_args(allocator.Adapter());
-  ArenaVector<ArgumentLocation> dest_args(allocator.Adapter());
-  ArenaVector<FrameOffset> refs(allocator.Adapter());
+  ArenaVector<ArgumentLocation> src_args(allocator->Adapter());
+  ArenaVector<ArgumentLocation> dest_args(allocator->Adapter());
+  ArenaVector<FrameOffset> refs(allocator->Adapter());
   if (LIKELY(!is_critical_native)) {
     mr_conv->ResetIterator(FrameOffset(current_frame_size));
     for (; mr_conv->HasNext(); mr_conv->Next()) {
@@ -222,7 +235,22 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   //       because garbage collections are disabled within the execution of a
   //       @CriticalNative method.
   if (LIKELY(!is_critical_native)) {
-    __ StoreStackPointerToThread(Thread::TopOfManagedStackOffset<kPointerSize>());
+    __ StoreStackPointerToThread(Thread::TopOfManagedStackOffset<kPointerSize>(), should_tag_sp);
+  }
+
+  // 1.5. Call any method entry hooks if required.
+  // For critical native methods, we don't JIT stubs in debuggable runtimes (see
+  // OptimizingCompiler::JitCompile).
+  // TODO(mythria): Add support to call method entry / exit hooks for critical native methods too.
+  std::unique_ptr<JNIMacroLabel> method_entry_hook_slow_path;
+  std::unique_ptr<JNIMacroLabel> method_entry_hook_return;
+  if (UNLIKELY(needs_entry_exit_hooks)) {
+    uint64_t address = reinterpret_cast64<uint64_t>(Runtime::Current()->GetInstrumentation());
+    int offset = instrumentation::Instrumentation::NeedsEntryExitHooksOffset().Int32Value();
+    method_entry_hook_slow_path = __ CreateLabel();
+    method_entry_hook_return = __ CreateLabel();
+    __ TestByteAndJumpIfNotZero(address + offset, method_entry_hook_slow_path.get());
+    __ Bind(method_entry_hook_return.get());
   }
 
   // 2. Lock the object (if synchronized) and transition out of Runnable (if normal native).
@@ -535,7 +563,21 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     __ Bind(suspend_check_resume.get());
   }
 
-  // 7.5. Remove activation - need to restore callee save registers since the GC
+  // 7.5. Check if method exit hooks needs to be called
+  // For critical native methods, we don't JIT stubs in debuggable runtimes.
+  // TODO(mythria): Add support to call method entry / exit hooks for critical native methods too.
+  std::unique_ptr<JNIMacroLabel> method_exit_hook_slow_path;
+  std::unique_ptr<JNIMacroLabel> method_exit_hook_return;
+  if (UNLIKELY(needs_entry_exit_hooks)) {
+    uint64_t address = reinterpret_cast64<uint64_t>(Runtime::Current()->GetInstrumentation());
+    int offset = instrumentation::Instrumentation::NeedsEntryExitHooksOffset().Int32Value();
+    method_exit_hook_slow_path = __ CreateLabel();
+    method_exit_hook_return = __ CreateLabel();
+    __ TestByteAndJumpIfNotZero(address + offset, method_exit_hook_slow_path.get());
+    __ Bind(method_exit_hook_return.get());
+  }
+
+  // 7.6. Remove activation - need to restore callee save registers since the GC
   //      may have changed them.
   DCHECK_EQ(jni_asm->cfi().GetCurrentCFAOffset(), static_cast<int>(current_frame_size));
   if (LIKELY(!is_critical_native) || !main_jni_conv->UseTailCall()) {
@@ -550,7 +592,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
 
   // 8.1. Read barrier slow path for the declaring class in the method for a static call.
   //      Skip this for @CriticalNative because we're not passing a `jclass` to the native method.
-  if (kUseReadBarrier && is_static && !is_critical_native) {
+  if (gUseReadBarrier && is_static && !is_critical_native) {
     __ Bind(jclass_read_barrier_slow_path.get());
 
     // Construct slow path for read barrier:
@@ -608,7 +650,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     if (reference_return) {
       // Suspend check entry point overwrites top of managed stack and leaves it clobbered.
       // We need to restore the top for subsequent runtime call to `JniDecodeReferenceResult()`.
-      __ StoreStackPointerToThread(Thread::TopOfManagedStackOffset<kPointerSize>());
+      __ StoreStackPointerToThread(Thread::TopOfManagedStackOffset<kPointerSize>(), should_tag_sp);
     }
     if (reference_return && main_out_arg_size != 0) {
       __ IncreaseFrameSize(main_out_arg_size);
@@ -631,6 +673,24 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     }
     DCHECK_EQ(jni_asm->cfi().GetCurrentCFAOffset(), static_cast<int>(current_frame_size));
     __ DeliverPendingException();
+  }
+
+  // 8.6. Method entry / exit hooks slow paths.
+  if (UNLIKELY(needs_entry_exit_hooks)) {
+    __ Bind(method_entry_hook_slow_path.get());
+    // Use Jni specific method entry hook that saves all the arguments. We have only saved the
+    // callee save registers at this point. So go through Jni specific stub that saves the rest
+    // of the live registers.
+    __ CallFromThread(QUICK_ENTRYPOINT_OFFSET(kPointerSize, pJniMethodEntryHook));
+    __ ExceptionPoll(exception_slow_path.get());
+    __ Jump(method_entry_hook_return.get());
+
+    __ Bind(method_exit_hook_slow_path.get());
+    // Method exit hooks is called just before tearing down the frame. So there are no live
+    // registers and we can directly call the method exit hook and don't need a Jni specific
+    // entrypoint.
+    __ CallFromThread(QUICK_ENTRYPOINT_OFFSET(kPointerSize, pMethodExitHook));
+    __ Jump(method_exit_hook_return.get());
   }
 
   // 9. Finalize code generation.
@@ -699,13 +759,14 @@ static void SetNativeParameter(JNIMacroAssembler<kPointerSize>* jni_asm,
 JniCompiledMethod ArtQuickJniCompileMethod(const CompilerOptions& compiler_options,
                                            uint32_t access_flags,
                                            uint32_t method_idx,
-                                           const DexFile& dex_file) {
+                                           const DexFile& dex_file,
+                                           ArenaAllocator* allocator) {
   if (Is64BitInstructionSet(compiler_options.GetInstructionSet())) {
     return ArtJniCompileMethodInternal<PointerSize::k64>(
-        compiler_options, access_flags, method_idx, dex_file);
+        compiler_options, access_flags, method_idx, dex_file, allocator);
   } else {
     return ArtJniCompileMethodInternal<PointerSize::k32>(
-        compiler_options, access_flags, method_idx, dex_file);
+        compiler_options, access_flags, method_idx, dex_file, allocator);
   }
 }
 

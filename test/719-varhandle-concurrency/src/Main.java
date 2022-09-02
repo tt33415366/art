@@ -39,14 +39,15 @@ public class Main {
   }
 
   private static final int TASK_COUNT = 10000;
-  private static final int THREAD_COUNT = 100;
+  private static final int THREAD_COUNT = 20;
   /* Each test may need several retries before a concurrent failure is seen. In the past, for a
    * known bug, between 5 and 10 retries were sufficient. Use RETRIES to configure how many
    * iterations to retry for each test scenario. However, to avoid the test running for too long,
    * for example with gcstress, set a cap duration in MAX_RETRIES_DURATION. With this at least one
    * iteration would run, but there could be fewer retries if each of them takes too long. */
   private static final int RETRIES = 50;
-  private static final Duration MAX_RETRIES_DURATION = Duration.ofMinutes(1);
+  // b/235431387: timeout reduced from 1 minute
+  private static final Duration MAX_RETRIES_DURATION = Duration.ofSeconds(15);
 
   public static void main(String[] args) throws Throwable {
     testConcurrentProcessing(new CompareAndExchangeRunnerFactory(), "compareAndExchange");

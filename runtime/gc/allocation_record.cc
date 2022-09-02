@@ -32,7 +32,14 @@ namespace gc {
 
 int32_t AllocRecordStackTraceElement::ComputeLineNumber() const {
   DCHECK(method_ != nullptr);
-  return method_->GetLineNumFromDexPC(dex_pc_);
+  int32_t line_number = method_->GetLineNumFromDexPC(dex_pc_);
+  if (line_number == -1 && !method_->IsProxyMethod()) {
+    // If we failed to map the dex pc to a line number, then most probably there is no debug info.
+    // Make the line_number same as the dex pc - it can be decoded later using a map file.
+    // See b/30183883 and b/228000954.
+    line_number = static_cast<int32_t>(dex_pc_);
+  }
+  return line_number;
 }
 
 const char* AllocRecord::GetClassDescriptor(std::string* storage) const {
@@ -52,6 +59,13 @@ AllocRecordObjectMap::~AllocRecordObjectMap() {
 }
 
 void AllocRecordObjectMap::VisitRoots(RootVisitor* visitor) {
+  gc::Heap* const heap = Runtime::Current()->GetHeap();
+  // When we are compacting in userfaultfd GC, the class GC-roots are already
+  // updated in SweepAllocationRecords()->SweepClassObject().
+  if (heap->CurrentCollectorType() == gc::CollectorType::kCollectorTypeCMC
+      && heap->MarkCompactCollector()->IsCompacting(Thread::Current())) {
+    return;
+  }
   CHECK_LE(recent_record_max_, alloc_record_max_);
   BufferedRootVisitor<kDefaultBufferedRootCount> buffered_visitor(visitor, RootInfo(kRootDebugger));
   size_t count = recent_record_max_;
@@ -85,7 +99,10 @@ static inline void SweepClassObject(AllocRecord* record, IsMarkedVisitor* visito
     mirror::Object* new_object = visitor->IsMarked(old_object);
     DCHECK(new_object != nullptr);
     if (UNLIKELY(old_object != new_object)) {
-      klass = GcRoot<mirror::Class>(new_object->AsClass());
+      // We can't use AsClass() as it uses IsClass in a DCHECK, which expects
+      // the class' contents to be there. This is not the case in userfaultfd
+      // GC.
+      klass = GcRoot<mirror::Class>(ObjPtr<mirror::Class>::DownCast(new_object));
     }
   }
 }
@@ -124,13 +141,13 @@ void AllocRecordObjectMap::SweepAllocationRecords(IsMarkedVisitor* visitor) {
 }
 
 void AllocRecordObjectMap::AllowNewAllocationRecords() {
-  CHECK(!kUseReadBarrier);
+  CHECK(!gUseReadBarrier);
   allow_new_record_ = true;
   new_record_condition_.Broadcast(Thread::Current());
 }
 
 void AllocRecordObjectMap::DisallowNewAllocationRecords() {
-  CHECK(!kUseReadBarrier);
+  CHECK(!gUseReadBarrier);
   allow_new_record_ = false;
 }
 
@@ -223,8 +240,8 @@ void AllocRecordObjectMap::RecordAllocation(Thread* self,
   // Since nobody seemed to really notice or care it might not be worth the trouble.
 
   // Wait for GC's sweeping to complete and allow new records.
-  while (UNLIKELY((!kUseReadBarrier && !allow_new_record_) ||
-                  (kUseReadBarrier && !self->GetWeakRefAccessEnabled()))) {
+  while (UNLIKELY((!gUseReadBarrier && !allow_new_record_) ||
+                  (gUseReadBarrier && !self->GetWeakRefAccessEnabled()))) {
     // Check and run the empty checkpoint before blocking so the empty checkpoint will work in the
     // presence of threads blocking for weak ref access.
     self->CheckEmptyCheckpointFromWeakRefAccess(Locks::alloc_tracker_lock_);

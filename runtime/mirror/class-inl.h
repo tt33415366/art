@@ -898,6 +898,34 @@ inline bool Class::DescriptorEquals(const char* match) {
   }
 }
 
+inline uint32_t Class::DescriptorHash() {
+  // No read barriers needed, we're reading a chain of constant references for comparison with null
+  // and retrieval of constant primitive data. See `ReadBarrierOption` and `Class::GetDescriptor()`.
+  ObjPtr<mirror::Class> klass = this;
+  uint32_t hash = StartModifiedUtf8Hash();
+  while (klass->IsArrayClass()) {
+    klass = klass->GetComponentType<kDefaultVerifyFlags, kWithoutReadBarrier>();
+    hash = UpdateModifiedUtf8Hash(hash, '[');
+  }
+  if (UNLIKELY(klass->IsProxyClass())) {
+    hash = UpdateHashForProxyClass(hash, klass);
+  } else if (klass->IsPrimitive()) {
+    hash = UpdateModifiedUtf8Hash(hash, Primitive::Descriptor(klass->GetPrimitiveType())[0]);
+  } else {
+    const DexFile& dex_file = klass->GetDexFile();
+    const dex::TypeId& type_id = dex_file.GetTypeId(klass->GetDexTypeIndex());
+    std::string_view descriptor = dex_file.GetTypeDescriptorView(type_id);
+    hash = UpdateModifiedUtf8Hash(hash, descriptor);
+  }
+
+  if (kIsDebugBuild) {
+    std::string temp;
+    CHECK_EQ(hash, ComputeModifiedUtf8Hash(GetDescriptor(&temp)));
+  }
+
+  return hash;
+}
+
 inline void Class::AssertInitializedOrInitializingInThread(Thread* self) {
   if (kIsDebugBuild && !IsInitialized()) {
     CHECK(IsInitializing()) << PrettyClass() << " is not initializing: " << GetStatus();
@@ -1049,10 +1077,9 @@ inline size_t Class::GetComponentSize() {
   return 1U << GetComponentSizeShift();
 }
 
+template <ReadBarrierOption kReadBarrierOption>
 inline size_t Class::GetComponentSizeShift() {
-  // No read barrier is needed for reading a constant primitive field through
-  // constant reference field. See ReadBarrierOption.
-  return GetComponentType<kDefaultVerifyFlags, kWithoutReadBarrier>()->GetPrimitiveTypeSizeShift();
+  return GetComponentType<kDefaultVerifyFlags, kReadBarrierOption>()->GetPrimitiveTypeSizeShift();
 }
 
 inline bool Class::IsObjectClass() {
@@ -1078,11 +1105,9 @@ inline bool Class::IsArrayClass() {
   return GetComponentType<kVerifyFlags, kWithoutReadBarrier>() != nullptr;
 }
 
-template<VerifyObjectFlags kVerifyFlags>
+template<VerifyObjectFlags kVerifyFlags, ReadBarrierOption kReadBarrierOption>
 inline bool Class::IsObjectArrayClass() {
-  // We do not need a read barrier here as the primitive type is constant,
-  // both from-space and to-space component type classes shall yield the same result.
-  const ObjPtr<Class> component_type = GetComponentType<kVerifyFlags, kWithoutReadBarrier>();
+  const ObjPtr<Class> component_type = GetComponentType<kVerifyFlags, kReadBarrierOption>();
   constexpr VerifyObjectFlags kNewFlags = RemoveThisFlags(kVerifyFlags);
   return component_type != nullptr && !component_type->IsPrimitive<kNewFlags>();
 }

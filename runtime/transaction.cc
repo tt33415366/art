@@ -410,7 +410,6 @@ void Transaction::VisitArrayLogs(RootVisitor* visitor, ArenaStack* arena_stack) 
 
   for (auto& it : array_logs_) {
     mirror::Array* old_root = it.first;
-    CHECK(!old_root->IsObjectArray());
     mirror::Array* new_root = old_root;
     visitor->VisitRoot(reinterpret_cast<mirror::Object**>(&new_root), RootInfo(kRootUnknown));
     if (new_root != old_root) {
@@ -600,15 +599,18 @@ void Transaction::ObjectLog::VisitRoots(RootVisitor* visitor) {
 }
 
 void Transaction::InternStringLog::Undo(InternTable* intern_table) const {
+  DCHECK(!Runtime::Current()->IsActiveTransaction());
   DCHECK(intern_table != nullptr);
+  ObjPtr<mirror::String> s = str_.Read();
+  uint32_t hash = static_cast<uint32_t>(s->GetStoredHashCode());
   switch (string_op_) {
     case InternStringLog::kInsert: {
       switch (string_kind_) {
         case InternStringLog::kStrongString:
-          intern_table->RemoveStrongFromTransaction(str_.Read());
+          intern_table->RemoveStrong(s, hash);
           break;
         case InternStringLog::kWeakString:
-          intern_table->RemoveWeakFromTransaction(str_.Read());
+          intern_table->RemoveWeak(s, hash);
           break;
         default:
           LOG(FATAL) << "Unknown interned string kind";
@@ -619,10 +621,10 @@ void Transaction::InternStringLog::Undo(InternTable* intern_table) const {
     case InternStringLog::kRemove: {
       switch (string_kind_) {
         case InternStringLog::kStrongString:
-          intern_table->InsertStrongFromTransaction(str_.Read());
+          intern_table->InsertStrong(s, hash);
           break;
         case InternStringLog::kWeakString:
-          intern_table->InsertWeakFromTransaction(str_.Read());
+          intern_table->InsertWeak(s, hash);
           break;
         default:
           LOG(FATAL) << "Unknown interned string kind";

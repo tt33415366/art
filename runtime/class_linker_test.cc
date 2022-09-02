@@ -52,6 +52,7 @@
 #include "mirror/object_array-inl.h"
 #include "mirror/proxy.h"
 #include "mirror/reference.h"
+#include "mirror/stack_frame_info.h"
 #include "mirror/stack_trace_element.h"
 #include "mirror/string-inl.h"
 #include "mirror/var_handle.h"
@@ -598,6 +599,7 @@ struct ClassOffsets : public CheckOffsets<mirror::Class> {
 
 struct ClassExtOffsets : public CheckOffsets<mirror::ClassExt> {
   ClassExtOffsets() : CheckOffsets<mirror::ClassExt>(false, "Ldalvik/system/ClassExt;") {
+    addOffset(OFFSETOF_MEMBER(mirror::ClassExt, class_value_map_), "classValueMap");
     addOffset(OFFSETOF_MEMBER(mirror::ClassExt, erroneous_state_error_), "erroneousStateError");
     addOffset(OFFSETOF_MEMBER(mirror::ClassExt, instance_jfield_ids_), "instanceJfieldIDs");
     addOffset(OFFSETOF_MEMBER(mirror::ClassExt, jmethod_ids_), "jmethodIDs");
@@ -637,6 +639,20 @@ struct StackTraceElementOffsets : public CheckOffsets<mirror::StackTraceElement>
     addOffset(OFFSETOF_MEMBER(mirror::StackTraceElement, file_name_), "fileName");
     addOffset(OFFSETOF_MEMBER(mirror::StackTraceElement, line_number_), "lineNumber");
     addOffset(OFFSETOF_MEMBER(mirror::StackTraceElement, method_name_), "methodName");
+  }
+};
+
+struct StackFrameInfoOffsets : public CheckOffsets<mirror::StackFrameInfo> {
+  StackFrameInfoOffsets() : CheckOffsets<mirror::StackFrameInfo>(
+      false, "Ljava/lang/StackFrameInfo;") {
+    addOffset(OFFSETOF_MEMBER(mirror::StackFrameInfo, bci_), "bci");
+    addOffset(OFFSETOF_MEMBER(mirror::StackFrameInfo, declaring_class_), "declaringClass");
+    addOffset(OFFSETOF_MEMBER(mirror::StackFrameInfo, file_name_), "fileName");
+    addOffset(OFFSETOF_MEMBER(mirror::StackFrameInfo, line_number_), "lineNumber");
+    addOffset(OFFSETOF_MEMBER(mirror::StackFrameInfo, method_name_), "methodName");
+    addOffset(OFFSETOF_MEMBER(mirror::StackFrameInfo, method_type_), "methodType");
+    addOffset(OFFSETOF_MEMBER(mirror::StackFrameInfo, retain_class_ref_), "retainClassRef");
+    addOffset(OFFSETOF_MEMBER(mirror::StackFrameInfo, ste_), "ste");
   }
 };
 
@@ -830,7 +846,7 @@ struct ByteBufferViewVarHandleOffsets : public CheckOffsets<mirror::ByteBufferVi
 
 // C++ fields must exactly match the fields in the Java classes. If this fails,
 // reorder the fields in the C++ class. Managed class fields are ordered by
-// ClassLinker::LinkFields.
+// ClassLinker::LinkFieldsHelper::LinkFields.
 TEST_F(ClassLinkerTest, ValidateFieldOrderOfJavaCppUnionClasses) {
   ScopedObjectAccess soa(Thread::Current());
   EXPECT_TRUE(ObjectOffsets().Check());
@@ -858,6 +874,7 @@ TEST_F(ClassLinkerTest, ValidateFieldOrderOfJavaCppUnionClasses) {
   EXPECT_TRUE(ArrayElementVarHandleOffsets().Check());
   EXPECT_TRUE(ByteArrayViewVarHandleOffsets().Check());
   EXPECT_TRUE(ByteBufferViewVarHandleOffsets().Check());
+  EXPECT_TRUE(StackFrameInfoOffsets().Check());
 }
 
 TEST_F(ClassLinkerTest, FindClassNonexistent) {

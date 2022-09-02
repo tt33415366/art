@@ -22,6 +22,10 @@ After modifying this file execute it ('./main.star') to regenerate the configs.
 
 lucicfg.check_version("1.30.9", "Please update depot_tools")
 
+luci.builder.defaults.experiments.set({
+    "luci.recipes.use_python3": 100,
+})
+
 # Use LUCI Scheduler BBv2 names and add Scheduler realms configs.
 lucicfg.enable_experiment("crbug.com/1182002")
 
@@ -137,6 +141,13 @@ luci.gitiles_poller(
 )
 
 luci.gitiles_poller(
+    name = "vogar",
+    bucket = "ci",
+    repo = "https://android.googlesource.com/platform/external/vogar",
+    refs = ["refs/heads/master"],
+)
+
+luci.gitiles_poller(
     name = "manifest",
     bucket = "ci",
     repo = "https://android.googlesource.com/platform/manifest",
@@ -149,7 +160,7 @@ def ci_builder(name, category, short_name):
         bucket = "ci",
         executable = luci.recipe(
             cipd_package = "infra/recipe_bundles/chromium.googlesource.com/chromium/tools/build",
-            cipd_version = "refs/heads/master",
+            cipd_version = "refs/heads/main",
             name = "art",
         ),
         dimensions = {
@@ -181,6 +192,7 @@ def ci_builder(name, category, short_name):
             "art",
             "libcore",
             "manifest",
+            "vogar",
         ],
     )
     luci.console_view_entry(

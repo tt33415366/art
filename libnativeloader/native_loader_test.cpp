@@ -33,7 +33,7 @@ namespace nativeloader {
 using ::testing::Eq;
 using ::testing::NotNull;
 using ::testing::StrEq;
-using internal::ConfigEntry;
+using internal::ConfigEntry;  // NOLINT - ConfigEntry is actually used
 using internal::ParseApexLibrariesConfig;
 using internal::ParseConfig;
 
@@ -68,7 +68,7 @@ class NativeLoaderTest : public ::testing::TestWithParam<bool> {
   void SetExpectations() {
     std::vector<std::string> default_public_libs =
         android::base::Split(preloadable_public_libraries(), ":");
-    for (auto l : default_public_libs) {
+    for (const std::string& l : default_public_libs) {
       EXPECT_CALL(*mock,
                   mock_dlopen_ext(false, StrEq(l.c_str()), RTLD_NOW | RTLD_NODELETE, NotNull()))
           .WillOnce(Return(any_nonnull));
@@ -167,13 +167,16 @@ INSTANTIATE_TEST_SUITE_P(NativeLoaderTests, NativeLoaderTest, testing::Bool());
 
 /////////////////////////////////////////////////////////////////
 
-std::string default_public_and_extended_libraries() {
-  std::string public_libs = default_public_libraries();
-  std::string ext_libs = extended_public_libraries();
+std::string append_extended_libraries(const std::string& libs) {
+  const std::string& ext_libs = extended_public_libraries();
   if (!ext_libs.empty()) {
-    public_libs = public_libs + ":" + ext_libs;
+    return libs + ":" + ext_libs;
   }
-  return public_libs;
+  return libs;
+}
+
+std::string default_public_and_extended_libraries() {
+  return append_extended_libraries(default_public_libraries());
 }
 
 class NativeLoaderTest_Create : public NativeLoaderTest {
@@ -380,7 +383,7 @@ TEST_P(NativeLoaderTest_Create, UnbundledProductApp) {
     expected_permitted_path =
         expected_permitted_path + ":/product/" LIB_DIR ":/system/product/" LIB_DIR;
     expected_shared_libs_to_platform_ns =
-        default_public_libraries() + ":" + llndk_libraries_product();
+        append_extended_libraries(default_public_libraries() + ":" + llndk_libraries_product());
     expected_link_with_vndk_product_ns = true;
   }
   SetExpectations();

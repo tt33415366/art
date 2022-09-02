@@ -39,8 +39,7 @@ func globalFlags(ctx android.LoadHookContext) ([]string, []string) {
 	cflags = append(cflags, opt)
 
 	tlab := false
-
-	gcType := ctx.Config().GetenvWithDefault("ART_DEFAULT_GC_TYPE", "CMS")
+	gcType := ctx.Config().GetenvWithDefault("ART_DEFAULT_GC_TYPE", "CMC")
 
 	if ctx.Config().IsEnvTrue("ART_TEST_DEBUG_GC") {
 		gcType = "SS"
@@ -48,9 +47,6 @@ func globalFlags(ctx android.LoadHookContext) ([]string, []string) {
 	}
 
 	cflags = append(cflags, "-DART_DEFAULT_GC_TYPE_IS_"+gcType)
-	if tlab {
-		cflags = append(cflags, "-DART_USE_TLAB=1")
-	}
 
 	if ctx.Config().IsEnvTrue("ART_HEAP_POISONING") {
 		cflags = append(cflags, "-DART_HEAP_POISONING=1")
@@ -70,10 +66,21 @@ func globalFlags(ctx android.LoadHookContext) ([]string, []string) {
 		asflags = append(asflags,
 			"-DART_USE_READ_BARRIER=1",
 			"-DART_READ_BARRIER_TYPE_IS_"+barrierType+"=1")
+
+		if !ctx.Config().IsEnvFalse("ART_USE_GENERATIONAL_CC") {
+			cflags = append(cflags, "-DART_USE_GENERATIONAL_CC=1")
+		}
+		// For now force CC as we don't want to make userfaultfd GC the default.
+		// Eventually, make it such that we force CC only if ART_USE_READ_BARRIER
+		// was set to true explicitly during build time.
+		cflags = append(cflags, "-DART_FORCE_USE_READ_BARRIER=1")
+		tlab = true
+	} else if gcType == "CMC" {
+		tlab = true
 	}
 
-	if !ctx.Config().IsEnvFalse("ART_USE_GENERATIONAL_CC") {
-		cflags = append(cflags, "-DART_USE_GENERATIONAL_CC=1")
+	if tlab {
+		cflags = append(cflags, "-DART_USE_TLAB=1")
 	}
 
 	cdexLevel := ctx.Config().GetenvWithDefault("ART_DEFAULT_COMPACT_DEX_LEVEL", "fast")
@@ -132,7 +139,7 @@ func deviceFlags(ctx android.LoadHookContext) []string {
 	)
 
 	cflags = append(cflags, "-DART_BASE_ADDRESS="+ctx.Config().LibartImgDeviceBaseAddress())
-	minDelta := ctx.Config().GetenvWithDefault("LIBART_IMG_TARGET_MIN_BASE_ADDRESS_DELTA", "-0x1000000")
+	minDelta := ctx.Config().GetenvWithDefault("LIBART_IMG_TARGET_MIN_BASE_ADDRESS_DELTA", "(-0x1000000)")
 	maxDelta := ctx.Config().GetenvWithDefault("LIBART_IMG_TARGET_MAX_BASE_ADDRESS_DELTA", "0x1000000")
 	cflags = append(cflags, "-DART_BASE_ADDRESS_MIN_DELTA="+minDelta)
 	cflags = append(cflags, "-DART_BASE_ADDRESS_MAX_DELTA="+maxDelta)
@@ -154,7 +161,7 @@ func hostFlags(ctx android.LoadHookContext) []string {
 	)
 
 	cflags = append(cflags, "-DART_BASE_ADDRESS="+ctx.Config().LibartImgHostBaseAddress())
-	minDelta := ctx.Config().GetenvWithDefault("LIBART_IMG_HOST_MIN_BASE_ADDRESS_DELTA", "-0x1000000")
+	minDelta := ctx.Config().GetenvWithDefault("LIBART_IMG_HOST_MIN_BASE_ADDRESS_DELTA", "(-0x1000000)")
 	maxDelta := ctx.Config().GetenvWithDefault("LIBART_IMG_HOST_MAX_BASE_ADDRESS_DELTA", "0x1000000")
 	cflags = append(cflags, "-DART_BASE_ADDRESS_MIN_DELTA="+minDelta)
 	cflags = append(cflags, "-DART_BASE_ADDRESS_MAX_DELTA="+maxDelta)
@@ -165,7 +172,7 @@ func hostFlags(ctx android.LoadHookContext) []string {
 	}
 
 	clang_path := filepath.Join(config.ClangDefaultBase, ctx.Config().PrebuiltOS(), config.ClangDefaultVersion)
-	cflags = append(cflags, "-DART_CLANG_PATH=\""+clang_path+"\"")
+	cflags = append(cflags, fmt.Sprintf("-DART_CLANG_PATH=\"%s\"", clang_path))
 
 	return cflags
 }
@@ -305,7 +312,7 @@ func testcasesContent(config android.Config) map[string]string {
 // The 'key' is the file in testcases and 'value' is the path to copy it from.
 // The actual copy will be done in make since soong does not do installations.
 func addTestcasesFile(ctx android.InstallHookContext) {
-	if ctx.Os() != ctx.Config().BuildOS || ctx.Module().IsSkipInstall() {
+	if ctx.Os() != ctx.Config().BuildOS || ctx.Target().HostCross || ctx.Module().IsSkipInstall() {
 		return
 	}
 
@@ -456,7 +463,8 @@ func artBinary() android.Module {
 }
 
 func artTest() android.Module {
-	module := cc.TestFactory()
+	// Disable bp2build.
+	module := cc.NewTest(android.HostAndDeviceSupported, false /* bazelable */).Init()
 
 	installCodegenCustomizer(module, binary)
 

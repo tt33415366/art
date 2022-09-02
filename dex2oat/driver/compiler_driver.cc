@@ -1025,21 +1025,6 @@ void CompilerDriver::LoadImageClasses(TimingLogger* timings,
     return;
   }
 
-  // A hard-coded list of array classes that should be in the primary boot image profile. The impact
-  // of each class can be approximately measured by comparing oatdump output with and without it:
-  // `m dump-oat-boot && grep -cE 'Class.*VisiblyInitialized' boot.host-<arch>.oatdump.txt`.
-  //   - b/150319075: File[]
-  //   - b/156098788: int[][], int[][][], short[][], byte[][][]
-  //
-  // TODO: Implement support for array classes in profiles and remove this workaround. b/148067697
-  if (GetCompilerOptions().IsBootImage()) {
-    image_classes->insert("[Ljava/io/File;");
-    image_classes->insert("[[I");
-    image_classes->insert("[[[I");
-    image_classes->insert("[[S");
-    image_classes->insert("[[[B");
-  }
-
   TimingLogger::ScopedTiming t("LoadImageClasses", timings);
 
   if (GetCompilerOptions().IsBootImage()) {
@@ -1124,6 +1109,7 @@ static void MaybeAddToImageClasses(Thread* self,
                                    HashSet<std::string>* image_classes)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   DCHECK_EQ(self, Thread::Current());
+  DCHECK(klass->IsResolved());
   Runtime* runtime = Runtime::Current();
   gc::Heap* heap = runtime->GetHeap();
   if (heap->ObjectIsInBootImageSpace(klass)) {
@@ -2246,6 +2232,19 @@ class InitializeClassVisitor : public CompilationVisitor {
     if (kIsDebugBuild) {
       // Make sure the class initialization did not leave any local references.
       self->GetJniEnv()->AssertLocalsEmpty();
+    }
+
+    if (!klass->IsVisiblyInitialized() &&
+        (is_boot_image || is_boot_image_extension) &&
+        !compiler_options.IsPreloadedClass(PrettyDescriptor(descriptor).c_str())) {
+      klass->SetInBootImageAndNotInPreloadedClasses();
+    }
+
+    if (compiler_options.CompileArtTest()) {
+      // For stress testing and unit-testing the clinit check in compiled code feature.
+      if (kIsDebugBuild || EndsWith(std::string_view(descriptor), "$NoPreloadHolder;")) {
+        klass->SetInBootImageAndNotInPreloadedClasses();
+      }
     }
   }
 

@@ -1590,6 +1590,14 @@ END \name
  *  rest  method parameters
  */
 
+OAT_ENTRY ExecuteNterpWithClinitImpl, EndExecuteNterpWithClinitImpl
+    ldr wip, [x0, ART_METHOD_DECLARING_CLASS_OFFSET]
+    ldrb wip, [ip, MIRROR_CLASS_IS_VISIBLY_INITIALIZED_OFFSET]
+    cmp ip, #MIRROR_CLASS_IS_VISIBLY_INITIALIZED_VALUE
+    bcs ExecuteNterpImpl
+    b art_quick_resolution_trampoline
+EndExecuteNterpWithClinitImpl:
+
 OAT_ENTRY ExecuteNterpImpl, EndExecuteNterpImpl
     .cfi_startproc
     sub x16, sp, #STACK_OVERFLOW_RESERVED_BYTES
@@ -1917,6 +1925,8 @@ artNterpAsmInstructionStart = .L_op_nop
 %   return "nterp_"
 %def opcode_start():
     NAME_START nterp_${opcode}
+    # Explicitly restore CFA, just in case the previous opcode clobbered it (by .cfi_def_*).
+    CFI_DEF_CFA_BREG_PLUS_UCONST CFI_REFS, -8, CALLEE_SAVES_SIZE
 %def opcode_end():
     NAME_END nterp_${opcode}
     // Advance to the end of this handler. Causes error if we are past that point.

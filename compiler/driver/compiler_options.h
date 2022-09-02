@@ -26,6 +26,7 @@
 #include "base/globals.h"
 #include "base/hash_set.h"
 #include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/utils.h"
 #include "optimizing/register_allocator.h"
 
@@ -43,6 +44,7 @@ namespace linker {
 class Arm64RelativePatcherTest;
 }  // namespace linker
 
+class ArtMethod;
 class DexFile;
 enum class InstructionSet;
 class InstructionSetFeatures;
@@ -233,6 +235,10 @@ class CompilerOptions final {
     return image_type_ == ImageType::kAppImage;
   }
 
+  bool IsMultiImage() const {
+    return multi_image_;
+  }
+
   // Returns whether we are running ART tests.
   // The compiler will use that information for checking invariants.
   bool CompileArtTest() const {
@@ -294,6 +300,10 @@ class CompilerOptions final {
   }
 
   bool IsImageClass(const char* descriptor) const;
+
+  // Returns whether the given `pretty_descriptor` is in the list of preloaded
+  // classes. `pretty_descriptor` should be the result of calling `PrettyDescriptor`.
+  bool IsPreloadedClass(const char* pretty_descriptor) const;
 
   const VerificationResults* GetVerificationResults() const;
 
@@ -373,10 +383,16 @@ class CompilerOptions final {
     return initialize_app_image_classes_;
   }
 
+  // Returns true if `dex_file` is within an oat file we're producing right now.
   bool WithinOatFile(const DexFile* dex_file) const {
-    return std::find(GetDexFilesForOatFile().begin(), GetDexFilesForOatFile().end(), dex_file) !=
-           GetDexFilesForOatFile().end();
+    return ContainsElement(GetDexFilesForOatFile(), dex_file);
   }
+
+  // If this is a static non-constructor method in the boot classpath, and its class isn't
+  // initialized at compile-time, or won't be initialized by the zygote, add
+  // initialization checks at entry. This will avoid the need of trampolines
+  // which at runtime we will need to dirty after initialization.
+  bool ShouldCompileWithClinitCheck(ArtMethod* method) const;
 
  private:
   bool ParseDumpInitFailures(const std::string& option, std::string* error_msg);
@@ -403,11 +419,16 @@ class CompilerOptions final {
   // Must not be empty for real boot image, only for tests pretending to compile boot image.
   HashSet<std::string> image_classes_;
 
+  // Classes listed in the preloaded-classes file, used for boot image and
+  // boot image extension compilation.
+  HashSet<std::string> preloaded_classes_;
+
   // Results of AOT verification.
   const VerificationResults* verification_results_;
 
   CompilerType compiler_type_;
   ImageType image_type_;
+  bool multi_image_;
   bool compile_art_test_;
   bool baseline_;
   bool debuggable_;
@@ -486,7 +507,6 @@ class CompilerOptions final {
   const std::vector<std::string>* passes_to_run_;
 
   friend class Dex2Oat;
-  friend class DexToDexDecompilerTest;
   friend class CommonCompilerDriverTest;
   friend class CommonCompilerTestImpl;
   friend class jit::JitCompiler;

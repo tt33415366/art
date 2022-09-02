@@ -406,6 +406,7 @@ class HGraph : public ArenaObject<kArenaAllocGraph> {
         has_loops_(false),
         has_irreducible_loops_(false),
         has_direct_critical_native_call_(false),
+        has_always_throwing_invokes_(false),
         dead_reference_safe_(dead_reference_safe),
         debuggable_(debuggable),
         current_instruction_id_(start_instruction_id),
@@ -678,6 +679,13 @@ class HGraph : public ArenaObject<kArenaAllocGraph> {
     return cha_single_implementation_list_;
   }
 
+  // In case of OSR we intend to use SuspendChecks as an entry point to the
+  // function; for debuggable graphs we might deoptimize to interpreter from
+  // SuspendChecks. In these cases we should always generate code for them.
+  bool SuspendChecksAreAllowedToNoOp() const {
+    return !IsDebuggable() && !IsCompilingOsr();
+  }
+
   void AddCHASingleImplementationDependency(ArtMethod* method) {
     cha_single_implementation_list_.insert(method);
   }
@@ -704,6 +712,9 @@ class HGraph : public ArenaObject<kArenaAllocGraph> {
   bool HasDirectCriticalNativeCall() const { return has_direct_critical_native_call_; }
   void SetHasDirectCriticalNativeCall(bool value) { has_direct_critical_native_call_ = value; }
 
+  bool HasAlwaysThrowingInvokes() const { return has_always_throwing_invokes_; }
+  void SetHasAlwaysThrowingInvokes(bool value) { has_always_throwing_invokes_ = value; }
+
   ArtMethod* GetArtMethod() const { return art_method_; }
   void SetArtMethod(ArtMethod* method) { art_method_ = method; }
 
@@ -719,7 +730,7 @@ class HGraph : public ArenaObject<kArenaAllocGraph> {
     return ReferenceTypeInfo::Create(handle_cache_.GetObjectClassHandle(), /* is_exact= */ false);
   }
 
-  uint32_t GetNumberOfCHAGuards() { return number_of_cha_guards_; }
+  uint32_t GetNumberOfCHAGuards() const { return number_of_cha_guards_; }
   void SetNumberOfCHAGuards(uint32_t num) { number_of_cha_guards_ = num; }
   void IncrementNumberOfCHAGuards() { number_of_cha_guards_++; }
 
@@ -825,6 +836,9 @@ class HGraph : public ArenaObject<kArenaAllocGraph> {
   // Flag whether there are any direct calls to native code registered
   // for @CriticalNative methods.
   bool has_direct_critical_native_call_;
+
+  // Flag whether the graph contains invokes that always throw.
+  bool has_always_throwing_invokes_;
 
   // Is the code known to be robust against eliminating dead references
   // and the effects of early finalization? If false, dead reference variables
@@ -1291,7 +1305,7 @@ class HBasicBlock : public ArenaObject<kArenaAllocBasicBlock> {
   // graph, create a Goto at the end of the former block and will create an edge
   // between the blocks. It will not, however, update the reverse post order or
   // loop and try/catch information.
-  HBasicBlock* SplitBefore(HInstruction* cursor);
+  HBasicBlock* SplitBefore(HInstruction* cursor, bool require_graph_not_in_ssa_form = true);
 
   // Split the block into two blocks just before `cursor`. Returns the newly
   // created block. Note that this method just updates raw block information,
@@ -1331,6 +1345,20 @@ class HBasicBlock : public ArenaObject<kArenaAllocBasicBlock> {
   // The block must not dominate any other block. Predecessors and successors
   // are safely updated.
   void DisconnectAndDelete();
+
+  // Disconnects `this` from all its successors and updates their phis, if the successors have them.
+  // If `visited` is provided, it will use the information to know if a successor is reachable and
+  // skip updating those phis.
+  void DisconnectFromSuccessors(const ArenaBitVector* visited = nullptr);
+
+  // Removes the catch phi uses of the instructions in `this`, and then remove the instruction
+  // itself. If `building_dominator_tree` is true, it will not remove the instruction as user, since
+  // we do it in a previous step. This is a special case for building up the dominator tree: we want
+  // to eliminate uses before inputs but we don't have domination information, so we remove all
+  // connections from input/uses first before removing any instruction.
+  // This method assumes the instructions have been removed from all users with the exception of
+  // catch phis because of missing exceptional edges in the graph.
+  void RemoveCatchPhiUsesAndInstruction(bool building_dominator_tree);
 
   void AddInstruction(HInstruction* instruction);
   // Insert `instruction` before/after an existing instruction `cursor`.
@@ -1417,7 +1445,7 @@ class HBasicBlock : public ArenaObject<kArenaAllocBasicBlock> {
   bool HasThrowingInstructions() const;
 
   // Returns whether this block dominates the blocked passed as parameter.
-  bool Dominates(HBasicBlock* block) const;
+  bool Dominates(const HBasicBlock* block) const;
 
   size_t GetLifetimeStart() const { return lifetime_start_; }
   size_t GetLifetimeEnd() const { return lifetime_end_; }
@@ -1540,10 +1568,10 @@ class HLoopInformationOutwardIterator : public ValueObject {
   M(Min, BinaryOperation)                                               \
   M(MonitorOperation, Instruction)                                      \
   M(Mul, BinaryOperation)                                               \
-  M(NativeDebugInfo, Instruction)                                       \
   M(Neg, UnaryOperation)                                                \
   M(NewArray, Instruction)                                              \
   M(NewInstance, Instruction)                                           \
+  M(Nop, Instruction)                                                   \
   M(Not, UnaryOperation)                                                \
   M(NotEqual, Condition)                                                \
   M(NullConstant, Instruction)                                          \
@@ -2408,7 +2436,7 @@ class HInstruction : public ArenaObject<kArenaAllocInstruction> {
         !CanThrow() &&
         !IsSuspendCheck() &&
         !IsControlFlow() &&
-        !IsNativeDebugInfo() &&
+        !IsNop() &&
         !IsParameterValue() &&
         // If we added an explicit barrier then we should keep it.
         !IsMemoryBarrier() &&
@@ -2419,9 +2447,12 @@ class HInstruction : public ArenaObject<kArenaAllocInstruction> {
     return IsRemovable() && !HasUses();
   }
 
-  // Does this instruction strictly dominate `other_instruction`?
-  // Returns false if this instruction and `other_instruction` are the same.
-  // Aborts if this instruction and `other_instruction` are both phis.
+  // Does this instruction dominate `other_instruction`?
+  // Aborts if this instruction and `other_instruction` are different phis.
+  bool Dominates(HInstruction* other_instruction) const;
+
+  // Same but with `strictly dominates` i.e. returns false if this instruction and
+  // `other_instruction` are the same.
   bool StrictlyDominates(HInstruction* other_instruction) const;
 
   int GetId() const { return id_; }
@@ -2486,7 +2517,9 @@ class HInstruction : public ArenaObject<kArenaAllocInstruction> {
   void SetLocations(LocationSummary* locations) { locations_ = locations; }
 
   void ReplaceWith(HInstruction* instruction);
-  void ReplaceUsesDominatedBy(HInstruction* dominator, HInstruction* replacement);
+  void ReplaceUsesDominatedBy(HInstruction* dominator,
+                              HInstruction* replacement,
+                              bool strictly_dominated = true);
   void ReplaceEnvUsesDominatedBy(HInstruction* dominator, HInstruction* replacement);
   void ReplaceInput(HInstruction* replacement, size_t index);
 
@@ -6714,9 +6747,10 @@ class HBoundsCheck final : public HExpression<2> {
 
 class HSuspendCheck final : public HExpression<0> {
  public:
-  explicit HSuspendCheck(uint32_t dex_pc = kNoDexPc)
+  explicit HSuspendCheck(uint32_t dex_pc = kNoDexPc, bool is_no_op = false)
       : HExpression(kSuspendCheck, SideEffects::CanTriggerGC(), dex_pc),
         slow_path_(nullptr) {
+    SetPackedFlag<kFlagIsNoOp>(is_no_op);
   }
 
   bool IsClonable() const override { return true; }
@@ -6724,6 +6758,10 @@ class HSuspendCheck final : public HExpression<0> {
   bool NeedsEnvironment() const override {
     return true;
   }
+
+  void SetIsNoOp(bool is_no_op) { SetPackedFlag<kFlagIsNoOp>(is_no_op); }
+  bool IsNoOp() const { return GetPackedFlag<kFlagIsNoOp>(); }
+
 
   void SetSlowPath(SlowPathCode* slow_path) { slow_path_ = slow_path; }
   SlowPathCode* GetSlowPath() const { return slow_path_; }
@@ -6733,28 +6771,42 @@ class HSuspendCheck final : public HExpression<0> {
  protected:
   DEFAULT_COPY_CONSTRUCTOR(SuspendCheck);
 
+  // True if the HSuspendCheck should not emit any code during codegen. It is
+  // not possible to simply remove this instruction to disable codegen, as
+  // other optimizations (e.g: CHAGuardVisitor::HoistGuard) depend on
+  // HSuspendCheck being present in every loop.
+  static constexpr size_t kFlagIsNoOp = kNumberOfGenericPackedBits;
+  static constexpr size_t kNumberOfSuspendCheckPackedBits = kFlagIsNoOp + 1;
+  static_assert(kNumberOfSuspendCheckPackedBits <= HInstruction::kMaxNumberOfPackedBits,
+                "Too many packed fields.");
+
  private:
   // Only used for code generation, in order to share the same slow path between back edges
   // of a same loop.
   SlowPathCode* slow_path_;
 };
 
-// Pseudo-instruction which provides the native debugger with mapping information.
-// It ensures that we can generate line number and local variables at this point.
-class HNativeDebugInfo : public HExpression<0> {
+// Pseudo-instruction which doesn't generate any code.
+// If `emit_environment` is true, it can be used to generate an environment. It is used, for
+// example, to provide the native debugger with mapping information. It ensures that we can generate
+// line number and local variables at this point.
+class HNop : public HExpression<0> {
  public:
-  explicit HNativeDebugInfo(uint32_t dex_pc)
-      : HExpression<0>(kNativeDebugInfo, SideEffects::None(), dex_pc) {
+  explicit HNop(uint32_t dex_pc, bool needs_environment)
+      : HExpression<0>(kNop, SideEffects::None(), dex_pc), needs_environment_(needs_environment) {
   }
 
   bool NeedsEnvironment() const override {
-    return true;
+    return needs_environment_;
   }
 
-  DECLARE_INSTRUCTION(NativeDebugInfo);
+  DECLARE_INSTRUCTION(Nop);
 
  protected:
-  DEFAULT_COPY_CONSTRUCTOR(NativeDebugInfo);
+  DEFAULT_COPY_CONSTRUCTOR(Nop);
+
+ private:
+  bool needs_environment_;
 };
 
 /**
@@ -7222,6 +7274,10 @@ class HLoadMethodHandle final : public HInstruction {
     return SideEffects::CanTriggerGC();
   }
 
+  bool CanThrow() const override { return true; }
+
+  bool NeedsEnvironment() const override { return true; }
+
   DECLARE_INSTRUCTION(LoadMethodHandle);
 
  protected:
@@ -7265,6 +7321,10 @@ class HLoadMethodType final : public HInstruction {
   static SideEffects SideEffectsForArchRuntimeCalls() {
     return SideEffects::CanTriggerGC();
   }
+
+  bool CanThrow() const override { return true; }
+
+  bool NeedsEnvironment() const override { return true; }
 
   DECLARE_INSTRUCTION(LoadMethodType);
 

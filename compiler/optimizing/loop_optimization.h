@@ -47,6 +47,11 @@ class HLoopOptimization : public HOptimization {
 
   static constexpr const char* kLoopOptimizationPassName = "loop_optimization";
 
+  // The maximum number of total instructions (trip_count * instruction_count),
+  // where the optimization of removing SuspendChecks from the loop header could
+  // be performed.
+  static constexpr int64_t kMaxTotalInstRemoveSuspendCheck = 128;
+
  private:
   /**
    * A single loop inside the loop hierarchy representation.
@@ -57,12 +62,23 @@ class HLoopOptimization : public HOptimization {
           outer(nullptr),
           inner(nullptr),
           previous(nullptr),
-          next(nullptr) {}
+          next(nullptr),
+          try_catch_kind(TryCatchKind::kUnknown) {}
+
+    enum class TryCatchKind {
+      kUnknown,
+      // Either if we have a try catch in the loop, or if the loop is inside of an outer try catch,
+      // we set `kHasTryCatch`.
+      kHasTryCatch,
+      kNoTryCatch
+    };
+
     HLoopInformation* loop_info;
     LoopNode* outer;
     LoopNode* inner;
     LoopNode* previous;
     LoopNode* next;
+    TryCatchKind try_catch_kind;
   };
 
   /*
@@ -131,6 +147,11 @@ class HLoopOptimization : public HOptimization {
   // Returns true if loops nested inside current loop (node) have changed.
   bool TraverseLoopsInnerToOuter(LoopNode* node);
 
+  // Calculates `node`'s `try_catch_kind` and sets it to:
+  // 1) kHasTryCatch if it has try catches (or if it's inside of an outer try catch)
+  // 2) kNoTryCatch otherwise.
+  void CalculateAndSetTryCatchKind(LoopNode* node);
+
   //
   // Optimization.
   //
@@ -163,8 +184,19 @@ class HLoopOptimization : public HOptimization {
   // should be actually applied.
   bool TryFullUnrolling(LoopAnalysisInfo* analysis_info, bool generate_code = true);
 
-  // Tries to apply scalar loop peeling and unrolling.
-  bool TryPeelingAndUnrolling(LoopNode* node);
+  // Tries to remove SuspendCheck for plain loops with a low trip count. The
+  // SuspendCheck in the codegen makes sure that the thread can be interrupted
+  // during execution for GC. Not being able to do so might decrease the
+  // responsiveness of GC when a very long loop or a long recursion is being
+  // executed. However, for plain loops with a small trip count, the removal of
+  // SuspendCheck should not affect the GC's responsiveness by a large margin.
+  // Consequently, since the thread won't be interrupted for plain loops, it is
+  // assumed that the performance might increase by removing SuspendCheck.
+  bool TryToRemoveSuspendCheckFromLoopHeader(LoopAnalysisInfo* analysis_info,
+                                             bool generate_code = true);
+
+  // Tries to apply scalar loop optimizations.
+  bool TryLoopScalarOpts(LoopNode* node);
 
   //
   // Vectorization analysis and synthesis.

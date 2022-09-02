@@ -203,11 +203,21 @@ known_failing_tests = frozenset([
   "826-infinite-loop",
   # 832-cha-recursive: Dependency on `libarttest`.
   "832-cha-recursive",
+  # 837-deopt: Dependency on `libarttest`.
+  "837-deopt",
+])
+
+known_failing_on_hwasan_tests = frozenset([
+  "BootImageProfileTest", # b/232012605
+  "CtsJdwpTestCases", # times out
+  "art_standalone_compiler_tests", # b/230392320
+  "art_standalone_dex2oat_tests",  # b/228881278
 ])
 
 # ART gtests that do not need root access to the device.
 art_gtest_user_module_names = [
     "art_libnativebridge_cts_tests",
+    "art_standalone_artd_tests",
     "art_standalone_cmdline_tests",
     "art_standalone_compiler_tests",
     "art_standalone_dex2oat_tests",
@@ -230,6 +240,7 @@ art_gtest_user_module_names = [
 
 # ART gtests that need root access to the device.
 art_gtest_eng_only_module_names = [
+    "libnativeloader_e2e_tests",
     "art_standalone_dexoptanalyzer_tests",
     "art_standalone_profman_tests",
 ]
@@ -325,13 +336,12 @@ class Generator:
     def is_blank(line):
       return re.match("^\\s*$", line)
 
-    # Is `line` a `set -e` statement?
-    def is_set_e(line):
-      return re.match("^\\s*set -e\\s*", line)
+    def is_import(line):
+      return re.match("^\\s*from .* import .*", line)
 
     # Should `line` be kept in the canonized build script?
     def keep_line(line):
-      return not (is_comment(line) or is_blank(line) or is_set_e(line))
+      return not (is_comment(line) or is_blank(line) or is_import(line))
 
     with open(build_file, "r") as f:
       lines = f.readlines()
@@ -341,7 +351,7 @@ class Generator:
   def can_ignore_build_script(self, build_file):
     build_script = self.canonize_build_script(build_file)
     if len(build_script) == 1:
-      if build_script[0] == "./default-build \"$@\" --experimental var-handles\n":
+      if build_script[0] == 'build_run_test(experimental="var-handles")\n':
         # Soong builds JARs with VarHandle support by default (i.e. by
         # using an API level greater or equal to 28), so we can ignore
         # build scripts that just request support for this feature.
@@ -355,8 +365,11 @@ class Generator:
 
     # Skip tests with non-default build rules, unless these build
     # rules can be safely ignored.
-    if os.path.isfile(os.path.join(run_test_path, "build")):
-      if not self.can_ignore_build_script(os.path.join(run_test_path, "build")):
+    if (os.path.isfile(os.path.join(run_test_path, "generate-sources")) or
+        os.path.isfile(os.path.join(run_test_path, "javac_wrapper.sh"))):
+      return False
+    if os.path.isfile(os.path.join(run_test_path, "build.py")):
+      if not self.can_ignore_build_script(os.path.join(run_test_path, "build.py")):
         return False
     # Skip tests with sources outside the `src` directory.
     for subdir in ["jasmin",
@@ -428,15 +441,32 @@ class Generator:
     run_test_path = os.path.join(self.art_test_dir, run_test)
     bp_file = os.path.join(run_test_path, "Android.bp")
 
+    # Optional test metadata (JSON file).
+    metadata_file = os.path.join(run_test_path, "test-metadata.json")
+    metadata = {}
+    if os.path.exists(metadata_file):
+      with open(metadata_file, "r") as f:
+        metadata = json.load(f)
+
     run_test_module_name = ART_RUN_TEST_MODULE_NAME_PREFIX + run_test
 
+    # Set the test configuration template.
     if self.is_runnable(run_test):
-      if self.is_slow(run_test):
-        test_config_template= "art-run-test-target-slow-template"
+      if "cts" in metadata.get("test_suites", []):
+        test_config_template = "art-run-test-target-cts-template"
+      elif self.is_slow(run_test):
+        test_config_template = "art-run-test-target-slow-template"
       else:
         test_config_template = "art-run-test-target-template"
     else:
       test_config_template = "art-run-test-target-no-test-suite-tag-template"
+
+    # Define `test_suites`, if present in the test's metadata.
+    test_suites = ""
+    if metadata.get("test_suites"):
+      test_suites = f"""\
+
+          test_suites: {json.dumps(metadata.get("test_suites"))},"""
 
     if is_checker_test(run_test):
       include_src = """\
@@ -478,7 +508,7 @@ class Generator:
           data: [
               ":{run_test_module_name}-expected-stdout",
               ":{run_test_module_name}-expected-stderr",
-          ],{include_src}
+          ],{test_suites}{include_src}
       }}
 
       // Test's expected standard output.
@@ -516,14 +546,17 @@ class Generator:
 
     # Presubmits.
     other_presubmit_tests = [
-        "CtsJdwpTestCases",
-        "BootImageProfileTest",
         "ArtServiceTests",
+        "BootImageProfileTest",
         "ComposHostTestCases",
+        "CtsJdwpTestCases",
+        "art-apex-update-rollback",
         "art_standalone_dexpreopt_tests",
     ]
     presubmit_tests = other_presubmit_tests + run_test_module_names + art_gtest_module_names
     presubmit_tests_dict = [{"name": t} for t in presubmit_tests]
+    hwasan_presubmit_tests_dict = [{"name": t} for t in presubmit_tests
+                                   if t not in known_failing_on_hwasan_tests]
 
     # Use an `OrderedDict` container to preserve the order in which items are inserted.
     # Do not produce an entry for a test group if it is empty.
@@ -533,6 +566,7 @@ class Generator:
         in [
             ("mainline-presubmit", mainline_presubmit_tests_dict),
             ("presubmit", presubmit_tests_dict),
+            ("hwasan-presubmit", hwasan_presubmit_tests_dict),
         ]
         if test_group_dict
     ])
@@ -719,18 +753,11 @@ class Generator:
 
     mts_test_shards = []
 
-    # ART test (gtest & run-test) shard(s).
-    # TODO: Also handle the case of gtests requiring root access to the device
-    # (`art_gtest_eng_only_module_names`).
+    # ART run-tests shard(s).
     art_run_test_module_names = [ART_RUN_TEST_MODULE_NAME_PREFIX + t for t in art_run_tests]
     art_run_test_shards = split_list(art_run_test_module_names, NUM_MTS_ART_RUN_TEST_SHARDS)
     for i in range(len(art_run_test_shards)):
       art_tests_shard_i_tests = art_run_test_shards[i]
-      # Append ART gtests to the last ART run-test shard for now.
-      # If needed, consider moving them to their own shard to increase
-      # the parallelization of code coverage runs.
-      if i + 1 == len(art_run_test_shards):
-        art_tests_shard_i_tests.extend(art_gtest_mts_user_module_names)
       art_tests_shard_i = self.create_mts_test_shard(
           "ART run-tests", art_tests_shard_i_tests, i, 2020,
           ["TODO(rpl): Find a way to express this list in a more concise fashion."])
@@ -757,6 +784,15 @@ class Generator:
         "CTS Libcore OJ tests", other_cts_libcore_tests_shard_tests,
         other_cts_libcore_tests_shard_num, 2021)
     mts_test_shards.append(other_cts_libcore_tests_shard)
+
+    # ART gtests shard.
+    # TODO: Also handle the case of gtests requiring root access to the device
+    # (`art_gtest_eng_only_module_names`).
+    art_gtests_shard_num = len(mts_test_shards)
+    art_gtests_shard_tests = art_gtest_mts_user_module_names
+    art_gtests_shard = self.create_mts_test_shard(
+        "ART gtests", art_gtests_shard_tests, art_gtests_shard_num, 2022)
+    mts_test_shards.append(art_gtests_shard)
 
     for s in mts_test_shards:
       s.regen_test_plan_file()

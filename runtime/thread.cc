@@ -41,6 +41,8 @@
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
 
+#include "unwindstack/AndroidUnwinder.h"
+
 #include "arch/context-inl.h"
 #include "arch/context.h"
 #include "art_field-inl.h"
@@ -84,6 +86,7 @@
 #include "mirror/class_loader.h"
 #include "mirror/object_array-alloc-inl.h"
 #include "mirror/object_array-inl.h"
+#include "mirror/stack_frame_info.h"
 #include "mirror/stack_trace_element.h"
 #include "monitor.h"
 #include "monitor_objects_stack_visitor.h"
@@ -166,7 +169,7 @@ void InitEntryPoints(JniEntryPoints* jpoints,
 void UpdateReadBarrierEntrypoints(QuickEntryPoints* qpoints, bool is_active);
 
 void Thread::SetIsGcMarkingAndUpdateEntrypoints(bool is_marking) {
-  CHECK(kUseReadBarrier);
+  CHECK(gUseReadBarrier);
   tls32_.is_gc_marking = is_marking;
   UpdateReadBarrierEntrypoints(&tlsPtr_.quick_entrypoints, /* is_active= */ is_marking);
 }
@@ -272,6 +275,7 @@ void Thread::PushDeoptimizationContext(const JValue& return_value,
                                        ObjPtr<mirror::Throwable> exception,
                                        bool from_code,
                                        DeoptimizationMethodType method_type) {
+  DCHECK(exception != Thread::GetDeoptimizationException());
   DeoptimizationContextRecord* record = new DeoptimizationContextRecord(
       return_value,
       is_reference,
@@ -786,7 +790,7 @@ void Thread::InstallImplicitProtection() {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wframe-larger-than="
     NO_INLINE
-    static void Touch(uintptr_t target) {
+    __attribute__((no_sanitize("memtag"))) static void Touch(uintptr_t target) {
       volatile size_t zero = 0;
       // Use a large local volatile array to ensure a large frame size. Do not use anything close
       // to a full page for ASAN. It would be nice to ensure the frame size is at most a page, but
@@ -1390,10 +1394,15 @@ void Thread::ShortDump(std::ostream& os) const {
   tls32_.num_name_readers.fetch_sub(1 /* at least memory_order_release */);
 }
 
-void Thread::Dump(std::ostream& os, bool dump_native_stack, BacktraceMap* backtrace_map,
-                  bool force_dump_stack) const {
+void Thread::Dump(std::ostream& os, bool dump_native_stack, bool force_dump_stack) const {
   DumpState(os);
-  DumpStack(os, dump_native_stack, backtrace_map, force_dump_stack);
+  DumpStack(os, dump_native_stack, force_dump_stack);
+}
+
+void Thread::Dump(std::ostream& os, unwindstack::AndroidLocalUnwinder& unwinder,
+                  bool dump_native_stack, bool force_dump_stack) const {
+  DumpState(os);
+  DumpStack(os, unwinder, dump_native_stack, force_dump_stack);
 }
 
 ObjPtr<mirror::String> Thread::GetThreadName() const {
@@ -1473,7 +1482,7 @@ bool Thread::ModifySuspendCountInternal(Thread* self,
     return false;
   }
 
-  if (kUseReadBarrier && delta > 0 && this != self && tlsPtr_.flip_function != nullptr) {
+  if (gUseReadBarrier && delta > 0 && this != self && tlsPtr_.flip_function != nullptr) {
     // Force retry of a suspend request if it's in the middle of a thread flip to avoid a
     // deadlock. b/31683379.
     return false;
@@ -1980,6 +1989,9 @@ void Thread::DumpState(std::ostream& os, const Thread* thread, pid_t tid) {
     if (thread->IsStillStarting()) {
       os << " (still starting up)";
     }
+    if (thread->tls32_.disable_thread_flip_count != 0) {
+      os << " DisableFlipCount = " << thread->tls32_.disable_thread_flip_count;
+    }
     os << "\n";
   } else {
     os << '"' << ::art::GetThreadName(tid) << '"'
@@ -2276,7 +2288,14 @@ void Thread::DumpJavaStack(std::ostream& os, bool check_suspended, bool dump_loc
 
 void Thread::DumpStack(std::ostream& os,
                        bool dump_native_stack,
-                       BacktraceMap* backtrace_map,
+                       bool force_dump_stack) const {
+  unwindstack::AndroidLocalUnwinder unwinder;
+  DumpStack(os, unwinder, dump_native_stack, force_dump_stack);
+}
+
+void Thread::DumpStack(std::ostream& os,
+                       unwindstack::AndroidLocalUnwinder& unwinder,
+                       bool dump_native_stack,
                        bool force_dump_stack) const {
   // TODO: we call this code when dying but may not have suspended the thread ourself. The
   //       IsSuspended check is therefore racy with the use for dumping (normally we inhibit
@@ -2295,7 +2314,7 @@ void Thread::DumpStack(std::ostream& os,
           GetCurrentMethod(nullptr,
                            /*check_suspended=*/ !force_dump_stack,
                            /*abort_on_error=*/ !(dump_for_abort || force_dump_stack));
-      DumpNativeStack(os, GetTid(), backtrace_map, "  native: ", method);
+      DumpNativeStack(os, unwinder, GetTid(), "  native: ", method);
     }
     DumpJavaStack(os,
                   /*check_suspended=*/ !force_dump_stack,
@@ -2559,7 +2578,7 @@ void Thread::Destroy() {
   }
   // Mark-stack revocation must be performed at the very end. No
   // checkpoint/flip-function or read-barrier should be called after this.
-  if (kUseReadBarrier) {
+  if (gUseReadBarrier) {
     Runtime::Current()->GetHeap()->ConcurrentCopyingCollector()->RevokeThreadLocalMarkStack(this);
   }
 }
@@ -3138,6 +3157,148 @@ jobjectArray Thread::InternalStackTraceToStackTraceElementArray(
   return result;
 }
 
+[[nodiscard]] static ObjPtr<mirror::StackFrameInfo> InitStackFrameInfo(
+    const ScopedObjectAccessAlreadyRunnable& soa,
+    ClassLinker* class_linker,
+    Handle<mirror::StackFrameInfo> stackFrameInfo,
+    ArtMethod* method,
+    uint32_t dex_pc) REQUIRES_SHARED(Locks::mutator_lock_) {
+  StackHandleScope<4> hs(soa.Self());
+  int32_t line_number;
+  auto source_name_object(hs.NewHandle<mirror::String>(nullptr));
+  if (method->IsProxyMethod()) {
+    line_number = -1;
+    // source_name_object intentionally left null for proxy methods
+  } else {
+    line_number = method->GetLineNumFromDexPC(dex_pc);
+    if (line_number == -1) {
+      // Make the line_number field of StackFrameInfo hold the dex pc.
+      // source_name_object is intentionally left null if we failed to map the dex pc to
+      // a line number (most probably because there is no debug info). See b/30183883.
+      line_number = static_cast<int32_t>(dex_pc);
+    } else {
+      const char* source_file = method->GetDeclaringClassSourceFile();
+      if (source_file != nullptr) {
+        source_name_object.Assign(mirror::String::AllocFromModifiedUtf8(soa.Self(), source_file));
+        if (source_name_object == nullptr) {
+          soa.Self()->AssertPendingOOMException();
+          return nullptr;
+        }
+      }
+    }
+  }
+
+  Handle<mirror::Class> declaring_class_object(
+      hs.NewHandle<mirror::Class>(method->GetDeclaringClass()));
+
+  ArtMethod* interface_method = method->GetInterfaceMethodIfProxy(kRuntimePointerSize);
+  const char* method_name = interface_method->GetName();
+  CHECK(method_name != nullptr);
+  Handle<mirror::String> method_name_object(
+      hs.NewHandle(mirror::String::AllocFromModifiedUtf8(soa.Self(), method_name)));
+  if (method_name_object == nullptr) {
+    soa.Self()->AssertPendingOOMException();
+    return nullptr;
+  }
+
+  dex::ProtoIndex proto_idx =
+      method->GetDexFile()->GetIndexForProtoId(interface_method->GetPrototype());
+  Handle<mirror::MethodType> method_type_object(hs.NewHandle<mirror::MethodType>(
+      class_linker->ResolveMethodType(soa.Self(), proto_idx, interface_method)));
+  if (method_type_object == nullptr) {
+    soa.Self()->AssertPendingOOMException();
+    return nullptr;
+  }
+
+  stackFrameInfo->AssignFields(declaring_class_object,
+                               method_type_object,
+                               method_name_object,
+                               source_name_object,
+                               line_number,
+                               static_cast<int32_t>(dex_pc));
+  return stackFrameInfo.Get();
+}
+
+constexpr jlong FILL_CLASS_REFS_ONLY = 0x2;  // StackStreamFactory.FILL_CLASS_REFS_ONLY
+
+jint Thread::InternalStackTraceToStackFrameInfoArray(
+    const ScopedObjectAccessAlreadyRunnable& soa,
+    jlong mode,  // See java.lang.StackStreamFactory for the mode flags
+    jobject internal,
+    jint startLevel,
+    jint batchSize,
+    jint startBufferIndex,
+    jobjectArray output_array) {
+  // Decode the internal stack trace into the depth, method trace and PC trace.
+  // Subtract one for the methods and PC trace.
+  int32_t depth = soa.Decode<mirror::Array>(internal)->GetLength() - 1;
+  DCHECK_GE(depth, 0);
+
+  StackHandleScope<6> hs(soa.Self());
+  Handle<mirror::ObjectArray<mirror::Object>> framesOrClasses =
+      hs.NewHandle(soa.Decode<mirror::ObjectArray<mirror::Object>>(output_array));
+
+  jint endBufferIndex = startBufferIndex;
+
+  if (startLevel < 0 || startLevel >= depth) {
+    return endBufferIndex;
+  }
+
+  int32_t bufferSize = framesOrClasses->GetLength();
+  if (startBufferIndex < 0 || startBufferIndex >= bufferSize) {
+    return endBufferIndex;
+  }
+
+  // The FILL_CLASS_REFS_ONLY flag is defined in AbstractStackWalker.fetchStackFrames() javadoc.
+  bool isClassArray = (mode & FILL_CLASS_REFS_ONLY) != 0;
+
+  Handle<mirror::ObjectArray<mirror::Object>> decoded_traces =
+      hs.NewHandle(soa.Decode<mirror::Object>(internal)->AsObjectArray<mirror::Object>());
+  // Methods and dex PC trace is element 0.
+  DCHECK(decoded_traces->Get(0)->IsIntArray() || decoded_traces->Get(0)->IsLongArray());
+  Handle<mirror::PointerArray> method_trace =
+      hs.NewHandle(ObjPtr<mirror::PointerArray>::DownCast(decoded_traces->Get(0)));
+
+  ClassLinker* const class_linker = Runtime::Current()->GetClassLinker();
+  Handle<mirror::Class> sfi_class =
+      hs.NewHandle(class_linker->FindSystemClass(soa.Self(), "Ljava/lang/StackFrameInfo;"));
+  DCHECK(sfi_class != nullptr);
+
+  MutableHandle<mirror::StackFrameInfo> frame = hs.NewHandle<mirror::StackFrameInfo>(nullptr);
+  MutableHandle<mirror::Class> clazz = hs.NewHandle<mirror::Class>(nullptr);
+  for (uint32_t i = static_cast<uint32_t>(startLevel); i < static_cast<uint32_t>(depth); ++i) {
+    if (endBufferIndex >= startBufferIndex + batchSize || endBufferIndex >= bufferSize) {
+      break;
+    }
+
+    ArtMethod* method = method_trace->GetElementPtrSize<ArtMethod*>(i, kRuntimePointerSize);
+    if (isClassArray) {
+      clazz.Assign(method->GetDeclaringClass());
+      framesOrClasses->Set(endBufferIndex, clazz.Get());
+    } else {
+      // Prepare parameters for fields in StackFrameInfo
+      uint32_t dex_pc = method_trace->GetElementPtrSize<uint32_t>(
+          i + static_cast<uint32_t>(method_trace->GetLength()) / 2, kRuntimePointerSize);
+
+      ObjPtr<mirror::Object> frameObject = framesOrClasses->Get(endBufferIndex);
+      // If libcore didn't allocate the object, we just stop here, but it's unlikely.
+      if (frameObject == nullptr || !frameObject->InstanceOf(sfi_class.Get())) {
+        break;
+      }
+      frame.Assign(ObjPtr<mirror::StackFrameInfo>::DownCast(frameObject));
+      frame.Assign(InitStackFrameInfo(soa, class_linker, frame, method, dex_pc));
+      // Break if InitStackFrameInfo fails to allocate objects or assign the fields.
+      if (frame == nullptr) {
+        break;
+      }
+    }
+
+    ++endBufferIndex;
+  }
+
+  return endBufferIndex;
+}
+
 jobjectArray Thread::CreateAnnotatedStackTrace(const ScopedObjectAccessAlreadyRunnable& soa) const {
   // This code allocates. Do not allow it to operate with a pending exception.
   if (IsExceptionPending()) {
@@ -3574,6 +3735,7 @@ void Thread::DumpThreadOffset(std::ostream& os, uint32_t offset) {
   QUICK_ENTRY_POINT_INFO(pAputObject)
   QUICK_ENTRY_POINT_INFO(pJniMethodStart)
   QUICK_ENTRY_POINT_INFO(pJniMethodEnd)
+  QUICK_ENTRY_POINT_INFO(pJniMethodEntryHook)
   QUICK_ENTRY_POINT_INFO(pJniDecodeReferenceResult)
   QUICK_ENTRY_POINT_INFO(pJniLockObject)
   QUICK_ENTRY_POINT_INFO(pJniUnlockObject)
@@ -3691,11 +3853,14 @@ void Thread::DumpThreadOffset(std::ostream& os, uint32_t offset) {
   os << offset;
 }
 
-void Thread::QuickDeliverException() {
+void Thread::QuickDeliverException(bool is_method_exit_exception) {
   // Get exception from thread.
   ObjPtr<mirror::Throwable> exception = GetException();
   CHECK(exception != nullptr);
   if (exception == GetDeoptimizationException()) {
+    // This wasn't a real exception, so just clear it here. If there was an actual exception it
+    // will be recorded in the DeoptimizationContext and it will be restored later.
+    ClearException();
     artDeoptimize(this);
     UNREACHABLE();
   }
@@ -3750,7 +3915,7 @@ void Thread::QuickDeliverException() {
   if (Dbg::IsForcedInterpreterNeededForException(this) || force_deopt || IsForceInterpreter()) {
     NthCallerVisitor visitor(this, 0, false);
     visitor.WalkStack();
-    if (Runtime::Current()->IsAsyncDeoptimizeable(visitor.caller_pc)) {
+    if (Runtime::Current()->IsAsyncDeoptimizeable(visitor.GetOuterMethod(), visitor.caller_pc)) {
       // method_type shouldn't matter due to exception handling.
       const DeoptimizationMethodType method_type = DeoptimizationMethodType::kDefault;
       // Save the exception into the deoptimization context so it can be restored
@@ -3781,7 +3946,7 @@ void Thread::QuickDeliverException() {
   // resolution.
   ClearException();
   QuickExceptionHandler exception_handler(this, false);
-  exception_handler.FindCatch(exception);
+  exception_handler.FindCatch(exception, is_method_exit_exception);
   if (exception_handler.GetClearException()) {
     // Exception was cleared as part of delivery.
     DCHECK(!IsExceptionPending());
@@ -3851,7 +4016,11 @@ class ReferenceMapVisitor : public StackVisitor {
         // We are visiting the references in compiled frames, so we do not need
         // to know the inlined frames.
       : StackVisitor(thread, context, StackVisitor::StackWalkKind::kSkipInlinedFrames),
-        visitor_(visitor) {}
+        visitor_(visitor) {
+    gc::Heap* const heap = Runtime::Current()->GetHeap();
+    visit_declaring_class_ = heap->CurrentCollectorType() != gc::CollectorType::kCollectorTypeCMC
+                             || !heap->MarkCompactCollector()->IsCompacting(Thread::Current());
+  }
 
   bool VisitFrame() override REQUIRES_SHARED(Locks::mutator_lock_) {
     if (false) {
@@ -3896,6 +4065,9 @@ class ReferenceMapVisitor : public StackVisitor {
   void VisitDeclaringClass(ArtMethod* method)
       REQUIRES_SHARED(Locks::mutator_lock_)
       NO_THREAD_SAFETY_ANALYSIS {
+    if (!visit_declaring_class_) {
+      return;
+    }
     ObjPtr<mirror::Class> klass = method->GetDeclaringClassUnchecked<kWithoutReadBarrier>();
     // klass can be null for runtime methods.
     if (klass != nullptr) {
@@ -3978,7 +4150,7 @@ class ReferenceMapVisitor : public StackVisitor {
         // (PC shall be known thanks to the runtime frame for throwing SIOOBE).
         // Note that JIT does not emit that intrinic implementation.
         const void* pc = reinterpret_cast<const void*>(GetCurrentQuickFramePc());
-        if (pc != 0u && Runtime::Current()->GetHeap()->IsInBootImageOatFile(pc)) {
+        if (pc != nullptr && Runtime::Current()->GetHeap()->IsInBootImageOatFile(pc)) {
           return;
         }
       }
@@ -4189,6 +4361,7 @@ class ReferenceMapVisitor : public StackVisitor {
 
   // Visitor for when we visit a root.
   RootVisitor& visitor_;
+  bool visit_declaring_class_;
 };
 
 class RootCallbackVisitor {
@@ -4282,6 +4455,9 @@ void Thread::VisitRoots(RootVisitor* visitor) {
 
 static void SweepCacheEntry(IsMarkedVisitor* visitor, const Instruction* inst, size_t* value)
     REQUIRES_SHARED(Locks::mutator_lock_) {
+  // WARNING: The interpreter will not modify the cache while this method is running in GC.
+  //          However, ClearAllInterpreterCaches can still run if any dex file is closed.
+  //          Therefore the cache entry can be nulled at any point through this method.
   if (inst == nullptr) {
     return;
   }
@@ -4307,6 +4483,9 @@ static void SweepCacheEntry(IsMarkedVisitor* visitor, const Instruction* inst, s
     case Opcode::CONST_STRING:
     case Opcode::CONST_STRING_JUMBO: {
       mirror::Object* object = reinterpret_cast<mirror::Object*>(*value);
+      if (object == nullptr) {
+        return;
+      }
       mirror::Object* new_object = visitor->IsMarked(object);
       // We know the string is marked because it's a strongly-interned string that
       // is always alive (see b/117621117 for trying to make those strings weak).
@@ -4425,6 +4604,15 @@ bool Thread::HasTlab() const {
   return has_tlab;
 }
 
+void Thread::AdjustTlab(size_t slide_bytes) {
+  if (HasTlab()) {
+    tlsPtr_.thread_local_start -= slide_bytes;
+    tlsPtr_.thread_local_pos -= slide_bytes;
+    tlsPtr_.thread_local_end -= slide_bytes;
+    tlsPtr_.thread_local_limit -= slide_bytes;
+  }
+}
+
 std::ostream& operator<<(std::ostream& os, const Thread& thread) {
   thread.ShortDump(os);
   return os;
@@ -4534,7 +4722,7 @@ bool Thread::IsAotCompiler() {
 mirror::Object* Thread::GetPeerFromOtherThread() const {
   DCHECK(tlsPtr_.jpeer == nullptr);
   mirror::Object* peer = tlsPtr_.opeer;
-  if (kUseReadBarrier && Current()->GetIsGcMarking()) {
+  if (gUseReadBarrier && Current()->GetIsGcMarking()) {
     // We may call Thread::Dump() in the middle of the CC thread flip and this thread's stack
     // may have not been flipped yet and peer may be a from-space (stale) ref. So explicitly
     // mark/forward it here.
@@ -4606,7 +4794,9 @@ void ScopedExceptionStorage::SuppressOldException(const char* message) {
   CHECK(self_->IsExceptionPending()) << *self_;
   ObjPtr<mirror::Throwable> old_suppressed(excp_.Get());
   excp_.Assign(self_->GetException());
-  LOG(WARNING) << message << "Suppressing old exception: " << old_suppressed->Dump();
+  if (old_suppressed != nullptr) {
+    LOG(WARNING) << message << "Suppressing old exception: " << old_suppressed->Dump();
+  }
   self_->ClearException();
 }
 

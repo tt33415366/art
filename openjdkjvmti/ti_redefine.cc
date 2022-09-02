@@ -1423,8 +1423,9 @@ class RedefinitionDataIter {
 
   RedefinitionDataIter(const RedefinitionDataIter&) = default;
   RedefinitionDataIter(RedefinitionDataIter&&) = default;
-  RedefinitionDataIter& operator=(const RedefinitionDataIter&) = default;
-  RedefinitionDataIter& operator=(RedefinitionDataIter&&) = default;
+  // Assignments are deleted because holder_ is a reference.
+  RedefinitionDataIter& operator=(const RedefinitionDataIter&) = delete;
+  RedefinitionDataIter& operator=(RedefinitionDataIter&&) = delete;
 
   bool operator==(const RedefinitionDataIter& other) const
       REQUIRES_SHARED(art::Locks::mutator_lock_) {
@@ -1651,10 +1652,12 @@ bool Redefiner::ClassRedefinition::AllocateAndRememberNewDexFileCookie(
   art::MutableHandle<art::mirror::LongArray> old_cookie(
       hs.NewHandle<art::mirror::LongArray>(nullptr));
   bool has_older_cookie = false;
-  // See if we already have a cookie that a previous redefinition got from the same classloader.
+  // See if we already have a cookie that a previous redefinition got from the same classloader
+  // and the same JavaDex file.
   for (auto old_data = cur_data->GetHolder().begin(); old_data != *cur_data; ++old_data) {
-    if (old_data.GetSourceClassLoader() == source_class_loader.Get()) {
-      // Since every instance of this classloader should have the same cookie associated with it we
+    if (old_data.GetSourceClassLoader() == source_class_loader.Get() &&
+        old_data.GetJavaDexFile() == dex_file_obj.Get()) {
+      // Since every instance of this JavaDex file should have the same cookie associated with it we
       // can stop looking here.
       has_older_cookie = true;
       old_cookie.Assign(old_data.GetNewDexFileCookie());
@@ -1679,12 +1682,13 @@ bool Redefiner::ClassRedefinition::AllocateAndRememberNewDexFileCookie(
 
   // Save the cookie.
   cur_data->SetNewDexFileCookie(new_cookie.Get());
-  // If there are other copies of this same classloader we need to make sure that we all have the
-  // same cookie.
+  // If there are other copies of the same classloader and the same JavaDex file we need to
+  // make sure that we all have the same cookie.
   if (has_older_cookie) {
     for (auto old_data = cur_data->GetHolder().begin(); old_data != *cur_data; ++old_data) {
       // We will let the GC take care of the cookie we allocated for this one.
-      if (old_data.GetSourceClassLoader() == source_class_loader.Get()) {
+      if (old_data.GetSourceClassLoader() == source_class_loader.Get() &&
+          old_data.GetJavaDexFile() == dex_file_obj.Get()) {
         old_data.SetNewDexFileCookie(new_cookie.Get());
       }
     }
@@ -2909,6 +2913,27 @@ void Redefiner::ClassRedefinition::UpdateClassStructurally(const RedefinitionDat
   // affect the declaring_class field of all the obsolete objects, which is unfortunate and needs to
   // be undone. This replaces the mirror::Class in 'holder' as well. It's magic!
   HeapExtensions::ReplaceReferences(driver_->self_, map);
+
+  // Undo the replacement of old_class with new_class for the methods / fields on the old_class.
+  // It is hard to ensure that we don't replace the declaring class of the old class field / methods
+  // isn't impacted by ReplaceReferences. It is just simpler to undo the replacement here.
+  std::for_each(
+      old_classes_vec.cbegin(),
+      old_classes_vec.cend(),
+      [](art::ObjPtr<art::mirror::Class> orig) REQUIRES_SHARED(art::Locks::mutator_lock_) {
+        orig->VisitMethods(
+            [&](art::ArtMethod* method) REQUIRES_SHARED(art::Locks::mutator_lock_) {
+              if (method->IsCopied()) {
+                // Copied methods have interfaces as their declaring class.
+                return;
+              }
+              method->SetDeclaringClass(orig);
+            },
+            art::kRuntimePointerSize);
+        orig->VisitFields([&](art::ArtField* field) REQUIRES_SHARED(art::Locks::mutator_lock_) {
+          field->SetDeclaringClass(orig);
+        });
+      });
 
   // Save the old class so that the JIT gc doesn't get confused by it being collected before the
   // jit code. This is also needed to keep the dex-caches of any obsolete methods live.

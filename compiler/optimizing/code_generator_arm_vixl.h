@@ -84,7 +84,7 @@ static const vixl::aarch32::RegisterList kCoreCalleeSaves = vixl::aarch32::Regis
                                 vixl::aarch32::r6,
                                 vixl::aarch32::r7),
     // Do not consider r8 as a callee-save register with Baker read barriers.
-    ((kEmitCompilerReadBarrier && kUseBakerReadBarrier)
+    ((gUseReadBarrier && kUseBakerReadBarrier)
          ? vixl::aarch32::RegisterList()
          : vixl::aarch32::RegisterList(vixl::aarch32::r8)),
     vixl::aarch32::RegisterList(vixl::aarch32::r10,
@@ -602,7 +602,6 @@ class CodeGeneratorARMVIXL : public CodeGenerator {
   struct PcRelativePatchInfo {
     PcRelativePatchInfo(const DexFile* dex_file, uint32_t off_or_idx)
         : target_dex_file(dex_file), offset_or_index(off_or_idx) { }
-    PcRelativePatchInfo(PcRelativePatchInfo&& other) = default;
 
     // Target dex file or null for .data.bmig.rel.ro patches.
     const DexFile* target_dex_file;
@@ -639,6 +638,7 @@ class CodeGeneratorARMVIXL : public CodeGenerator {
                                                 dex::TypeIndex type_index,
                                                 Handle<mirror::Class> handle);
 
+  void LoadBootImageRelRoEntry(vixl::aarch32::Register reg, uint32_t boot_image_offset);
   void LoadBootImageAddress(vixl::aarch32::Register reg, uint32_t boot_image_reference);
   void LoadTypeForBootImageIntrinsic(vixl::aarch32::Register reg, TypeReference type_reference);
   void LoadIntrinsicDeclaringClass(vixl::aarch32::Register reg, HInvoke* invoke);

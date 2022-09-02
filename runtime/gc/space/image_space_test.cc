@@ -151,16 +151,16 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
 
   const char test_string[] = "SharedBootImageExtensionTestString";
   size_t test_string_length = std::size(test_string) - 1u;  // Equals UTF-16 length.
-  uint32_t hash = ComputeUtf16HashFromModifiedUtf8(test_string, test_string_length);
-  InternTable::Utf8String utf8_test_string(test_string_length, test_string, hash);
-  auto contains_test_string = [utf8_test_string](ImageSpace* space)
+  uint32_t hash = InternTable::Utf8String::Hash(test_string_length, test_string);
+  InternTable::Utf8String utf8_test_string(test_string_length, test_string);
+  auto contains_test_string = [utf8_test_string, hash](ImageSpace* space)
       REQUIRES_SHARED(Locks::mutator_lock_) {
     const ImageHeader& image_header = space->GetImageHeader();
     if (image_header.GetInternedStringsSection().Size() != 0u) {
       const uint8_t* data = space->Begin() + image_header.GetInternedStringsSection().Offset();
       size_t read_count;
       InternTable::UnorderedSet temp_set(data, /*make_copy_of_data=*/ false, &read_count);
-      return temp_set.find(utf8_test_string) != temp_set.end();
+      return temp_set.FindWithHash(utf8_test_string, hash) != temp_set.end();
     } else {
       return false;
     }
@@ -319,56 +319,6 @@ TEST_F(DexoptTest, ValidateOatFile) {
   // Remove the multidex file.
   EXPECT_EQ(0, unlink(multidex1.c_str()));
   EXPECT_FALSE(ImageSpace::ValidateOatFile(*oat, &error_msg));
-}
-
-TEST_F(DexoptTest, Checksums) {
-  Runtime* runtime = Runtime::Current();
-  ASSERT_TRUE(runtime != nullptr);
-  ASSERT_FALSE(runtime->GetHeap()->GetBootImageSpaces().empty());
-
-  std::vector<std::string> bcp = runtime->GetBootClassPath();
-  std::vector<std::string> bcp_locations = runtime->GetBootClassPathLocations();
-  std::vector<const DexFile*> dex_files = runtime->GetClassLinker()->GetBootClassPath();
-
-  std::string error_msg;
-  auto create_and_verify = [&]() {
-    std::string checksums = gc::space::ImageSpace::GetBootClassPathChecksums(
-        ArrayRef<gc::space::ImageSpace* const>(runtime->GetHeap()->GetBootImageSpaces()),
-        ArrayRef<const DexFile* const>(dex_files));
-    return gc::space::ImageSpace::VerifyBootClassPathChecksums(
-        checksums,
-        android::base::Join(bcp_locations, ':'),
-        ArrayRef<const std::string>(runtime->GetImageLocations()),
-        ArrayRef<const std::string>(bcp_locations),
-        ArrayRef<const std::string>(bcp),
-        /*boot_class_path_fds=*/ ArrayRef<const int>(),
-        kRuntimeISA,
-        &error_msg);
-  };
-
-  ASSERT_TRUE(create_and_verify()) << error_msg;
-
-  std::vector<std::unique_ptr<const DexFile>> opened_dex_files;
-  for (const std::string& src : { GetDexSrc1(), GetDexSrc2() }) {
-    std::vector<std::unique_ptr<const DexFile>> new_dex_files;
-    const ArtDexFileLoader dex_file_loader;
-    ASSERT_TRUE(dex_file_loader.Open(src.c_str(),
-                                     src,
-                                     /*verify=*/ true,
-                                     /*verify_checksum=*/ false,
-                                     &error_msg,
-                                     &new_dex_files))
-        << error_msg;
-
-    bcp.push_back(src);
-    bcp_locations.push_back(src);
-    for (std::unique_ptr<const DexFile>& df : new_dex_files) {
-      dex_files.push_back(df.get());
-      opened_dex_files.push_back(std::move(df));
-    }
-
-    ASSERT_TRUE(create_and_verify()) << error_msg;
-  }
 }
 
 template <bool kImage, bool kRelocate>
