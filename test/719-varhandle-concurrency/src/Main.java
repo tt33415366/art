@@ -46,8 +46,7 @@ public class Main {
    * for example with gcstress, set a cap duration in MAX_RETRIES_DURATION. With this at least one
    * iteration would run, but there could be fewer retries if each of them takes too long. */
   private static final int RETRIES = 50;
-  // b/235431387: timeout reduced from 1 minute
-  private static final Duration MAX_RETRIES_DURATION = Duration.ofSeconds(15);
+  private static final Duration MAX_RETRIES_DURATION = Duration.ofMinutes(1);
 
   public static void main(String[] args) throws Throwable {
     testConcurrentProcessing(new CompareAndExchangeRunnerFactory(), "compareAndExchange");
