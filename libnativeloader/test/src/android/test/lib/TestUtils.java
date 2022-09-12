@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,16 @@
  * limitations under the License.
  */
 
-import java.lang.reflect.Modifier;
+package android.test.lib;
 
-public abstract class MyModifier extends Modifier {
-  // Reference to MyModifier.classModifiers() shall resolve to
-  // Modifier.classModifiers() which should be easily inlined.
+import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
+
+public final class TestUtils {
+    public static void assertLinkerNamespaceError(String libraryName) {
+        Throwable t =
+                assertThrows(UnsatisfiedLinkError.class, () -> System.loadLibrary(libraryName));
+        assertThat(t.getMessage())
+                .containsMatch("dlopen failed: .* is not accessible for the namespace");
+    }
 }

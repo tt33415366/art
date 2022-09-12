@@ -14,23 +14,17 @@
  * limitations under the License.
  */
 
-package android.test.app;
+#ifndef ART_TEST_993_BREAKPOINTS_NON_DEBUGGABLE_ONLOAD_H_
+#define ART_TEST_993_BREAKPOINTS_NON_DEBUGGABLE_ONLOAD_H_
 
-import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+#include "jni.h"
 
-@SmallTest
-@RunWith(AndroidJUnit4.class)
-public class ProductAppTest {
-    @Test
-    public void testLoadLibraries() {
-        System.loadLibrary("foo.oem1");
-        System.loadLibrary("bar.oem1");
-        System.loadLibrary("foo.oem2");
-        System.loadLibrary("bar.oem2");
-        System.loadLibrary("foo.product1");
-        System.loadLibrary("bar.product1");
-    }
-}
+namespace art {
+namespace Test993BreakpointsNonDebuggable {
+
+jint OnLoad(JavaVM* vm, char* options, void* reserved);
+
+}  // namespace Test993BreakpointsNonDebuggable
+}  // namespace art
+
+#endif  // ART_TEST_993_BREAKPOINTS_NON_DEBUGGABLE_ONLOAD_H_
