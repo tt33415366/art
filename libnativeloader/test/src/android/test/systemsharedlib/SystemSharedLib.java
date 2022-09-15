@@ -14,17 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef ART_TEST_993_BREAKPOINTS_NON_DEBUGGABLE_ONLOAD_H_
-#define ART_TEST_993_BREAKPOINTS_NON_DEBUGGABLE_ONLOAD_H_
+package android.test.systemsharedlib;
 
-#include "jni.h"
-
-namespace art {
-namespace Test993BreakpointsNonDebuggable {
-
-jint OnLoad(JavaVM* vm, char* options, void* reserved);
-
-}  // namespace Test993BreakpointsNonDebuggable
-}  // namespace art
-
-#endif  // ART_TEST_993_BREAKPOINTS_NON_DEBUGGABLE_ONLOAD_H_
+public final class SystemSharedLib {
+    public static void loadLibrary(String name) { System.loadLibrary(name); }
+}
