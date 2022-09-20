@@ -1336,8 +1336,7 @@
         "tests": ["2009-structural-local-ref",
                   "2035-structural-native-method",
 	          "2036-structural-subclass-shadow",
-	          "2040-huge-native-alloc",
-	          "905-object-free"],
+	          "2040-huge-native-alloc"],
         "env_vars": {"ART_USE_READ_BARRIER": "false"},
         "bug": "b/242181443",
         "description": ["Tests temporarily disabled for userfaultfd GC. Remove once native GC-root updation is implemented."]
@@ -1547,6 +1546,18 @@
         "tests": ["715-clinit-implicit-parameter-annotations"],
         "description": ["Change for Annotation.toString() in JDK 17."],
         "bug": "b/243500721",
+        "variant": "jvm"
+    },
+    {
+        "tests": ["1907-suspend-list-self-twice"],
+        "description": ["Change of behavior when used with JDK 17."],
+        "bug": "b/243139124",
+        "variant": "jvm"
+    },
+    {
+        "tests": ["1921-suspend-native-recursive-monitor"],
+        "description": ["Change of behavior when used with JDK 17."],
+        "bug": "b/242985234",
         "variant": "jvm"
     }
 ]

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,8 @@
  * limitations under the License.
  */
 
-import java.lang.reflect.Modifier;
+package android.test.systemextsharedlib;
 
-public abstract class MyModifier extends Modifier {
-  // Reference to MyModifier.classModifiers() shall resolve to
-  // Modifier.classModifiers() which should be easily inlined.
+public final class SystemExtSharedLib {
+    public static void loadLibrary(String name) { System.loadLibrary(name); }
 }

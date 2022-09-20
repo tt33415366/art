@@ -302,10 +302,27 @@ class Runtime {
     return boot_class_path_locations_.empty() ? boot_class_path_ : boot_class_path_locations_;
   }
 
-  // Dynamically add an element to boot class path.
+  // Dynamically adds an element to boot class path.
   void AppendToBootClassPath(const std::string& filename,
                              const std::string& location,
                              const std::vector<std::unique_ptr<const art::DexFile>>& dex_files);
+
+  // Same as above, but takes raw pointers.
+  void AppendToBootClassPath(const std::string& filename,
+                             const std::string& location,
+                             const std::vector<const art::DexFile*>& dex_files);
+
+  // Same as above, but also takes a dex cache for each dex file.
+  void AppendToBootClassPath(
+      const std::string& filename,
+      const std::string& location,
+      const std::vector<std::pair<const art::DexFile*, ObjPtr<mirror::DexCache>>>&
+          dex_files_and_cache);
+
+  // Dynamically adds an element to boot class path and takes ownership of the dex files.
+  void AddExtraBootDexFiles(const std::string& filename,
+                            const std::string& location,
+                            std::vector<std::unique_ptr<const art::DexFile>>&& dex_files);
 
   const std::vector<int>& GetBootClassPathFds() const {
     return boot_class_path_fds_;
@@ -442,8 +459,7 @@ class Runtime {
 
   // Sweep system weaks, the system weak is deleted if the visitor return null. Otherwise, the
   // system weak is updated to be the visitor's returned value.
-  void SweepSystemWeaks(IsMarkedVisitor* visitor)
-      REQUIRES_SHARED(Locks::mutator_lock_);
+  void SweepSystemWeaks(IsMarkedVisitor* visitor) REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Walk all reflective objects and visit their targets as well as any method/fields held by the
   // runtime threads that are marked as being reflective.
@@ -1109,6 +1125,8 @@ class Runtime {
   // jars, which is encoded into .oat files.
   static std::string GetApexVersions(ArrayRef<const std::string> boot_class_path_locations);
 
+  bool AllowInMemoryCompilation() const { return allow_in_memory_compilation_; }
+
  private:
   static void InitPlatformSignalHandlers();
 
@@ -1151,6 +1169,8 @@ class Runtime {
 
   // Caches the apex versions produced by `GetApexVersions`.
   void InitializeApexVersions();
+
+  void AppendToBootClassPath(const std::string& filename, const std::string& location);
 
   // A pointer to the active runtime or null.
   static Runtime* instance_;
@@ -1460,6 +1480,9 @@ class Runtime {
 
   // True if files in /data/misc/apexdata/com.android.art are considered untrustworthy.
   bool deny_art_apex_data_files_;
+
+  // Whether to allow compiling the boot classpath in memory when the given boot image is unusable.
+  bool allow_in_memory_compilation_ = false;
 
   // Saved environment.
   class EnvSnapshot {
