@@ -16,16 +16,16 @@
  -->
 
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="android.test.app.system">
-
+          package="android.test.app.system_priv">
+    <instrumentation android:name="androidx.test.runner.AndroidJUnitRunner"
+                     android:targetPackage="android.test.app.system_priv" />
     <application>
-        <activity android:name="android.test.app.TestActivity" >
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+        <uses-library android:name="android.test.systemsharedlib" />
+        <uses-library android:name="android.test.systemextsharedlib" />
+        <!-- System apps get a shared classloader namespace, so they don't need
+             uses-native-library entries for anything in /system. -->
+        <uses-native-library android:required="false" android:name="libfoo.product1.so" />
+        <uses-native-library android:required="false" android:name="libbar.product1.so" />
     </application>
-
 </manifest>
 
