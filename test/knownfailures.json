@@ -81,7 +81,7 @@
     },
     {
         "tests" : "629-vdex-speed",
-        "variant": "interp-ac | interpreter | no-prebuild",
+        "variant": "interp-ac | interpreter | no-prebuild | debuggable | trace",
         "description": "629 requires compilation."
     },
     {
@@ -1016,6 +1016,7 @@
           "816-illegal-new-array",
           "819-verification-runtime",
           "823-cha-inlining",
+          "842-vdex-hard-failure",
           "900-hello-plugin",
           "901-hello-ti-agent",
           "903-hello-tagging",
@@ -1211,7 +1212,8 @@
                   "2036-structural-subclass-shadow",
                   "2038-hiddenapi-jvmti-ext",
                   "2040-huge-native-alloc",
-                  "2238-checker-polymorphic-recursive-inlining"],
+                  "2238-checker-polymorphic-recursive-inlining",
+                  "2240-tracing-non-invokable-method"],
         "variant": "jvm",
         "description": ["Doesn't run on RI."]
     },
