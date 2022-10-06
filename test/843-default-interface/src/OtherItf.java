@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,11 @@
  * limitations under the License.
  */
 
-public class SuperClass {
-  public int $noinline$returnInt() {
-    return 42;
-  }
+public interface OtherItf {
+  // javac will complain when compiling SubItf if both superinterfaces Itf and OtherItf
+  // define a default method bar(), so we do not define bar() here.
+  // What will be loaded at runtime will actually be src2/OtherItf.
+  // public default String bar() {
+  //   return "OtherItf";
+  // }
 }

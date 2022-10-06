@@ -545,7 +545,8 @@ def guess_target_arch_name():
     # Check whether this is a device with native bridge. Currently this is hardcoded
     # to x86 + arm.
     guess_path=f"{chroot}/system/framework/art_boot_images"
-    x86_arm=run(f"adb shell ls {guess_path} | sort | grep -E '^(arm|x86)$'").stdout
+    # Use check=False because if grep does not match anything, it returns exit code 1.
+    x86_arm=run(f"adb shell ls {guess_path} | sort | grep -E '^(arm|x86)$'", check=False).stdout
     # Collapse line-breaks into spaces
     x86_arm=x86_arm.replace("\n", " ")
     if x86_arm == "arm x86":
@@ -556,8 +557,9 @@ def guess_target_arch_name():
         else:
             target_arch_name="x86"
     else:
-        grep32bit=run(f"adb shell ls {guess_path} | grep -E '^(arm|x86)$'").stdout
-        grep64bit=run(f"adb shell ls {guess_path} | grep -E '^(arm64|x86_64)$'").stdout
+        # Use check=False because if grep does not match anything, it returns exit code 1.
+        grep32bit=run(f"adb shell ls {guess_path} | grep -E '^(arm|x86)$'", check=False).stdout
+        grep64bit=run(f"adb shell ls {guess_path} | grep -E '^(arm64|x86_64)$'", check=False).stdout
         if suffix64 == "64":
             target_arch_name=grep64bit
         else:
@@ -926,40 +928,6 @@ if dump_cfg == "true":
             run(f"adb pull {chroot}/{cfg_output_dir}/{cfg_output} {dump_cfg_path}")
         else:
             run(f"cp {cfg_output_dir}/{cfg_output} {dump_cfg_path}")
-
-# Attempt bisection only if the test failed.
-# TODO: Implement support for chroot-based bisection search.
-""" TODO
-if bisection_search == "yes" and good != "yes":
-    # Bisecting works by skipping different optimization passes which breaks checker assertions.
-    if run_checker == "yes":
-      print("${test_dir}: not bisecting, checker test.")
-    else:
-      # Increase file size limit, bisection search can generate large logfiles.
-      print("${test_dir}: bisecting...")
-      cwd=`pwd`
-      maybe_device_mode=""
-      raw_cmd=""
-      if target_mode == "yes":
-        # Produce cmdline.sh in $chroot_dex_location. "$@" is passed as a runtime option
-        # so that cmdline.sh forwards its arguments to dalvikvm. invoke-with is set
-        # to exec in order to preserve pid when calling dalvikvm. This is required
-        # for bisection search to correctly retrieve logs from device.
-        "./${run}" "${run_args[@]}" --runtime-option '"$@"' --invoke-with exec --dry-run "$@" &> /dev/null
-        adb shell chmod u+x "$chroot_dex_location/cmdline.sh"
-        maybe_device_mode="--device"
-        raw_cmd="$DEX_LOCATION/cmdline.sh"
-      else:
-        raw_cmd="$cwd/${run} --external-log-tags "${run_args[@]}" $@"
-      # TODO: Pass a `--chroot` option to the bisection_search.py script and use it there.
-      $ANDROID_BUILD_TOP/art/tools/bisection_search/bisection_search.py \
-        $maybe_device_mode \
-        --raw-cmd="$raw_cmd" \
-        --check-script="$cwd/check" \
-        --expected-output="$cwd/expected-stdout.txt" \
-        --logfile="$cwd/bisection_log.txt" \
-        --timeout=${timeout:-300}
-"""
 
 # Clean up test files.
 if (always_clean == "yes" or good == "yes") and never_clean == "no":

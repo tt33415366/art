@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,16 @@
  * limitations under the License.
  */
 
-public class SuperClass {
-  public int $noinline$returnInt() {
-    return 42;
+public class Main {
+  static SubItf itf = new Impl();
+  public static void main(String[] args) throws Exception {
+    // Loop enough to trigger the native OOME.
+    for (int i = 0; i < 50000; ++i) {
+      // Because the imt index was overwritten to 0, this call ended up
+      // in the conflict trampoline which wrongly updated the 0th entry
+      // of the imt table. This lead to this call always calling the
+      // conflict trampoline.
+      itf.foo();
+    }
   }
 }
