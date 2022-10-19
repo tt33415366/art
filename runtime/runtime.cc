@@ -288,7 +288,7 @@ Runtime::Runtime()
       is_native_debuggable_(false),
       async_exceptions_thrown_(false),
       non_standard_exits_enabled_(false),
-      is_java_debuggable_(false),
+      runtime_debug_state_(RuntimeDebugState::kNonJavaDebuggable),
       monitor_timeout_enable_(false),
       monitor_timeout_ns_(0),
       zygote_max_failed_boots_(0),
@@ -753,13 +753,16 @@ void Runtime::PreZygoteFork() {
     GetJit()->PreZygoteFork();
   }
   if (!heap_->HasZygoteSpace()) {
+    Thread* self = Thread::Current();
     // This is the first fork. Update ArtMethods in the boot classpath now to
     // avoid having forked apps dirty the memory.
-    ScopedObjectAccess soa(Thread::Current());
+
     // Ensure we call FixupStaticTrampolines on all methods that are
     // initialized.
-    class_linker_->MakeInitializedClassesVisiblyInitialized(soa.Self(), /*wait=*/ true);
-    UpdateMethodsPreFirstForkVisitor visitor(soa.Self(), class_linker_);
+    class_linker_->MakeInitializedClassesVisiblyInitialized(self, /*wait=*/ true);
+
+    ScopedObjectAccess soa(self);
+    UpdateMethodsPreFirstForkVisitor visitor(self, class_linker_);
     class_linker_->VisitClasses(&visitor);
   }
   heap_->PreZygoteFork();
@@ -1543,7 +1546,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   compiler_options_ = runtime_options.ReleaseOrDefault(Opt::CompilerOptions);
   for (const std::string& option : Runtime::Current()->GetCompilerOptions()) {
     if (option == "--debuggable") {
-      SetJavaDebuggable(true);
+      SetRuntimeDebugState(RuntimeDebugState::kJavaDebuggableAtInit);
       break;
     }
   }
@@ -2777,7 +2780,13 @@ void Runtime::EnterTransactionMode(bool strict, mirror::Class* root) {
     // Make initialized classes visibly initialized now. If that happened during the transaction
     // and then the transaction was aborted, we would roll back the status update but not the
     // ClassLinker's bookkeeping structures, so these classes would never be visibly initialized.
-    GetClassLinker()->MakeInitializedClassesVisiblyInitialized(Thread::Current(), /*wait=*/ true);
+    // TODO(b/253691761): We should normally be in a suspended state to call
+    // MakeInitializedClassesVisiblyInitialized with wait == true. Here we are not. Suspending
+    // here causes failures with heap poisoning, so this is apparently called where suspension is
+    // not allowed. Explain why this is safe as is, or fix.
+    GetClassLinker()->MakeInitializedClassesVisiblyInitialized(Thread::Current(),
+                                                               /*wait=*/ true,
+                                                               /*allowLockChecking=*/ false);
     // Pass the runtime `ArenaPool` to the transaction.
     arena_pool = GetArenaPool();
   } else {
@@ -3239,9 +3248,12 @@ class UpdateEntryPointsClassVisitor : public ClassVisitor {
   instrumentation::Instrumentation* const instrumentation_;
 };
 
-void Runtime::SetJavaDebuggable(bool value) {
-  is_java_debuggable_ = value;
-  // Do not call DeoptimizeBootImage just yet, the runtime may still be starting up.
+void Runtime::SetRuntimeDebugState(RuntimeDebugState state) {
+  if (state != RuntimeDebugState::kJavaDebuggableAtInit) {
+    // We never change the state if we started as a debuggable runtime.
+    DCHECK(runtime_debug_state_ != RuntimeDebugState::kJavaDebuggableAtInit);
+  }
+  runtime_debug_state_ = state;
 }
 
 void Runtime::DeoptimizeBootImage() {
@@ -3390,8 +3402,12 @@ void Runtime::SetJniIdType(JniIdType t) {
   WellKnownClasses::HandleJniIdTypeChange(Thread::Current()->GetJniEnv());
 }
 
+bool Runtime::IsSystemServerProfiled() const {
+  return IsSystemServer() && jit_options_->GetSaveProfilingInfo();
+}
+
 bool Runtime::GetOatFilesExecutable() const {
-  return !IsAotCompiler() && !(IsSystemServer() && jit_options_->GetSaveProfilingInfo());
+  return !IsAotCompiler() && !IsSystemServerProfiled();
 }
 
 void Runtime::ProcessWeakClass(GcRoot<mirror::Class>* root_ptr,

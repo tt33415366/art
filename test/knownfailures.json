@@ -386,7 +386,7 @@
         "test_patterns": ["616-cha.*"],
         "description": ["cha tests rely on knowing the exact set of optimizations available. ",
                         "Debuggable runtimes change the set of optimizations."],
-        "variant": "debuggable"
+        "variant": "debuggable | trace"
     },
     {
         "test_patterns": ["616-cha.*"],
@@ -1061,6 +1061,7 @@
           "988-method-trace",
           "989-method-trace-throw",
           "993-breakpoints",
+          "993-breakpoints-non-debuggable",
           "1002-notify-startup",
           "1003-metadata-section-strings",
           "1336-short-finalizer-timeout",
@@ -1303,7 +1304,7 @@
     },
     {
         "tests": ["1339-dead-reference-safe"],
-        "variant": "debuggable",
+        "variant": "debuggable | trace",
         "description": [ "Fails to eliminate dead reference when debuggable." ]
     },
     {
