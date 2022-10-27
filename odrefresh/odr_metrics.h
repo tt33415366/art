@@ -24,6 +24,7 @@
 #include <string>
 
 #include "base/macros.h"
+#include "exec_utils.h"
 #include "odr_metrics_record.h"
 
 namespace art {
@@ -54,7 +55,8 @@ class OdrMetrics final {
     kNoSpace = 2,
     kIoError = 3,
     kDex2OatError = 4,
-    kTimeLimitExceeded = 5,
+    // Value 5 was kTimeLimitExceeded, but has been removed in favour of
+    // reporting the exit code for Dex2Oat (set to ExecResult::kTimedOut)
     kStagingFailed = 6,
     kInstallFailed = 7,
   };
@@ -115,6 +117,9 @@ class OdrMetrics final {
   // Sets the current odrefresh processing stage.
   void SetStage(Stage stage);
 
+  // Sets the result of the current dex2oat invocation.
+  void SetDex2OatResult(const ExecResult& dex2oat_result);
+
   // Record metrics into an OdrMetricsRecord.
   // returns true on success, false if instance is not valid (because the trigger value is not set).
   bool ToRecord(/*out*/OdrMetricsRecord* record) const;
@@ -126,7 +131,7 @@ class OdrMetrics final {
   static int32_t GetFreeSpaceMiB(const std::string& path);
   static void WriteToFile(const std::string& path, const OdrMetrics* metrics);
 
-  void SetCompilationTime(int32_t seconds);
+  void SetCompilationTime(int32_t millis);
 
   const std::string cache_directory_;
   const std::string metrics_file_;
@@ -137,11 +142,29 @@ class OdrMetrics final {
   Stage stage_ = Stage::kUnknown;
   Status status_ = Status::kUnknown;
 
-  int32_t primary_bcp_compilation_seconds_ = 0;
-  int32_t secondary_bcp_compilation_seconds_ = 0;
-  int32_t system_server_compilation_seconds_ = 0;
   int32_t cache_space_free_start_mib_ = 0;
   int32_t cache_space_free_end_mib_ = 0;
+
+  // The total time spent on compiling primary BCP.
+  int32_t primary_bcp_compilation_millis_ = 0;
+
+  // The result of the dex2oat invocation for compiling primary BCP, or `std::nullopt` if dex2oat is
+  // not invoked.
+  std::optional<ExecResult> primary_bcp_dex2oat_result_;
+
+  // The total time spent on compiling secondary BCP.
+  int32_t secondary_bcp_compilation_millis_ = 0;
+
+  // The result of the dex2oat invocation for compiling secondary BCP, or `std::nullopt` if dex2oat
+  // is not invoked.
+  std::optional<ExecResult> secondary_bcp_dex2oat_result_;
+
+  // The total time spent on compiling system server.
+  int32_t system_server_compilation_millis_ = 0;
+
+  // The result of the last dex2oat invocation for compiling system server, or `std::nullopt` if
+  // dex2oat is not invoked.
+  std::optional<ExecResult> system_server_dex2oat_result_;
 
   friend class ScopedOdrCompilationTimer;
 };
@@ -155,8 +178,8 @@ class ScopedOdrCompilationTimer final {
 
   ~ScopedOdrCompilationTimer() {
     auto elapsed_time = std::chrono::steady_clock::now() - start_;
-    auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed_time);
-    metrics_.SetCompilationTime(static_cast<int32_t>(elapsed_seconds.count()));
+    auto elapsed_millis = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed_time);
+    metrics_.SetCompilationTime(static_cast<int32_t>(elapsed_millis.count()));
   }
 
  private:
