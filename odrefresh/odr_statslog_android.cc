@@ -71,8 +71,6 @@ int32_t TranslateStatus(int32_t art_metrics_status) {
       return metrics::statsd::ODREFRESH_REPORTED__STATUS__STATUS_IO_ERROR;
     case OdrMetrics::Status::kDex2OatError:
       return metrics::statsd::ODREFRESH_REPORTED__STATUS__STATUS_DEX2OAT_ERROR;
-    case OdrMetrics::Status::kTimeLimitExceeded:
-      return metrics::statsd::ODREFRESH_REPORTED__STATUS__STATUS_TIME_LIMIT_EXCEEDED;
     case OdrMetrics::Status::kStagingFailed:
       return metrics::statsd::ODREFRESH_REPORTED__STATUS__STATUS_STAGING_FAILED;
     case OdrMetrics::Status::kInstallFailed:
@@ -103,16 +101,11 @@ int32_t TranslateTrigger(int32_t art_metrics_trigger) {
 bool ReadValues(const char* metrics_file,
                 /*out*/ OdrMetricsRecord* record,
                 /*out*/ std::string* error_msg) {
-  std::ifstream ifs(metrics_file);
-  if (!ifs) {
-    *error_msg = android::base::StringPrintf(
-        "metrics file '%s' could not be opened: %s", metrics_file, strerror(errno));
-    return false;
-  }
-
-  ifs >> *record;
-  if (!ifs) {
-    *error_msg = "file parsing error.";
+  const android::base::Result<void>& result = record->ReadFromFile(metrics_file);
+  if (!result.ok()) {
+    *error_msg = android::base::StringPrintf("Unable to open or parse metrics file %s (error: %s)",
+                                             metrics_file,
+                                             result.error().message().data());
     return false;
   }
 
@@ -151,16 +144,20 @@ bool UploadStatsIfAvailable(/*out*/std::string* error_msg) {
 
   // Write values to statsd. The order of values passed is the same as the order of the
   // fields in OdrMetricsRecord.
-  int bytes_written = art::metrics::statsd::stats_write(metrics::statsd::ODREFRESH_REPORTED,
-                                                        record.art_apex_version,
-                                                        record.trigger,
-                                                        record.stage_reached,
-                                                        record.status,
-                                                        record.primary_bcp_compilation_seconds,
-                                                        record.secondary_bcp_compilation_seconds,
-                                                        record.system_server_compilation_seconds,
-                                                        record.cache_space_free_start_mib,
-                                                        record.cache_space_free_end_mib);
+  int bytes_written = art::metrics::statsd::stats_write(
+      metrics::statsd::ODREFRESH_REPORTED,
+      record.art_apex_version,
+      record.trigger,
+      record.stage_reached,
+      record.status,
+      record.primary_bcp_compilation_millis / 1000,
+      record.secondary_bcp_compilation_millis / 1000,
+      record.system_server_compilation_millis / 1000,
+      record.cache_space_free_start_mib,
+      record.cache_space_free_end_mib,
+      record.primary_bcp_compilation_millis,
+      record.secondary_bcp_compilation_millis,
+      record.system_server_compilation_millis);
   if (bytes_written <= 0) {
     *error_msg = android::base::StringPrintf("stats_write returned %d", bytes_written);
     return false;

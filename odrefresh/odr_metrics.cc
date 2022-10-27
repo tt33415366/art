@@ -64,22 +64,41 @@ OdrMetrics::~OdrMetrics() {
   }
 }
 
-void OdrMetrics::SetCompilationTime(int32_t seconds) {
+void OdrMetrics::SetCompilationTime(int32_t millis) {
   switch (stage_) {
     case Stage::kPrimaryBootClasspath:
-      primary_bcp_compilation_seconds_ = seconds;
+      primary_bcp_compilation_millis_ = millis;
       break;
     case Stage::kSecondaryBootClasspath:
-      secondary_bcp_compilation_seconds_ = seconds;
+      secondary_bcp_compilation_millis_ = millis;
       break;
     case Stage::kSystemServerClasspath:
-      system_server_compilation_seconds_ = seconds;
+      system_server_compilation_millis_ = millis;
       break;
     case Stage::kCheck:
     case Stage::kComplete:
     case Stage::kPreparation:
     case Stage::kUnknown:
+      LOG(FATAL) << "Unexpected stage " << stage_ << " when setting compilation time";
+  }
+}
+
+void OdrMetrics::SetDex2OatResult(const ExecResult& dex2oat_result) {
+  switch (stage_) {
+    case Stage::kPrimaryBootClasspath:
+      primary_bcp_dex2oat_result_ = dex2oat_result;
       break;
+    case Stage::kSecondaryBootClasspath:
+      secondary_bcp_dex2oat_result_ = dex2oat_result;
+      break;
+    case Stage::kSystemServerClasspath:
+      system_server_dex2oat_result_ = dex2oat_result;
+      break;
+    case Stage::kCheck:
+    case Stage::kComplete:
+    case Stage::kPreparation:
+    case Stage::kUnknown:
+      LOG(FATAL) << "Unexpected stage " << stage_ << " when setting dex2oat result";
   }
 }
 
@@ -119,28 +138,31 @@ bool OdrMetrics::ToRecord(/*out*/OdrMetricsRecord* record) const {
   if (!trigger_.has_value()) {
     return false;
   }
+  record->odrefresh_metrics_version = kOdrefreshMetricsVersion;
   record->art_apex_version = art_apex_version_;
   record->trigger = static_cast<uint32_t>(trigger_.value());
   record->stage_reached = static_cast<uint32_t>(stage_);
   record->status = static_cast<uint32_t>(status_);
-  record->primary_bcp_compilation_seconds = primary_bcp_compilation_seconds_;
-  record->secondary_bcp_compilation_seconds = secondary_bcp_compilation_seconds_;
-  record->system_server_compilation_seconds = system_server_compilation_seconds_;
   record->cache_space_free_start_mib = cache_space_free_start_mib_;
   record->cache_space_free_end_mib = cache_space_free_end_mib_;
+  record->primary_bcp_compilation_millis = primary_bcp_compilation_millis_;
+  record->secondary_bcp_compilation_millis = secondary_bcp_compilation_millis_;
+  record->system_server_compilation_millis = system_server_compilation_millis_;
   return true;
 }
 
 void OdrMetrics::WriteToFile(const std::string& path, const OdrMetrics* metrics) {
-  OdrMetricsRecord record;
+  OdrMetricsRecord record{};
   if (!metrics->ToRecord(&record)) {
     LOG(ERROR) << "Attempting to report metrics without a compilation trigger.";
     return;
   }
 
-  // Preserve order from frameworks/proto_logging/stats/atoms.proto in metrics file written.
-  std::ofstream ofs(path);
-  ofs << record;
+  const android::base::Result<void>& result = record.WriteToFile(path);
+  if (!result.ok()) {
+    LOG(ERROR) << "Failed to report metrics to file: " << path
+               << ", error: " << result.error().message();
+  }
 }
 
 }  // namespace odrefresh
