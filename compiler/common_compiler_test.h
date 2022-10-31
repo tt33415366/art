@@ -33,7 +33,6 @@ namespace mirror {
 class ClassLoader;
 }  // namespace mirror
 
-class CompiledMethod;
 class CompilerOptions;
 class CumulativeLogger;
 class DexFile;
@@ -53,9 +52,6 @@ class CommonCompilerTestImpl {
   const void* MakeExecutable(ArrayRef<const uint8_t> code,
                              ArrayRef<const uint8_t> vmap_table,
                              InstructionSet instruction_set);
-
-  void MakeExecutable(ArtMethod* method, const CompiledMethod* compiled_method)
-      REQUIRES_SHARED(Locks::mutator_lock_);
 
  protected:
   void SetUp();
@@ -94,6 +90,8 @@ class CommonCompilerTestImpl {
 
  private:
   class CodeAndMetadata;
+  class OneCompiledMethodStorage;
+
   std::vector<CodeAndMetadata> code_and_metadata_;
 };
 

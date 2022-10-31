@@ -386,7 +386,7 @@
         "test_patterns": ["616-cha.*"],
         "description": ["cha tests rely on knowing the exact set of optimizations available. ",
                         "Debuggable runtimes change the set of optimizations."],
-        "variant": "debuggable"
+        "variant": "debuggable | trace"
     },
     {
         "test_patterns": ["616-cha.*"],
@@ -1061,6 +1061,7 @@
           "988-method-trace",
           "989-method-trace-throw",
           "993-breakpoints",
+          "993-breakpoints-non-debuggable",
           "1002-notify-startup",
           "1003-metadata-section-strings",
           "1336-short-finalizer-timeout",
@@ -1127,7 +1128,7 @@
                   "2006-virtual-structural-finalizing",
                   "2007-virtual-structural-finalizable"
                 ],
-        "env_vars": {"ART_USE_READ_BARRIER": "false"},
+        "env_vars": {"ART_USE_READ_BARRIER": "false", "ART_DEFAULT_GC_TYPE": "CMS"},
         "description": ["Relies on the accuracy of the Heap::VisitObjects function which is broken",
                         " when READ_BARRIER==false (I.e. On CMS collector)."],
         "bug": "b/147207934"
@@ -1163,6 +1164,8 @@
                   "833-background-verification",
                   "836-32768classes",
                   "837-deopt",
+                  "844-exception",
+                  "844-exception2",
                   "999-redefine-hiddenapi",
                   "1000-non-moving-space-stress",
                   "1001-app-image-regions",
@@ -1303,7 +1306,7 @@
     },
     {
         "tests": ["1339-dead-reference-safe"],
-        "variant": "debuggable",
+        "variant": "debuggable | trace",
         "description": [ "Fails to eliminate dead reference when debuggable." ]
     },
     {
@@ -1322,13 +1325,11 @@
         "description": ["Test containing Checker assertions expecting Baker read barriers."]
     },
     {
-        "tests": ["2009-structural-local-ref",
-                  "2035-structural-native-method",
-	          "2036-structural-subclass-shadow",
-	          "2040-huge-native-alloc"],
+        "tests": ["2040-huge-native-alloc"],
         "env_vars": {"ART_USE_READ_BARRIER": "false"},
+	"variant": "debug",
         "bug": "b/242181443",
-        "description": ["Tests temporarily disabled for userfaultfd GC. Remove once native GC-root updation is implemented."]
+        "description": ["Test fails due to delay delebrately added in the userfaultfd GC between marking and compaction."]
     },
     {
         "tests": ["1004-checker-volatile-ref-load"],
@@ -1374,7 +1375,7 @@
     },
     {
         "tests": ["2043-reference-pauses"],
-        "env_vars": {"ART_USE_READ_BARRIER": "false"},
+        "env_vars": {"ART_USE_READ_BARRIER": "false", "ART_DEFAULT_GC_TYPE": "CMS"},
         "variant": "host",
         "bug": "b/232459100",
         "description": ["Fails intermittently for CMS."]
@@ -1437,7 +1438,7 @@
     },
     {
         "tests": ["692-vdex-secondary-loader"],
-        "env_vars": {"ART_USE_READ_BARRIER": "false"},
+        "env_vars": {"ART_USE_READ_BARRIER": "false", "ART_DEFAULT_GC_TYPE": "CMS"},
         "description": ["Uses the low-ram flag which does not work with CMS"]
     },
     {

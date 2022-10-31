@@ -466,6 +466,7 @@ com.sun.security.cert.internal.x509.X509V1CertImpl
 dalvik.annotation.optimization.CriticalNative
 dalvik.annotation.optimization.FastNative
 dalvik.annotation.optimization.NeverCompile
+dalvik.annotation.optimization.NeverInline
 dalvik.system.AppSpecializationHooks
 dalvik.system.BaseDexClassLoader$Reporter
 dalvik.system.BaseDexClassLoader
@@ -705,6 +706,7 @@ java.lang.NumberFormatException
 java.lang.Object
 java.lang.OutOfMemoryError
 java.lang.Package
+java.lang.Process$PipeInputStream
 java.lang.Process
 java.lang.ProcessBuilder$NullInputStream
 java.lang.ProcessBuilder$NullOutputStream
@@ -715,6 +717,13 @@ java.lang.ProcessEnvironment$StringEnvironment
 java.lang.ProcessEnvironment$Value
 java.lang.ProcessEnvironment$Variable
 java.lang.ProcessEnvironment
+java.lang.ProcessHandleImpl$ExitCompletion
+java.lang.ProcessHandleImpl$Info
+java.lang.ProcessHandleImpl
+java.lang.ProcessImpl$DeferredCloseInputStream
+java.lang.ProcessImpl$DeferredCloseProcessPipeInputStream
+java.lang.ProcessImpl$ProcessPipeInputStream
+java.lang.ProcessImpl$ProcessPipeOutputStream
 java.lang.ProcessImpl
 java.lang.Readable
 java.lang.ReflectiveOperationException
@@ -2413,6 +2422,7 @@ jdk.internal.math.FormattedFloatingDecimal$Form
 jdk.internal.math.FormattedFloatingDecimal
 jdk.internal.misc.JavaObjectInputStreamAccess
 jdk.internal.misc.SharedSecrets
+jdk.internal.misc.TerminatingThreadLocal
 jdk.internal.misc.Unsafe
 jdk.internal.misc.VM
 jdk.internal.reflect.Reflection

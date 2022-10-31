@@ -65,6 +65,7 @@
 #include "base/zip_archive.h"
 #include "class_linker.h"
 #include "class_loader_context.h"
+#include "class_root-inl.h"
 #include "cmdline_parser.h"
 #include "compiler.h"
 #include "compiler_callbacks.h"
@@ -1820,7 +1821,7 @@ class Dex2Oat final {
   }
 
   // Set up and create the compiler driver and then invoke it to compile all the dex files.
-  jobject Compile() {
+  jobject Compile() REQUIRES(!Locks::mutator_lock_) {
     ClassLinker* const class_linker = Runtime::Current()->GetClassLinker();
 
     TimingLogger::ScopedTiming t("dex2oat Compile", timings_);
@@ -2737,6 +2738,8 @@ class Dex2Oat final {
     interpreter::UnstartedRuntime::Initialize();
 
     Thread* self = Thread::Current();
+    runtime_->GetClassLinker()->RunEarlyRootClinits(self);
+    WellKnownClasses::Init(self->GetJniEnv());
     runtime_->RunRootClinits(self);
 
     // Runtime::Create acquired the mutator_lock_ that is normally given away when we
@@ -2745,7 +2748,6 @@ class Dex2Oat final {
 
     // Now that we are in native state, initialize well known classes and
     // intrinsics if we don't have a boot image.
-    WellKnownClasses::Init(self->GetJniEnv());
     if (IsBootImage() || runtime_->GetHeap()->GetBootImageSpaces().empty()) {
       InitializeIntrinsics();
     }
@@ -3059,7 +3061,8 @@ class ScopedGlobalRef {
   jobject obj_;
 };
 
-static dex2oat::ReturnCode DoCompilation(Dex2Oat& dex2oat) {
+static dex2oat::ReturnCode DoCompilation(Dex2Oat& dex2oat) REQUIRES(!Locks::mutator_lock_) {
+  Locks::mutator_lock_->AssertNotHeld(Thread::Current());
   dex2oat.LoadClassProfileDescriptors();
   jobject class_loader = dex2oat.Compile();
   // Keep the class loader that was used for compilation live for the rest of the compilation

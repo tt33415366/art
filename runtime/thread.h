@@ -232,8 +232,11 @@ class Thread {
 
   // Attaches the calling native thread to the runtime, returning the new native peer.
   // Used to implement JNI AttachCurrentThread and AttachCurrentThreadAsDaemon calls.
-  static Thread* Attach(const char* thread_name, bool as_daemon, jobject thread_group,
-                        bool create_peer);
+  static Thread* Attach(const char* thread_name,
+                        bool as_daemon,
+                        jobject thread_group,
+                        bool create_peer,
+                        bool should_run_callbacks);
   // Attaches the calling native thread to the runtime, returning the new native peer.
   static Thread* Attach(const char* thread_name, bool as_daemon, jobject thread_peer);
 
@@ -1466,7 +1469,7 @@ class Thread {
  private:
   explicit Thread(bool daemon);
   ~Thread() REQUIRES(!Locks::mutator_lock_, !Locks::thread_suspend_count_lock_);
-  void Destroy();
+  void Destroy(bool should_run_callbacks);
 
   // Deletes and clears the tlsPtr_.jpeer field. Done in a way so that both it and opeer cannot be
   // observed to be set at the same time by instrumentation.
@@ -1477,7 +1480,8 @@ class Thread {
   template <typename PeerAction>
   static Thread* Attach(const char* thread_name,
                         bool as_daemon,
-                        PeerAction p);
+                        PeerAction p,
+                        bool should_run_callbacks);
 
   void CreatePeer(const char* name, bool as_daemon, jobject thread_group);
 
@@ -2129,8 +2133,10 @@ class Thread {
   SafeMap<std::string, std::unique_ptr<TLSData>, std::less<>> custom_tls_
       GUARDED_BY(Locks::custom_tls_lock_);
 
-#ifndef __BIONIC__
-  __attribute__((tls_model("initial-exec")))
+#if !defined(__BIONIC__)
+#if !defined(ANDROID_HOST_MUSL)
+    __attribute__((tls_model("initial-exec")))
+#endif
   static thread_local Thread* self_tls_;
 #endif
 

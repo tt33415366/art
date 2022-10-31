@@ -37,6 +37,7 @@
 #include "dex/dex_file-inl.h"
 #include "dex/utf-inl.h"
 #include "fault_handler.h"
+#include "handle_scope.h"
 #include "hidden_api.h"
 #include "gc/accounting/card_table-inl.h"
 #include "gc_root.h"
@@ -954,16 +955,15 @@ class JNI {
           WellKnownClasses::StringInitToStringFactory(jni::DecodeArtMethod(mid)));
       return CallStaticObjectMethodV(env, WellKnownClasses::java_lang_StringFactory, sf_mid, args);
     }
-    ObjPtr<mirror::Object> result = c->AllocObject(soa.Self());
+    ScopedLocalRef<jobject> result(env, soa.AddLocalReference<jobject>(c->AllocObject(soa.Self())));
     if (result == nullptr) {
       return nullptr;
     }
-    jobject local_result = soa.AddLocalReference<jobject>(result);
-    CallNonvirtualVoidMethodV(env, local_result, java_class, mid, args);
+    CallNonvirtualVoidMethodV(env, result.get(), java_class, mid, args);
     if (soa.Self()->IsExceptionPending()) {
       return nullptr;
     }
-    return local_result;
+    return result.release();
   }
 
   static jobject NewObjectA(JNIEnv* env, jclass java_class, jmethodID mid, const jvalue* args) {
@@ -981,16 +981,15 @@ class JNI {
           WellKnownClasses::StringInitToStringFactory(jni::DecodeArtMethod(mid)));
       return CallStaticObjectMethodA(env, WellKnownClasses::java_lang_StringFactory, sf_mid, args);
     }
-    ObjPtr<mirror::Object> result = c->AllocObject(soa.Self());
+    ScopedLocalRef<jobject> result(env, soa.AddLocalReference<jobject>(c->AllocObject(soa.Self())));
     if (result == nullptr) {
       return nullptr;
     }
-    jobject local_result = soa.AddLocalReference<jobjectArray>(result);
-    CallNonvirtualVoidMethodA(env, local_result, java_class, mid, args);
+    CallNonvirtualVoidMethodA(env, result.get(), java_class, mid, args);
     if (soa.Self()->IsExceptionPending()) {
       return nullptr;
     }
-    return local_result;
+    return result.release();
   }
 
   static jmethodID GetMethodID(JNIEnv* env, jclass java_class, const char* name, const char* sig) {
@@ -1269,8 +1268,7 @@ class JNI {
     CHECK_NON_NULL_ARGUMENT(mid);
     ScopedObjectAccess soa(env);
     JValue result(InvokeWithVarArgs(soa, obj, mid, ap));
-    jobject local_result = soa.AddLocalReference<jobject>(result.GetL());
-    return local_result;
+    return soa.AddLocalReference<jobject>(result.GetL());
   }
 
   static jobject CallNonvirtualObjectMethodV(JNIEnv* env, jobject obj, jclass, jmethodID mid,
@@ -1756,8 +1754,7 @@ class JNI {
     CHECK_NON_NULL_ARGUMENT(mid);
     ScopedObjectAccess soa(env);
     JValue result(InvokeWithVarArgs(soa, nullptr, mid, ap));
-    jobject local_result = soa.AddLocalReference<jobject>(result.GetL());
-    return local_result;
+    return soa.AddLocalReference<jobject>(result.GetL());
   }
 
   static jobject CallStaticObjectMethodV(JNIEnv* env, jclass, jmethodID mid, va_list args) {
@@ -2791,14 +2788,20 @@ class JNI {
       return nullptr;
     }
 
+    ScopedObjectAccess soa(env);
+    ObjPtr<mirror::Object> buffer = soa.Decode<mirror::Object>(java_buffer);
+    ObjPtr<mirror::Class> java_nio_Buffer =
+       soa.Decode<mirror::Class>(WellKnownClasses::java_nio_Buffer);
+    DCHECK(java_nio_Buffer != nullptr);
+
     // Return null if |java_buffer| is not a java.nio.Buffer instance.
-    if (!IsInstanceOf(env, java_buffer, WellKnownClasses::java_nio_Buffer)) {
+    if (!buffer->InstanceOf(java_nio_Buffer)) {
       return nullptr;
     }
 
     // Buffer.address is non-null when the |java_buffer| is direct.
-    return reinterpret_cast<void*>(env->GetLongField(
-        java_buffer, WellKnownClasses::java_nio_Buffer_address));
+    return reinterpret_cast<void*>(
+        WellKnownClasses::java_nio_Buffer_address->GetLong(buffer));
   }
 
   static jlong GetDirectBufferCapacity(JNIEnv* env, jobject java_buffer) {
@@ -2806,7 +2809,14 @@ class JNI {
       return -1;
     }
 
-    if (!IsInstanceOf(env, java_buffer, WellKnownClasses::java_nio_Buffer)) {
+    ScopedObjectAccess soa(env);
+    StackHandleScope<2u> hs(soa.Self());
+    Handle<mirror::Object> buffer = hs.NewHandle(soa.Decode<mirror::Object>(java_buffer));
+    Handle<mirror::Class> java_nio_Buffer =
+       hs.NewHandle(soa.Decode<mirror::Class>(WellKnownClasses::java_nio_Buffer));
+    DCHECK(java_nio_Buffer != nullptr);
+
+    if (!buffer->InstanceOf(java_nio_Buffer.Get())) {
       return -1;
     }
 
@@ -2823,8 +2833,7 @@ class JNI {
       return -1;
     }
 
-    return static_cast<jlong>(env->GetIntField(
-        java_buffer, WellKnownClasses::java_nio_Buffer_capacity));
+    return static_cast<jlong>(WellKnownClasses::java_nio_Buffer_capacity->GetInt(buffer.Get()));
   }
 
   static jobjectRefType GetObjectRefType(JNIEnv* env ATTRIBUTE_UNUSED, jobject java_object) {

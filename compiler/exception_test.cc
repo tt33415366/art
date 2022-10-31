@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <android-base/test_utils.h>
+
 #include <memory>
 #include <type_traits>
 
@@ -168,6 +170,7 @@ TEST_F(ExceptionTest, FindCatchHandler) {
 }
 
 TEST_F(ExceptionTest, StackTraceElement) {
+  SKIP_WITH_HWASAN;  // TODO(b/230392320): re-enable with HWASan once fixed.
   Thread* thread = Thread::Current();
   thread->TransitionFromSuspendedToRunnable();
   bool started = runtime_->Start();
@@ -194,15 +197,13 @@ TEST_F(ExceptionTest, StackTraceElement) {
 
   OatQuickMethodHeader* header = OatQuickMethodHeader::FromEntryPoint(
       method_g_->GetEntryPointFromQuickCompiledCode());
-  fake_stack.push_back(header->ToNativeQuickPc(
-      method_g_, kDexPc, /* is_for_catch_handler= */ false));  // return pc
+  fake_stack.push_back(header->ToNativeQuickPc(method_g_, kDexPc));  // return pc
 
   // Create/push fake 16byte stack frame for method g
   fake_stack.push_back(reinterpret_cast<uintptr_t>(method_g_));
   fake_stack.push_back(0);
   fake_stack.push_back(0);
-  fake_stack.push_back(header->ToNativeQuickPc(
-      method_g_, kDexPc, /* is_for_catch_handler= */ false));  // return pc
+  fake_stack.push_back(header->ToNativeQuickPc(method_g_, kDexPc));  // return pc
 
   // Create/push fake 16byte stack frame for method f
   fake_stack.push_back(reinterpret_cast<uintptr_t>(method_f_));
