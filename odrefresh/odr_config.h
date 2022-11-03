@@ -21,6 +21,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "android-base/file.h"
@@ -40,6 +41,17 @@ namespace odrefresh {
 // everything if any property matching a prefix changes.
 constexpr const char* kCheckedSystemPropertyPrefixes[]{"dalvik.vm.", "ro.dalvik.vm."};
 
+// The list of system properties that odrefresh ignores. They don't affect compilation results.
+const std::unordered_set<std::string> kIgnoredSystemProperties{
+    "dalvik.vm.dex2oat-cpu-set",
+    "dalvik.vm.dex2oat-threads",
+    "dalvik.vm.boot-dex2oat-cpu-set",
+    "dalvik.vm.boot-dex2oat-threads",
+    "dalvik.vm.restore-dex2oat-cpu-set",
+    "dalvik.vm.restore-dex2oat-threads",
+    "dalvik.vm.background-dex2oat-cpu-set",
+    "dalvik.vm.background-dex2oat-threads"};
+
 struct SystemPropertyConfig {
   const char* name;
   const char* default_value;
@@ -55,7 +67,8 @@ struct SystemPropertyConfig {
 // requirement (go/platform-experiments-flags#pre-requisites).
 const android::base::NoDestructor<std::vector<SystemPropertyConfig>> kSystemProperties{
     {SystemPropertyConfig{.name = "persist.device_config.runtime_native_boot.enable_uffd_gc",
-                          .default_value = "false"}}};
+                          .default_value = "false"},
+     SystemPropertyConfig{.name = kPhDisableCompactDex, .default_value = "false"}}};
 
 // An enumeration of the possible zygote configurations on Android.
 enum class ZygoteKind : uint8_t {
