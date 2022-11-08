@@ -293,7 +293,7 @@ extern "C" size_t NterpGetMethod(Thread* self, ArtMethod* caller, const uint16_t
   Instruction::Code opcode = inst->Opcode();
   DCHECK(IsUint<8>(static_cast<std::underlying_type_t<Instruction::Code>>(opcode)));
   uint8_t raw_invoke_type = kOpcodeInvokeTypes[opcode];
-  CHECK_LE(raw_invoke_type, kMaxInvokeType);
+  DCHECK_LE(raw_invoke_type, kMaxInvokeType);
   InvokeType invoke_type = static_cast<InvokeType>(raw_invoke_type);
 
   // In release mode, this is just a simple load.
@@ -341,9 +341,7 @@ extern "C" size_t NterpGetMethod(Thread* self, ArtMethod* caller, const uint16_t
     }
     UpdateCache(self, dex_pc_ptr, result);
     return result;
-  } else if (resolved_method->GetDeclaringClass()->IsStringClass()
-             && !resolved_method->IsStatic()
-             && resolved_method->IsConstructor()) {
+  } else if (resolved_method->IsStringConstructor()) {
     CHECK_NE(invoke_type, kSuper);
     resolved_method = WellKnownClasses::StringInitToStringFactory(resolved_method);
     // Or the result with 1 to notify to nterp this is a string init method. We
@@ -369,14 +367,14 @@ extern "C" size_t NterpGetStaticField(Thread* self,
   const Instruction* inst = Instruction::At(dex_pc_ptr);
   uint16_t field_index = inst->VRegB_21c();
   ClassLinker* const class_linker = Runtime::Current()->GetClassLinker();
-  bool is_put = IsInstructionSPut(inst->Opcode());
+  Instruction::Code opcode = inst->Opcode();
   ArtField* resolved_field = ResolveFieldWithAccessChecks(
       self,
       class_linker,
       field_index,
       caller,
-      /* is_static */ true,
-      is_put,
+      /*is_static=*/ true,
+      /*is_put=*/ IsInstructionSPut(opcode),
       resolve_field_type);
 
   if (resolved_field == nullptr) {
@@ -399,11 +397,13 @@ extern "C" size_t NterpGetStaticField(Thread* self,
     // check for it.
     return reinterpret_cast<size_t>(resolved_field) | 1;
   } else {
-    // Try to resolve the field type even if we were not requested to. Only if
-    // the field type is successfully resolved can we update the cache. If we
+    // For sput-object, try to resolve the field type even if we were not requested to.
+    // Only if the field type is successfully resolved can we update the cache. If we
     // fail to resolve the type, we clear the exception to keep interpreter
     // semantics of not throwing when null is stored.
-    if (is_put && resolve_field_type == 0 && resolved_field->ResolveType() == nullptr) {
+    if (opcode == Instruction::SPUT_OBJECT &&
+        resolve_field_type == 0 &&
+        resolved_field->ResolveType() == nullptr) {
       DCHECK(self->IsExceptionPending());
       self->ClearException();
     } else {
@@ -422,14 +422,14 @@ extern "C" uint32_t NterpGetInstanceFieldOffset(Thread* self,
   const Instruction* inst = Instruction::At(dex_pc_ptr);
   uint16_t field_index = inst->VRegC_22c();
   ClassLinker* const class_linker = Runtime::Current()->GetClassLinker();
-  bool is_put = IsInstructionIPut(inst->Opcode());
+  Instruction::Code opcode = inst->Opcode();
   ArtField* resolved_field = ResolveFieldWithAccessChecks(
       self,
       class_linker,
       field_index,
       caller,
-      /* is_static */ false,
-      is_put,
+      /*is_static=*/ false,
+      /*is_put=*/ IsInstructionIPut(opcode),
       resolve_field_type);
   if (resolved_field == nullptr) {
     DCHECK(self->IsExceptionPending());
@@ -440,11 +440,13 @@ extern "C" uint32_t NterpGetInstanceFieldOffset(Thread* self,
     // of volatile.
     return -resolved_field->GetOffset().Uint32Value();
   }
-  // Try to resolve the field type even if we were not requested to. Only if
-  // the field type is successfully resolved can we update the cache. If we
+  // For iput-object, try to resolve the field type even if we were not requested to.
+  // Only if the field type is successfully resolved can we update the cache. If we
   // fail to resolve the type, we clear the exception to keep interpreter
   // semantics of not throwing when null is stored.
-  if (is_put && resolve_field_type == 0 && resolved_field->ResolveType() == nullptr) {
+  if (opcode == Instruction::IPUT_OBJECT &&
+      resolve_field_type == 0 &&
+      resolved_field->ResolveType() == nullptr) {
     DCHECK(self->IsExceptionPending());
     self->ClearException();
   } else {
@@ -453,61 +455,69 @@ extern "C" uint32_t NterpGetInstanceFieldOffset(Thread* self,
   return resolved_field->GetOffset().Uint32Value();
 }
 
-extern "C" mirror::Object* NterpGetClassOrAllocateObject(Thread* self,
-                                                         ArtMethod* caller,
-                                                         uint16_t* dex_pc_ptr)
+extern "C" mirror::Object* NterpGetClass(Thread* self, ArtMethod* caller, uint16_t* dex_pc_ptr)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   UpdateHotness(caller);
   const Instruction* inst = Instruction::At(dex_pc_ptr);
-  dex::TypeIndex index;
-  switch (inst->Opcode()) {
-    case Instruction::NEW_INSTANCE:
-      index = dex::TypeIndex(inst->VRegB_21c());
-      break;
-    case Instruction::CHECK_CAST:
-      index = dex::TypeIndex(inst->VRegB_21c());
-      break;
-    case Instruction::INSTANCE_OF:
-      index = dex::TypeIndex(inst->VRegC_22c());
-      break;
-    case Instruction::CONST_CLASS:
-      index = dex::TypeIndex(inst->VRegB_21c());
-      break;
-    case Instruction::NEW_ARRAY:
-      index = dex::TypeIndex(inst->VRegC_22c());
-      break;
-    default:
-      LOG(FATAL) << "Unreachable";
-  }
+  Instruction::Code opcode = inst->Opcode();
+  DCHECK(opcode == Instruction::CHECK_CAST ||
+         opcode == Instruction::INSTANCE_OF ||
+         opcode == Instruction::CONST_CLASS ||
+         opcode == Instruction::NEW_ARRAY);
+
+  // In release mode, this is just a simple load.
+  // In debug mode, this checks that we're using the correct instruction format.
+  dex::TypeIndex index = dex::TypeIndex(
+      (opcode == Instruction::CHECK_CAST || opcode == Instruction::CONST_CLASS)
+          ? inst->VRegB_21c()
+          : inst->VRegC_22c());
+
   ObjPtr<mirror::Class> c =
       ResolveVerifyAndClinit(index,
                              caller,
                              self,
                              /* can_run_clinit= */ false,
                              /* verify_access= */ !caller->SkipAccessChecks());
-  if (c == nullptr) {
+  if (UNLIKELY(c == nullptr)) {
     DCHECK(self->IsExceptionPending());
     return nullptr;
   }
 
-  if (inst->Opcode() == Instruction::NEW_INSTANCE) {
-    gc::AllocatorType allocator_type = Runtime::Current()->GetHeap()->GetCurrentAllocator();
-    if (UNLIKELY(c->IsStringClass())) {
-      // We don't cache the class for strings as we need to special case their
-      // allocation.
-      return mirror::String::AllocEmptyString(self, allocator_type).Ptr();
-    } else {
-      if (!c->IsFinalizable() && c->IsInstantiable()) {
-        // Cache non-finalizable classes for next calls.
-        UpdateCache(self, dex_pc_ptr, c.Ptr());
-      }
-      return AllocObjectFromCode(c, self, allocator_type).Ptr();
-    }
-  } else {
-    // For all other cases, cache the class.
-    UpdateCache(self, dex_pc_ptr, c.Ptr());
-  }
+  UpdateCache(self, dex_pc_ptr, c.Ptr());
   return c.Ptr();
+}
+
+extern "C" mirror::Object* NterpAllocateObject(Thread* self,
+                                               ArtMethod* caller,
+                                               uint16_t* dex_pc_ptr)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  UpdateHotness(caller);
+  const Instruction* inst = Instruction::At(dex_pc_ptr);
+  DCHECK_EQ(inst->Opcode(), Instruction::NEW_INSTANCE);
+  dex::TypeIndex index = dex::TypeIndex(inst->VRegB_21c());
+  ObjPtr<mirror::Class> c =
+      ResolveVerifyAndClinit(index,
+                             caller,
+                             self,
+                             /* can_run_clinit= */ false,
+                             /* verify_access= */ !caller->SkipAccessChecks());
+  if (UNLIKELY(c == nullptr)) {
+    DCHECK(self->IsExceptionPending());
+    return nullptr;
+  }
+
+  gc::AllocatorType allocator_type = Runtime::Current()->GetHeap()->GetCurrentAllocator();
+  if (UNLIKELY(c->IsStringClass())) {
+    // We don't cache the class for strings as we need to special case their
+    // allocation.
+    return mirror::String::AllocEmptyString(self, allocator_type).Ptr();
+  } else {
+    if (!c->IsFinalizable() && c->IsInstantiable()) {
+      // Cache non-finalizable classes for next calls.
+      UpdateCache(self, dex_pc_ptr, c.Ptr());
+    }
+    return AllocObjectFromCode(c, self, allocator_type).Ptr();
+  }
 }
 
 extern "C" mirror::Object* NterpLoadObject(Thread* self, ArtMethod* caller, uint16_t* dex_pc_ptr)

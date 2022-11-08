@@ -42,7 +42,7 @@
 #include "ssa_builder.h"
 #include "well_known_classes.h"
 
-namespace art {
+namespace art HIDDEN {
 
 namespace {
 
@@ -985,8 +985,7 @@ static ArtMethod* ResolveMethod(uint16_t method_idx,
     DCHECK_EQ(*imt_or_vtable_index, ImTable::GetImtIndex(resolved_method));
   }
 
-  *is_string_constructor =
-      resolved_method->IsConstructor() && resolved_method->GetDeclaringClass()->IsStringClass();
+  *is_string_constructor = resolved_method->IsStringConstructor();
 
   return resolved_method;
 }

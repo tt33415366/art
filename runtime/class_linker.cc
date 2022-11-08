@@ -1141,11 +1141,21 @@ void ClassLinker::RunRootClinits(Thread* self) {
       WellKnownClasses::java_lang_Integer_valueOf,
       WellKnownClasses::java_lang_Long_valueOf,
       WellKnownClasses::java_lang_Short_valueOf,
+      // Ensure `DirectByteBuffer` class is initialized (avoid check at runtime).
+      WellKnownClasses::java_nio_DirectByteBuffer_init,
+      // Ensure reflection annotation classes are initialized (avoid check at runtime).
+      WellKnownClasses::libcore_reflect_AnnotationFactory_createAnnotation,
+      WellKnownClasses::libcore_reflect_AnnotationMember_init,
+      // We're suppressing exceptions from `DdmServer` and we do not want to repeatedly
+      // suppress class initialization error (say, due to OOM), so initialize it early.
+      WellKnownClasses::org_apache_harmony_dalvik_ddmc_DdmServer_dispatch,
   };
   for (ArtMethod* method : static_methods_of_classes_to_initialize) {
     EnsureRootInitialized(this, self, method->GetDeclaringClass());
   }
   ArtField* static_fields_of_classes_to_initialize[] = {
+      // Ensure `VMRuntime` is initialized (avoid check at runtime).
+      WellKnownClasses::dalvik_system_VMRuntime_nonSdkApiUsageConsumer,
       // Initialize empty arrays needed by `StackOverflowError`.
       WellKnownClasses::java_util_Collections_EMPTY_LIST,
       WellKnownClasses::libcore_util_EmptyArray_STACK_TRACE_ELEMENT,
