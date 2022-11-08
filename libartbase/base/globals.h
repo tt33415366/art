@@ -36,11 +36,8 @@ static constexpr size_t kStackAlignment = 16;
 
 // System page size. We check this against sysconf(_SC_PAGE_SIZE) at runtime, but use a simple
 // compile-time constant so the compiler can generate better code.
-#if defined(__aarch64__) || defined(__arm__)
-    static constexpr size_t kPageSize = 16384;
-#else
-    static constexpr size_t kPageSize = 4096;
-#endif
+static constexpr size_t kPageSize = 16384;
+
 
 
 // TODO: Kernels for arm and x86 in both, 32-bit and 64-bit modes use 512 entries per page-table
