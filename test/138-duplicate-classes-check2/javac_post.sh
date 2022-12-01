@@ -16,7 +16,5 @@
 
 set -e # Stop on error - the caller script may not have this set.
 
-$JAVAC "$@"
-
-# Remove class available at compile time but not at run time.
-rm classes/MissingSuperClass.class
+# Remove one A.class from classes-ex
+rm -f classes-ex/A.class

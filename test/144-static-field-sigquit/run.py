@@ -14,10 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -e # Stop on error - the caller script may not have this set.
 
-# Some classes are available at compile time...
-$JAVAC "$@"
-
-# ...but not at run time.
-rm 'classes/MissingClass.class' 'classes/Main$MissingInnerClass.class'
+def run(ctx, args):
+  ctx.default_run(args, android_log_tags="*:w")
