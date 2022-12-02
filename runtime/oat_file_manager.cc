@@ -167,7 +167,7 @@ std::vector<const OatFile*> OatFileManager::RegisterImageOatFiles(
 
 bool OatFileManager::ShouldLoadAppImage(const OatFile* source_oat_file) const {
   Runtime* const runtime = Runtime::Current();
-  return kEnableAppImage && (!runtime->IsJavaDebuggable() || source_oat_file->IsDebuggable());
+  return kEnableAppImage && (!runtime->IsJavaDebuggableAtInit() || source_oat_file->IsDebuggable());
 }
 
 std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(

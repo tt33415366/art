@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <vector>
 
@@ -226,7 +227,7 @@ OatFileAssistant::OatFileAssistant(const char* dex_location,
 std::unique_ptr<OatFileAssistant> OatFileAssistant::Create(
     const std::string& filename,
     const std::string& isa_str,
-    const std::string& context_str,
+    const std::optional<std::string>& context_str,
     bool load_executable,
     bool only_load_trusted_executable,
     OatFileAssistantContext* ofa_context,
@@ -238,20 +239,23 @@ std::unique_ptr<OatFileAssistant> OatFileAssistant::Create(
     return nullptr;
   }
 
-  std::unique_ptr<ClassLoaderContext> tmp_context = ClassLoaderContext::Create(context_str.c_str());
-  if (tmp_context == nullptr) {
-    *error_msg = StringPrintf("Class loader context '%s' is invalid", context_str.c_str());
-    return nullptr;
-  }
+  std::unique_ptr<ClassLoaderContext> tmp_context = nullptr;
+  if (context_str.has_value()) {
+    tmp_context = ClassLoaderContext::Create(context_str->c_str());
+    if (tmp_context == nullptr) {
+      *error_msg = StringPrintf("Class loader context '%s' is invalid", context_str->c_str());
+      return nullptr;
+    }
 
-  if (!tmp_context->OpenDexFiles(android::base::Dirname(filename.c_str()),
-                                 /*context_fds=*/{},
-                                 /*only_read_checksums=*/true)) {
-    *error_msg =
-        StringPrintf("Failed to load class loader context files for '%s' with context '%s'",
-                     filename.c_str(),
-                     context_str.c_str());
-    return nullptr;
+    if (!tmp_context->OpenDexFiles(android::base::Dirname(filename.c_str()),
+                                   /*context_fds=*/{},
+                                   /*only_read_checksums=*/true)) {
+      *error_msg =
+          StringPrintf("Failed to load class loader context files for '%s' with context '%s'",
+                       filename.c_str(),
+                       context_str->c_str());
+      return nullptr;
+    }
   }
 
   auto assistant = std::make_unique<OatFileAssistant>(filename.c_str(),
@@ -443,13 +447,13 @@ bool OatFileAssistant::LoadDexFiles(
   return true;
 }
 
-bool OatFileAssistant::HasDexFiles() {
+std::optional<bool> OatFileAssistant::HasDexFiles(std::string* error_msg) {
   ScopedTrace trace("HasDexFiles");
-  // Ensure GetRequiredDexChecksums has been run so that
-  // has_original_dex_files_ is initialized. We don't care about the result of
-  // GetRequiredDexChecksums.
-  GetRequiredDexChecksums();
-  return has_original_dex_files_;
+  const std::vector<std::uint32_t>* checksums = GetRequiredDexChecksums(error_msg);
+  if (checksums == nullptr) {
+    return std::nullopt;
+  }
+  return !checksums->empty();
 }
 
 OatFileAssistant::OatStatus OatFileAssistant::OdexFileStatus() {
@@ -462,8 +466,11 @@ OatFileAssistant::OatStatus OatFileAssistant::OatFileStatus() {
 
 bool OatFileAssistant::DexChecksumUpToDate(const VdexFile& file, std::string* error_msg) {
   ScopedTrace trace("DexChecksumUpToDate(vdex)");
-  const std::vector<uint32_t>* required_dex_checksums = GetRequiredDexChecksums();
+  const std::vector<uint32_t>* required_dex_checksums = GetRequiredDexChecksums(error_msg);
   if (required_dex_checksums == nullptr) {
+    return false;
+  }
+  if (required_dex_checksums->empty()) {
     LOG(WARNING) << "Required dex checksums not found. Assuming dex checksums are up to date.";
     return true;
   }
@@ -495,8 +502,11 @@ bool OatFileAssistant::DexChecksumUpToDate(const VdexFile& file, std::string* er
 
 bool OatFileAssistant::DexChecksumUpToDate(const OatFile& file, std::string* error_msg) {
   ScopedTrace trace("DexChecksumUpToDate(oat)");
-  const std::vector<uint32_t>* required_dex_checksums = GetRequiredDexChecksums();
+  const std::vector<uint32_t>* required_dex_checksums = GetRequiredDexChecksums(error_msg);
   if (required_dex_checksums == nullptr) {
+    return false;
+  }
+  if (required_dex_checksums->empty()) {
     LOG(WARNING) << "Required dex checksums not found. Assuming dex checksums are up to date.";
     return true;
   }
@@ -743,30 +753,34 @@ bool OatFileAssistant::DexLocationToOatFilename(const std::string& location,
   return GetDalvikCacheFilename(location.c_str(), dalvik_cache.c_str(), oat_filename, error_msg);
 }
 
-const std::vector<uint32_t>* OatFileAssistant::GetRequiredDexChecksums() {
+const std::vector<uint32_t>* OatFileAssistant::GetRequiredDexChecksums(std::string* error_msg) {
   if (!required_dex_checksums_attempted_) {
     required_dex_checksums_attempted_ = true;
-    required_dex_checksums_found_ = false;
-    cached_required_dex_checksums_.clear();
-    std::string error_msg;
+    std::vector<uint32_t> checksums;
     const ArtDexFileLoader dex_file_loader;
     std::vector<std::string> dex_locations_ignored;
     if (dex_file_loader.GetMultiDexChecksums(dex_location_.c_str(),
-                                             &cached_required_dex_checksums_,
+                                             &checksums,
                                              &dex_locations_ignored,
-                                             &error_msg,
+                                             &cached_required_dex_checksums_error_,
                                              zip_fd_,
                                              &zip_file_only_contains_uncompressed_dex_)) {
-      required_dex_checksums_found_ = true;
-      has_original_dex_files_ = true;
-    } else {
-      // The only valid case here is for APKs without dex files.
-      required_dex_checksums_found_ = false;
-      has_original_dex_files_ = false;
-      VLOG(oat) << "Could not get required checksum: " << error_msg;
+      if (checksums.empty()) {
+        // The only valid case here is for APKs without dex files.
+        VLOG(oat) << "No dex file found in " << dex_location_;
+      }
+
+      cached_required_dex_checksums_ = std::move(checksums);
     }
   }
-  return required_dex_checksums_found_ ? &cached_required_dex_checksums_ : nullptr;
+
+  if (cached_required_dex_checksums_.has_value()) {
+    return &cached_required_dex_checksums_.value();
+  } else {
+    *error_msg = cached_required_dex_checksums_error_;
+    DCHECK(!error_msg->empty());
+    return nullptr;
+  }
 }
 
 bool OatFileAssistant::ValidateBootClassPathChecksums(OatFileAssistantContext* ofa_context,
@@ -784,11 +798,11 @@ bool OatFileAssistant::ValidateBootClassPathChecksums(OatFileAssistantContext* o
 
   size_t oat_bcp_size = gc::space::ImageSpace::CheckAndCountBCPComponents(
       oat_boot_class_path, ArrayRef<const std::string>(bcp_locations), error_msg);
-  DCHECK_LE(oat_bcp_size, bcp_locations.size());
   if (oat_bcp_size == static_cast<size_t>(-1)) {
     DCHECK(!error_msg->empty());
     return false;
   }
+  DCHECK_LE(oat_bcp_size, bcp_locations.size());
 
   size_t bcp_index = 0;
   size_t boot_image_index = 0;
@@ -1033,10 +1047,18 @@ OatFileAssistant::DexOptNeeded OatFileAssistant::OatFileInfo::GetDexOptNeeded(
     return kDex2OatForBootImage;
   }
 
-  if (oat_file_assistant_->HasDexFiles()) {
-    return kDex2OatFromScratch;
+  std::string error_msg;
+  std::optional<bool> has_dex_files = oat_file_assistant_->HasDexFiles(&error_msg);
+  if (has_dex_files.has_value()) {
+    if (*has_dex_files) {
+      return kDex2OatFromScratch;
+    } else {
+      // No dex file, so there is nothing we need to do.
+      return kNoDexOptNeeded;
+    }
   } else {
-    // No dex file, there is nothing we need to do.
+    // Unable to open the dex file, so there is nothing we can do.
+    LOG(WARNING) << error_msg;
     return kNoDexOptNeeded;
   }
 }
@@ -1182,6 +1204,11 @@ bool OatFileAssistant::OatFileInfo::ShouldRecompileForFilter(CompilerFilter::Fil
 }
 
 bool OatFileAssistant::ClassLoaderContextIsOkay(const OatFile& oat_file) const {
+  if (context_ == nullptr) {
+    // The caller requests to skip the check.
+    return true;
+  }
+
   if (oat_file.IsBackedByVdexOnly()) {
     // Only a vdex file, we don't depend on the class loader context.
     return true;
@@ -1190,12 +1217,6 @@ bool OatFileAssistant::ClassLoaderContextIsOkay(const OatFile& oat_file) const {
   if (!CompilerFilter::IsVerificationEnabled(oat_file.GetCompilerFilter())) {
     // If verification is not enabled we don't need to verify the class loader context and we
     // assume it's ok.
-    return true;
-  }
-
-  if (context_ == nullptr) {
-    // When no class loader context is provided (which happens for deprecated
-    // DexFile APIs), just assume it is OK.
     return true;
   }
 

@@ -56,7 +56,7 @@ namespace art {
 // declared as a friend by JniVmExt and JniEnvExt.
 inline IndirectReferenceTable* GetIndirectReferenceTable(ScopedObjectAccess& soa,
                                                          IndirectRefKind kind) {
-  DCHECK_NE(kind, kJniTransitionOrInvalid);
+  DCHECK_NE(kind, kJniTransition);
   JNIEnvExt* env = soa.Env();
   IndirectReferenceTable* irt =
       (kind == kLocal) ? &env->locals_
@@ -723,7 +723,7 @@ class ScopedCheck {
     IndirectRefKind found_kind;
     if (expected_kind == kLocal) {
       found_kind = IndirectReferenceTable::GetIndirectRefKind(obj);
-      if (found_kind == kJniTransitionOrInvalid &&
+      if (found_kind == kJniTransition &&
           obj != nullptr &&
           self->IsJniTransitionReference(obj)) {
         found_kind = kLocal;
@@ -866,7 +866,7 @@ class ScopedCheck {
     bool expect_null = false;
     bool okay = true;
     std::string error_msg;
-    if (ref_kind == kJniTransitionOrInvalid) {
+    if (ref_kind == kJniTransition) {
       if (!soa.Self()->IsJniTransitionReference(java_object)) {
         okay = false;
         error_msg = "use of invalid jobject";
@@ -2340,6 +2340,7 @@ class CheckJNI {
     CallMethodV(__FUNCTION__, env, obj, c, mid, vargs, Primitive::kPrimVoid, kDirect);
   }
 
+  NO_STACK_PROTECTOR
   static void CallStaticVoidMethodV(JNIEnv* env, jclass c, jmethodID mid, va_list vargs) {
     CallMethodV(__FUNCTION__, env, nullptr, c, mid, vargs, Primitive::kPrimVoid, kStatic);
   }
@@ -3304,6 +3305,7 @@ class CheckJNI {
     return result;
   }
 
+  NO_STACK_PROTECTOR
   static JniValueType CallMethodV(const char* function_name, JNIEnv* env, jobject obj, jclass c,
                                   jmethodID mid, va_list vargs, Primitive::Type type,
                                   InvokeType invoke) {

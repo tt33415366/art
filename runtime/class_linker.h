@@ -461,6 +461,12 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_, !Roles::uninterruptible_);
 
+  // Initializes a few essential classes, namely `java.lang.Class`,
+  // `java.lang.Object` and `java.lang.reflect.Field`.
+  void RunEarlyRootClinits(Thread* self)
+      REQUIRES_SHARED(Locks::mutator_lock_)
+      REQUIRES(!Locks::dex_lock_, !Roles::uninterruptible_);
+
   // Initializes classes that have instances in the image but that have
   // <clinit> methods so they could not be initialized by the compiler.
   void RunRootClinits(Thread* self)
@@ -664,31 +670,19 @@ class ClassLinker {
       REQUIRES(!Locks::classlinker_classes_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  // Creates a GlobalRef PathClassLoader or DelegateLastClassLoader (specified by loader_class)
-  // that can be used to load classes from the given dex files. The parent of the class loader
-  // will be set to `parent_loader`. If `parent_loader` is null the parent will be
-  // the boot class loader.
-  // If class_loader points to a different class than PathClassLoader or DelegateLastClassLoader
-  // this method will abort.
-  // Note: the objects are not completely set up. Do not use this outside of tests and the compiler.
-  jobject CreateWellKnownClassLoader(Thread* self,
-                                     const std::vector<const DexFile*>& dex_files,
-                                     jclass loader_class,
-                                     jobject parent_loader,
-                                     jobject shared_libraries = nullptr,
-                                     jobject shared_libraries_after = nullptr)
-      REQUIRES_SHARED(Locks::mutator_lock_)
-      REQUIRES(!Locks::dex_lock_);
-
-  // Calls CreateWellKnownClassLoader(self,
-  //                                  dex_files,
-  //                                  WellKnownClasses::dalvik_system_PathClassLoader,
-  //                                  nullptr)
+  // Calls `CreateWellKnownClassLoader()` with `WellKnownClasses::dalvik_system_PathClassLoader`,
+  // and null parent and libraries. Wraps the result in a JNI global reference.
   jobject CreatePathClassLoader(Thread* self, const std::vector<const DexFile*>& dex_files)
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
-  // Non-GlobalRef version of CreateWellKnownClassLoader
+  // Creates a `PathClassLoader`, `DelegateLastClassLoader` or `InMemoryDexClassLoader`
+  // (specified by loader_class) that can be used to load classes from the given dex files.
+  // The parent of the class loader will be set to `parent_loader`. If `parent_loader` is
+  // null the parent will be the boot class loader.
+  // If `loader_class` points to a different class than `PathClassLoader`,
+  // `DelegateLastClassLoader` or `InMemoryDexClassLoader` this method will abort.
+  // Note: the objects are not completely set up. Do not use this outside of tests and the compiler.
   ObjPtr<mirror::ClassLoader> CreateWellKnownClassLoader(
       Thread* self,
       const std::vector<const DexFile*>& dex_files,
@@ -729,8 +723,7 @@ class ClassLinker {
       REQUIRES(!Locks::classlinker_classes_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  static bool IsBootClassLoader(ScopedObjectAccessAlreadyRunnable& soa,
-                                ObjPtr<mirror::ClassLoader> class_loader)
+  static bool IsBootClassLoader(ObjPtr<mirror::ClassLoader> class_loader)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   ArtMethod* AddMethodToConflictTable(ObjPtr<mirror::Class> klass,
@@ -1012,8 +1005,7 @@ class ClassLinker {
   // class-loader chain could be handled, false otherwise, i.e., a non-supported class-loader
   // was encountered while walking the parent chain (currently only BootClassLoader and
   // PathClassLoader are supported).
-  bool FindClassInBaseDexClassLoader(ScopedObjectAccessAlreadyRunnable& soa,
-                                     Thread* self,
+  bool FindClassInBaseDexClassLoader(Thread* self,
                                      const char* descriptor,
                                      size_t hash,
                                      Handle<mirror::ClassLoader> class_loader,
@@ -1021,8 +1013,7 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
-  bool FindClassInSharedLibraries(ScopedObjectAccessAlreadyRunnable& soa,
-                                  Thread* self,
+  bool FindClassInSharedLibraries(Thread* self,
                                   const char* descriptor,
                                   size_t hash,
                                   Handle<mirror::ClassLoader> class_loader,
@@ -1030,8 +1021,7 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
-  bool FindClassInSharedLibrariesHelper(ScopedObjectAccessAlreadyRunnable& soa,
-                                        Thread* self,
+  bool FindClassInSharedLibrariesHelper(Thread* self,
                                         const char* descriptor,
                                         size_t hash,
                                         Handle<mirror::ClassLoader> class_loader,
@@ -1040,8 +1030,7 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
-  bool FindClassInSharedLibrariesAfter(ScopedObjectAccessAlreadyRunnable& soa,
-                                       Thread* self,
+  bool FindClassInSharedLibrariesAfter(Thread* self,
                                        const char* descriptor,
                                        size_t hash,
                                        Handle<mirror::ClassLoader> class_loader,
@@ -1057,7 +1046,7 @@ class ClassLinker {
   // The method always returns true, to notify to the caller a
   // BaseDexClassLoader has a known lookup.
   bool FindClassInBaseDexClassLoaderClassPath(
-          ScopedObjectAccessAlreadyRunnable& soa,
+          Thread* self,
           const char* descriptor,
           size_t hash,
           Handle<mirror::ClassLoader> class_loader,

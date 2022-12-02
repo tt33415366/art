@@ -102,6 +102,7 @@
 #include "jni_id_type.h"
 #include "linear_alloc.h"
 #include "memory_representation.h"
+#include "metrics/statsd.h"
 #include "mirror/array.h"
 #include "mirror/class-alloc-inl.h"
 #include "mirror/class-inl.h"
@@ -177,7 +178,7 @@
 #include "transaction.h"
 #include "vdex_file.h"
 #include "verifier/class_verifier.h"
-#include "well_known_classes.h"
+#include "well_known_classes-inl.h"
 
 #ifdef ART_TARGET_ANDROID
 #include <android/api-level.h>
@@ -311,7 +312,8 @@ Runtime::Runtime()
       verifier_logging_threshold_ms_(100),
       verifier_missing_kthrow_fatal_(false),
       perfetto_hprof_enabled_(false),
-      perfetto_javaheapprof_enabled_(false) {
+      perfetto_javaheapprof_enabled_(false),
+      out_of_memory_error_hook_(nullptr) {
   static_assert(Runtime::kCalleeSaveSize ==
                     static_cast<uint32_t>(CalleeSaveType::kLastCalleeSaveType), "Unexpected size");
   CheckConstants();
@@ -338,10 +340,16 @@ Runtime::~Runtime() {
     // In this case we will just try again without allocating a peer so that shutdown can continue.
     // Very few things are actually capable of distinguishing between the peer & peerless states so
     // this should be fine.
+    // Running callbacks is prone to deadlocks in libjdwp tests that need an event handler lock to
+    // process any event. We also need to enter a GCCriticalSection when processing certain events
+    // (for ex: removing the last breakpoint). These two restrictions together make the tear down
+    // of the jdwp tests deadlock prone if we fail to finish Thread::Attach callback.
+    // (TODO:b/251163712) Remove this once we update deopt manager to not use GCCriticalSection.
     bool thread_attached = AttachCurrentThread("Shutdown thread",
                                                /* as_daemon= */ false,
                                                GetSystemThreadGroup(),
-                                               /* create_peer= */ IsStarted());
+                                               /* create_peer= */ IsStarted(),
+                                               /* should_run_callbacks= */ false);
     if (UNLIKELY(!thread_attached)) {
       LOG(WARNING) << "Failed to attach shutdown thread. Trying again without a peer.";
       CHECK(AttachCurrentThread("Shutdown thread (no java peer)",
@@ -426,8 +434,8 @@ Runtime::~Runtime() {
   if (IsFinishedStarting()) {
     ScopedTrace trace2("Waiting for Daemons");
     self->ClearException();
-    self->GetJniEnv()->CallStaticVoidMethod(WellKnownClasses::java_lang_Daemons,
-                                            WellKnownClasses::java_lang_Daemons_stop);
+    ScopedObjectAccess soa(self);
+    WellKnownClasses::java_lang_Daemons_stop->InvokeStatic<'V'>(self);
   }
 
   // Shutdown any trace running.
@@ -441,7 +449,7 @@ Runtime::~Runtime() {
   }
 
   if (attach_shutdown_thread) {
-    DetachCurrentThread();
+    DetachCurrentThread(/* should_run_callbacks= */ false);
     self = nullptr;
   }
 
@@ -519,7 +527,8 @@ Runtime::~Runtime() {
   // Destroy allocators before shutting down the MemMap because they may use it.
   java_vm_.reset();
   linear_alloc_.reset();
-  low_4gb_arena_pool_.reset();
+  startup_linear_alloc_.reset();
+  linear_alloc_arena_pool_.reset();
   arena_pool_.reset();
   jit_arena_pool_.reset();
   protected_fault_page_.Reset();
@@ -806,7 +815,6 @@ void Runtime::SweepSystemWeaks(IsMarkedVisitor* visitor) {
     // from mutators. See b/32167580.
     GetJit()->GetCodeCache()->SweepRootTables(visitor);
   }
-  Thread::SweepInterpreterCaches(visitor);
 
   // All other generic system-weak holders.
   for (gc::AbstractSystemWeakHolder* holder : system_weak_holders_) {
@@ -864,43 +872,34 @@ static jobject CreateSystemClassLoader(Runtime* runtime) {
   }
 
   ScopedObjectAccess soa(Thread::Current());
-  ClassLinker* cl = Runtime::Current()->GetClassLinker();
+  ClassLinker* cl = runtime->GetClassLinker();
   auto pointer_size = cl->GetImagePointerSize();
 
-  StackHandleScope<2> hs(soa.Self());
-  Handle<mirror::Class> class_loader_class(
-      hs.NewHandle(soa.Decode<mirror::Class>(WellKnownClasses::java_lang_ClassLoader)));
-  CHECK(cl->EnsureInitialized(soa.Self(), class_loader_class, true, true));
+  ObjPtr<mirror::Class> class_loader_class = GetClassRoot<mirror::ClassLoader>(cl);
+  DCHECK(class_loader_class->IsInitialized());  // Class roots have been initialized.
 
   ArtMethod* getSystemClassLoader = class_loader_class->FindClassMethod(
       "getSystemClassLoader", "()Ljava/lang/ClassLoader;", pointer_size);
   CHECK(getSystemClassLoader != nullptr);
   CHECK(getSystemClassLoader->IsStatic());
 
-  JValue result = InvokeWithJValues(soa,
-                                    nullptr,
-                                    getSystemClassLoader,
-                                    nullptr);
-  JNIEnv* env = soa.Self()->GetJniEnv();
-  ScopedLocalRef<jobject> system_class_loader(env, soa.AddLocalReference<jobject>(result.GetL()));
-  CHECK(system_class_loader.get() != nullptr);
+  ObjPtr<mirror::Object> system_class_loader = getSystemClassLoader->InvokeStatic<'L'>(soa.Self());
+  CHECK(system_class_loader != nullptr);
 
-  soa.Self()->SetClassLoaderOverride(system_class_loader.get());
+  ScopedAssertNoThreadSuspension sants(__FUNCTION__);
+  jobject g_system_class_loader =
+      runtime->GetJavaVM()->AddGlobalRef(soa.Self(), system_class_loader);
+  soa.Self()->SetClassLoaderOverride(g_system_class_loader);
 
-  Handle<mirror::Class> thread_class(
-      hs.NewHandle(soa.Decode<mirror::Class>(WellKnownClasses::java_lang_Thread)));
-  CHECK(cl->EnsureInitialized(soa.Self(), thread_class, true, true));
-
+  ObjPtr<mirror::Class> thread_class = WellKnownClasses::java_lang_Thread.Get();
   ArtField* contextClassLoader =
       thread_class->FindDeclaredInstanceField("contextClassLoader", "Ljava/lang/ClassLoader;");
   CHECK(contextClassLoader != nullptr);
 
   // We can't run in a transaction yet.
-  contextClassLoader->SetObject<false>(
-      soa.Self()->GetPeer(),
-      soa.Decode<mirror::ClassLoader>(system_class_loader.get()).Ptr());
+  contextClassLoader->SetObject<false>(soa.Self()->GetPeer(), system_class_loader);
 
-  return env->NewGlobalRef(system_class_loader.get());
+  return g_system_class_loader;
 }
 
 std::string Runtime::GetCompilerExecutable() const {
@@ -952,26 +951,12 @@ bool Runtime::Start() {
   // Restore main thread state to kNative as expected by native code.
   Thread* self = Thread::Current();
 
-  self->TransitionFromRunnableToSuspended(ThreadState::kNative);
-
   started_ = true;
 
-  if (!IsImageDex2OatEnabled() || !GetHeap()->HasBootImageSpace()) {
-    ScopedObjectAccess soa(self);
-    StackHandleScope<3> hs(soa.Self());
+  class_linker_->RunEarlyRootClinits(self);
+  InitializeIntrinsics();
 
-    ObjPtr<mirror::ObjectArray<mirror::Class>> class_roots = GetClassLinker()->GetClassRoots();
-    auto class_class(hs.NewHandle<mirror::Class>(GetClassRoot<mirror::Class>(class_roots)));
-    auto string_class(hs.NewHandle<mirror::Class>(GetClassRoot<mirror::String>(class_roots)));
-    auto field_class(hs.NewHandle<mirror::Class>(GetClassRoot<mirror::Field>(class_roots)));
-
-    class_linker_->EnsureInitialized(soa.Self(), class_class, true, true);
-    class_linker_->EnsureInitialized(soa.Self(), string_class, true, true);
-    self->AssertNoPendingException();
-    // Field class is needed for register_java_net_InetAddress in libcore, b/28153851.
-    class_linker_->EnsureInitialized(soa.Self(), field_class, true, true);
-    self->AssertNoPendingException();
-  }
+  self->TransitionFromRunnableToSuspended(ThreadState::kNative);
 
   // InitNativeMethods needs to be after started_ so that the classes
   // it touches will have methods linked to the oat file if necessary.
@@ -979,11 +964,6 @@ bool Runtime::Start() {
     ScopedTrace trace2("InitNativeMethods");
     InitNativeMethods();
   }
-
-  // IntializeIntrinsics needs to be called after the WellKnownClasses::Init in InitNativeMethods
-  // because in checking the invocation types of intrinsic methods ArtMethod::GetInvokeType()
-  // needs the SignaturePolymorphic annotation class which is initialized in WellKnownClasses::Init.
-  InitializeIntrinsics();
 
   // InitializeCorePlatformApiPrivateFields() needs to be called after well known class
   // initializtion in InitNativeMethods().
@@ -1050,24 +1030,14 @@ bool Runtime::Start() {
                             GetInstructionSetString(kRuntimeISA));
   }
 
-  StartDaemonThreads();
-
-  // Make sure the environment is still clean (no lingering local refs from starting daemon
-  // threads).
   {
     ScopedObjectAccess soa(self);
+    StartDaemonThreads();
     self->GetJniEnv()->AssertLocalsEmpty();
-  }
 
-  // Send the initialized phase event. Send it after starting the Daemon threads so that agents
-  // cannot delay the daemon threads from starting forever.
-  {
-    ScopedObjectAccess soa(self);
+    // Send the initialized phase event. Send it after starting the Daemon threads so that agents
+    // cannot delay the daemon threads from starting forever.
     callbacks_->NextRuntimePhase(RuntimePhaseCallback::RuntimePhase::kInit);
-  }
-
-  {
-    ScopedObjectAccess soa(self);
     self->GetJniEnv()->AssertLocalsEmpty();
   }
 
@@ -1237,12 +1207,13 @@ void Runtime::InitNonZygoteOrPostFork(
   }
   if (Runtime::Current()->IsSystemServer()) {
     std::string err;
-    ScopedTrace tr("odrefresh stats logging");
+    ScopedTrace tr("odrefresh and device stats logging");
     ScopedThreadSuspension sts(Thread::Current(), ThreadState::kNative);
     // Report stats if available. This should be moved into ART Services when they are ready.
     if (!odrefresh::UploadStatsIfAvailable(&err)) {
       LOG(WARNING) << "Failed to upload odrefresh metrics: " << err;
     }
+    metrics::ReportDeviceMetrics();
   }
 
   if (LIKELY(automatically_set_jni_ids_indirection_) && CanSetJniIdType()) {
@@ -1278,15 +1249,11 @@ void Runtime::StartDaemonThreads() {
 
   Thread* self = Thread::Current();
 
-  // Must be in the kNative state for calling native methods.
-  CHECK_EQ(self->GetState(), ThreadState::kNative);
+  DCHECK_EQ(self->GetState(), ThreadState::kRunnable);
 
-  JNIEnv* env = self->GetJniEnv();
-  env->CallStaticVoidMethod(WellKnownClasses::java_lang_Daemons,
-                            WellKnownClasses::java_lang_Daemons_start);
-  if (env->ExceptionCheck()) {
-    env->ExceptionDescribe();
-    LOG(FATAL) << "Error starting java.lang.Daemons";
+  WellKnownClasses::java_lang_Daemons_start->InvokeStatic<'V'>(self);
+  if (UNLIKELY(self->IsExceptionPending())) {
+    LOG(FATAL) << "Error starting java.lang.Daemons: " << self->GetException()->Dump();
   }
 
   VLOG(startup) << "Runtime::StartDaemonThreads exiting";
@@ -1531,6 +1498,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   is_explicit_gc_disabled_ = runtime_options.Exists(Opt::DisableExplicitGC);
   image_dex2oat_enabled_ = runtime_options.GetOrDefault(Opt::ImageDex2Oat);
   dump_native_stack_on_sig_quit_ = runtime_options.GetOrDefault(Opt::DumpNativeStackOnSigQuit);
+  allow_in_memory_compilation_ = runtime_options.Exists(Opt::AllowInMemoryCompilation);
 
   if (is_zygote_ || runtime_options.Exists(Opt::OnlyUseTrustedOatFiles)) {
     oat_file_manager_->SetOnlyUseTrustedOatFiles();
@@ -1642,6 +1610,11 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   // Cache the apex versions.
   InitializeApexVersions();
 
+  BackgroundGcOption background_gc =
+      gUseReadBarrier ? BackgroundGcOption(gc::kCollectorTypeCCBackground)
+                      : (gUseUserfaultfd ? BackgroundGcOption(xgc_option.collector_type_)
+                                         : runtime_options.GetOrDefault(Opt::BackgroundGc));
+
   heap_ = new gc::Heap(runtime_options.GetOrDefault(Opt::MemoryInitialSize),
                        runtime_options.GetOrDefault(Opt::HeapGrowthLimit),
                        runtime_options.GetOrDefault(Opt::HeapMinFree),
@@ -1661,8 +1634,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
                        instruction_set_,
                        // Override the collector type to CC if the read barrier config.
                        gUseReadBarrier ? gc::kCollectorTypeCC : xgc_option.collector_type_,
-                       gUseReadBarrier ? BackgroundGcOption(gc::kCollectorTypeCCBackground)
-                                       : BackgroundGcOption(xgc_option.collector_type_),
+                       background_gc,
                        runtime_options.GetOrDefault(Opt::LargeObjectSpace),
                        runtime_options.GetOrDefault(Opt::LargeObjectThreshold),
                        runtime_options.GetOrDefault(Opt::ParallelGCThreads),
@@ -1743,11 +1715,17 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
     jit_arena_pool_.reset(new MemMapArenaPool(/* low_4gb= */ false, "CompilerMetadata"));
   }
 
-  if (IsAotCompiler() && Is64BitInstructionSet(kRuntimeISA)) {
-    // 4gb, no malloc. Explanation in header.
-    low_4gb_arena_pool_.reset(new MemMapArenaPool(/* low_4gb= */ true));
+  // For 64 bit compilers, it needs to be in low 4GB in the case where we are cross compiling for a
+  // 32 bit target. In this case, we have 32 bit pointers in the dex cache arrays which can't hold
+  // when we have 64 bit ArtMethod pointers.
+  const bool low_4gb = IsAotCompiler() && Is64BitInstructionSet(kRuntimeISA);
+  if (gUseUserfaultfd) {
+    linear_alloc_arena_pool_.reset(new GcVisitedArenaPool(low_4gb));
+  } else if (low_4gb) {
+    linear_alloc_arena_pool_.reset(new MemMapArenaPool(low_4gb));
   }
   linear_alloc_.reset(CreateLinearAlloc());
+  startup_linear_alloc_.reset(CreateLinearAlloc());
 
   small_irt_allocator_ = new SmallIrtAllocator();
 
@@ -1820,7 +1798,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   // ClassLinker needs an attached thread, but we can't fully attach a thread without creating
   // objects. We can't supply a thread group yet; it will be fixed later. Since we are the main
   // thread, we do not get a java peer.
-  Thread* self = Thread::Attach("main", false, nullptr, false);
+  Thread* self = Thread::Attach("main", false, nullptr, false, /* should_run_callbacks= */ true);
   CHECK_EQ(self->GetThreadId(), ThreadList::kMainThreadId);
   CHECK(self != nullptr);
 
@@ -2180,10 +2158,6 @@ void Runtime::InitNativeMethods() {
   // Set up the native methods provided by the runtime itself.
   RegisterRuntimeNativeMethods(env);
 
-  // Initialize classes used in JNI. The initialization requires runtime native
-  // methods to be loaded first.
-  WellKnownClasses::Init(env);
-
   // Then set up libjavacore / libopenjdk / libicu_jni ,which are just
   // a regular JNI libraries with a regular JNI_OnLoad. Most JNI libraries can
   // just use System.loadLibrary, but libcore can't because it's the library
@@ -2192,20 +2166,26 @@ void Runtime::InitNativeMethods() {
   // By setting calling class to java.lang.Object, the caller location for these
   // JNI libs is core-oj.jar in the ART APEX, and hence they are loaded from the
   // com_android_art linker namespace.
+  jclass java_lang_Object;
+  {
+    ScopedObjectAccess soa(self);
+    java_lang_Object = reinterpret_cast<jclass>(
+        GetJavaVM()->AddGlobalRef(self, GetClassRoot<mirror::Object>(GetClassLinker())));
+  }
 
   // libicu_jni has to be initialized before libopenjdk{d} due to runtime dependency from
   // libopenjdk{d} to Icu4cMetadata native methods in libicu_jni. See http://b/143888405
   {
     std::string error_msg;
     if (!java_vm_->LoadNativeLibrary(
-          env, "libicu_jni.so", nullptr, WellKnownClasses::java_lang_Object, &error_msg)) {
+          env, "libicu_jni.so", nullptr, java_lang_Object, &error_msg)) {
       LOG(FATAL) << "LoadNativeLibrary failed for \"libicu_jni.so\": " << error_msg;
     }
   }
   {
     std::string error_msg;
     if (!java_vm_->LoadNativeLibrary(
-          env, "libjavacore.so", nullptr, WellKnownClasses::java_lang_Object, &error_msg)) {
+          env, "libjavacore.so", nullptr, java_lang_Object, &error_msg)) {
       LOG(FATAL) << "LoadNativeLibrary failed for \"libjavacore.so\": " << error_msg;
     }
   }
@@ -2215,10 +2195,11 @@ void Runtime::InitNativeMethods() {
                                                 : "libopenjdk.so";
     std::string error_msg;
     if (!java_vm_->LoadNativeLibrary(
-          env, kOpenJdkLibrary, nullptr, WellKnownClasses::java_lang_Object, &error_msg)) {
+          env, kOpenJdkLibrary, nullptr, java_lang_Object, &error_msg)) {
       LOG(FATAL) << "LoadNativeLibrary failed for \"" << kOpenJdkLibrary << "\": " << error_msg;
     }
   }
+  env->DeleteGlobalRef(java_lang_Object);
 
   // Initialize well known classes that may invoke runtime native methods.
   WellKnownClasses::LateInit(env);
@@ -2231,17 +2212,28 @@ void Runtime::ReclaimArenaPoolMemory() {
 }
 
 void Runtime::InitThreadGroups(Thread* self) {
-  JNIEnvExt* env = self->GetJniEnv();
-  ScopedJniEnvLocalRefState env_state(env);
+  ScopedObjectAccess soa(self);
+  ArtField* main_thread_group_field = WellKnownClasses::java_lang_ThreadGroup_mainThreadGroup;
+  ArtField* system_thread_group_field = WellKnownClasses::java_lang_ThreadGroup_systemThreadGroup;
+  // Note: This is running before `ClassLinker::RunRootClinits()`, so we cannot rely on
+  // `ThreadGroup` and `Thread` being initialized.
+  // TODO: Clean up initialization order after all well-known methods are converted to `ArtMethod*`
+  // (and therefore the `WellKnownClasses::Init()` shall not initialize any classes).
+  StackHandleScope<2u> hs(self);
+  Handle<mirror::Class> thread_group_class =
+      hs.NewHandle(main_thread_group_field->GetDeclaringClass());
+  bool initialized = GetClassLinker()->EnsureInitialized(
+      self, thread_group_class, /*can_init_fields=*/ true, /*can_init_parents=*/ true);
+  CHECK(initialized);
+  Handle<mirror::Class> thread_class = hs.NewHandle(WellKnownClasses::java_lang_Thread.Get());
+  initialized = GetClassLinker()->EnsureInitialized(
+      self, thread_class, /*can_init_fields=*/ true, /*can_init_parents=*/ true);
+  CHECK(initialized);
   main_thread_group_ =
-      env->NewGlobalRef(env->GetStaticObjectField(
-          WellKnownClasses::java_lang_ThreadGroup,
-          WellKnownClasses::java_lang_ThreadGroup_mainThreadGroup));
+      soa.Vm()->AddGlobalRef(self, main_thread_group_field->GetObject(thread_group_class.Get()));
   CHECK_IMPLIES(main_thread_group_ == nullptr, IsAotCompiler());
   system_thread_group_ =
-      env->NewGlobalRef(env->GetStaticObjectField(
-          WellKnownClasses::java_lang_ThreadGroup,
-          WellKnownClasses::java_lang_ThreadGroup_systemThreadGroup));
+      soa.Vm()->AddGlobalRef(self, system_thread_group_field->GetObject(thread_group_class.Get()));
   CHECK_IMPLIES(system_thread_group_ == nullptr, IsAotCompiler());
 }
 
@@ -2314,6 +2306,9 @@ void Runtime::DumpDeoptimizations(std::ostream& os) {
 }
 
 void Runtime::DumpForSigQuit(std::ostream& os) {
+  // Print backtraces first since they are important do diagnose ANRs,
+  // and ANRs can often be trimmed to limit upload size.
+  thread_list_->DumpForSigQuit(os);
   GetClassLinker()->DumpForSigQuit(os);
   GetInternTable()->DumpForSigQuit(os);
   GetJavaVM()->DumpForSigQuit(os);
@@ -2329,7 +2324,6 @@ void Runtime::DumpForSigQuit(std::ostream& os) {
   GetMetrics()->DumpForSigQuit(os);
   os << "\n";
 
-  thread_list_->DumpForSigQuit(os);
   BaseMutex::DumpAll(os);
 
   // Inform anyone else who is interested in SigQuit.
@@ -2340,11 +2334,11 @@ void Runtime::DumpForSigQuit(std::ostream& os) {
 }
 
 void Runtime::DumpLockHolders(std::ostream& os) {
-  uint64_t mutator_lock_owner = Locks::mutator_lock_->GetExclusiveOwnerTid();
+  pid_t mutator_lock_owner = Locks::mutator_lock_->GetExclusiveOwnerTid();
   pid_t thread_list_lock_owner = GetThreadList()->GetLockOwner();
   pid_t classes_lock_owner = GetClassLinker()->GetClassesLockOwner();
   pid_t dex_lock_owner = GetClassLinker()->GetDexLockOwner();
-  if ((thread_list_lock_owner | classes_lock_owner | dex_lock_owner) != 0) {
+  if ((mutator_lock_owner | thread_list_lock_owner | classes_lock_owner | dex_lock_owner) != 0) {
     os << "Mutator lock exclusive owner tid: " << mutator_lock_owner << "\n"
        << "ThreadList lock owner tid: " << thread_list_lock_owner << "\n"
        << "ClassLinker classes lock owner tid: " << classes_lock_owner << "\n"
@@ -2419,9 +2413,13 @@ void Runtime::BlockSignals() {
 }
 
 bool Runtime::AttachCurrentThread(const char* thread_name, bool as_daemon, jobject thread_group,
-                                  bool create_peer) {
+                                  bool create_peer, bool should_run_callbacks) {
   ScopedTrace trace(__FUNCTION__);
-  Thread* self = Thread::Attach(thread_name, as_daemon, thread_group, create_peer);
+  Thread* self = Thread::Attach(thread_name,
+                                as_daemon,
+                                thread_group,
+                                create_peer,
+                                should_run_callbacks);
   // Run ThreadGroup.add to notify the group that this thread is now started.
   if (self != nullptr && create_peer && !IsAotCompiler()) {
     ScopedObjectAccess soa(self);
@@ -2430,7 +2428,7 @@ bool Runtime::AttachCurrentThread(const char* thread_name, bool as_daemon, jobje
   return self != nullptr;
 }
 
-void Runtime::DetachCurrentThread() {
+void Runtime::DetachCurrentThread(bool should_run_callbacks) {
   ScopedTrace trace(__FUNCTION__);
   Thread* self = Thread::Current();
   if (self == nullptr) {
@@ -2439,7 +2437,7 @@ void Runtime::DetachCurrentThread() {
   if (self->HasManagedStack()) {
     LOG(FATAL) << *Thread::Current() << " attempting to detach while still running code";
   }
-  thread_list_->Unregister(self);
+  thread_list_->Unregister(self, should_run_callbacks);
 }
 
 mirror::Throwable* Runtime::GetPreAllocatedOutOfMemoryErrorWhenThrowingException() {
@@ -2745,7 +2743,8 @@ void Runtime::RegisterAppInfo(const std::string& package_name,
     return;
   }
   if (!OS::FileExists(profile_output_filename.c_str(), /*check_file_type=*/ false)) {
-    LOG(WARNING) << "JIT profile information will not be recorded: profile file does not exist.";
+    LOG(WARNING) << "JIT profile information will not be recorded: profile file does not exist: "
+                 << profile_output_filename;
     return;
   }
   if (code_paths.empty()) {
@@ -2769,7 +2768,13 @@ void Runtime::EnterTransactionMode(bool strict, mirror::Class* root) {
     // Make initialized classes visibly initialized now. If that happened during the transaction
     // and then the transaction was aborted, we would roll back the status update but not the
     // ClassLinker's bookkeeping structures, so these classes would never be visibly initialized.
-    GetClassLinker()->MakeInitializedClassesVisiblyInitialized(Thread::Current(), /*wait=*/ true);
+    {
+      Thread* self = Thread::Current();
+      StackHandleScope<1> hs(self);
+      HandleWrapper<mirror::Class> h(hs.NewHandleWrapper(&root));
+      ScopedThreadSuspension sts(self, ThreadState::kNative);
+      GetClassLinker()->MakeInitializedClassesVisiblyInitialized(Thread::Current(), /*wait=*/ true);
+    }
     // Pass the runtime `ArenaPool` to the transaction.
     arena_pool = GetArenaPool();
   } else {
@@ -3114,13 +3119,12 @@ bool Runtime::IsAsyncDeoptimizeable(ArtMethod* method, uintptr_t code) const {
   return false;
 }
 
+
 LinearAlloc* Runtime::CreateLinearAlloc() {
-  // For 64 bit compilers, it needs to be in low 4GB in the case where we are cross compiling for a
-  // 32 bit target. In this case, we have 32 bit pointers in the dex cache arrays which can't hold
-  // when we have 64 bit ArtMethod pointers.
-  return (IsAotCompiler() && Is64BitInstructionSet(kRuntimeISA))
-      ? new LinearAlloc(low_4gb_arena_pool_.get())
-      : new LinearAlloc(arena_pool_.get());
+  ArenaPool* pool = linear_alloc_arena_pool_.get();
+  return pool != nullptr
+      ? new LinearAlloc(pool, gUseUserfaultfd)
+      : new LinearAlloc(arena_pool_.get(), /*track_allocs=*/ false);
 }
 
 double Runtime::GetHashTableMinLoadFactor() const {
@@ -3198,6 +3202,9 @@ class UpdateEntryPointsClassVisitor : public ClassVisitor {
     auto pointer_size = Runtime::Current()->GetClassLinker()->GetImagePointerSize();
     for (auto& m : klass->GetMethods(pointer_size)) {
       const void* code = m.GetEntryPointFromQuickCompiledCode();
+      if (!m.IsInvokable()) {
+        continue;
+      }
       // For java debuggable runtimes we also deoptimize native methods. For other cases (boot
       // image profiling) we don't need to deoptimize native methods. If this changes also
       // update Instrumentation::CanUseAotCode.
@@ -3294,6 +3301,31 @@ void Runtime::ResetStartupCompleted() {
   startup_completed_.store(false, std::memory_order_seq_cst);
 }
 
+class CollectStartupDexCacheVisitor : public DexCacheVisitor {
+ public:
+  explicit CollectStartupDexCacheVisitor(VariableSizedHandleScope& handles) : handles_(handles) {}
+
+  void Visit(ObjPtr<mirror::DexCache> dex_cache)
+      REQUIRES_SHARED(Locks::dex_lock_, Locks::mutator_lock_) override {
+    handles_.NewHandle(dex_cache);
+  }
+
+ private:
+  VariableSizedHandleScope& handles_;
+};
+
+class UnlinkVisitor {
+ public:
+  UnlinkVisitor() {}
+
+  void VisitRootIfNonNull(StackReference<mirror::Object>* ref)
+      REQUIRES_SHARED(Locks::mutator_lock_) {
+    if (!ref->IsNull()) {
+      ref->AsMirrorPtr()->AsDexCache()->UnlinkStartupCaches();
+    }
+  }
+};
+
 class Runtime::NotifyStartupCompletedTask : public gc::HeapTask {
  public:
   NotifyStartupCompletedTask() : gc::HeapTask(/*target_run_time=*/ NanoTime()) {}
@@ -3301,11 +3333,26 @@ class Runtime::NotifyStartupCompletedTask : public gc::HeapTask {
   void Run(Thread* self) override {
     VLOG(startup) << "NotifyStartupCompletedTask running";
     Runtime* const runtime = Runtime::Current();
+    // Fetch the startup linear alloc before the checkpoint to play nice with
+    // 1002-notify-startup test which resets the startup state.
+    std::unique_ptr<LinearAlloc> startup_linear_alloc(runtime->ReleaseStartupLinearAlloc());
     {
-      ScopedTrace trace("Releasing app image spaces metadata");
+      ScopedTrace trace("Releasing dex caches and app image spaces metadata");
       ScopedObjectAccess soa(Thread::Current());
-      // Request empty checkpoints to make sure no threads are accessing the image space metadata
-      // section when we madvise it. Use GC exclusion to prevent deadlocks that may happen if
+
+      // Collect dex caches that were allocated with the startup linear alloc.
+      VariableSizedHandleScope handles(soa.Self());
+      {
+        CollectStartupDexCacheVisitor visitor(handles);
+        ReaderMutexLock mu(self, *Locks::dex_lock_);
+        runtime->GetClassLinker()->VisitDexCaches(&visitor);
+      }
+
+      // Request empty checkpoints to make sure no threads are:
+      // - accessing the image space metadata section when we madvise it
+      // - accessing dex caches when we free them
+      //
+      // Use GC exclusion to prevent deadlocks that may happen if
       // multiple threads are attempting to run empty checkpoints at the same time.
       {
         // Avoid using ScopedGCCriticalSection since that does not allow thread suspension. This is
@@ -3314,8 +3361,15 @@ class Runtime::NotifyStartupCompletedTask : public gc::HeapTask {
         gc::ScopedInterruptibleGCCriticalSection sigcs(self,
                                                        gc::kGcCauseRunEmptyCheckpoint,
                                                        gc::kCollectorTypeCriticalSection);
+        // Do the unlinking of dex cache arrays in the GC critical section to
+        // avoid GC not seeing these arrays. We do it before the checkpoint so
+        // we know after the checkpoint, no thread is holding onto the array.
+        UnlinkVisitor visitor;
+        handles.VisitRoots(visitor);
+
         runtime->GetThreadList()->RunEmptyCheckpoint();
       }
+
       for (gc::space::ContinuousSpace* space : runtime->GetHeap()->GetContinuousSpaces()) {
         if (space->IsImageSpace()) {
           gc::space::ImageSpace* image_space = space->AsImageSpace();
@@ -3330,6 +3384,13 @@ class Runtime::NotifyStartupCompletedTask : public gc::HeapTask {
       // Delete the thread pool used for app image loading since startup is assumed to be completed.
       ScopedTrace trace2("Delete thread pool");
       runtime->DeleteThreadPool();
+    }
+
+    {
+      // We know that after the checkpoint, there is no thread that can hold
+      // the startup linear alloc, so it's safe to delete it now.
+      ScopedTrace trace2("Delete startup linear alloc");
+      startup_linear_alloc.reset();
     }
   }
 };
@@ -3383,8 +3444,12 @@ void Runtime::SetJniIdType(JniIdType t) {
   WellKnownClasses::HandleJniIdTypeChange(Thread::Current()->GetJniEnv());
 }
 
+bool Runtime::IsSystemServerProfiled() const {
+  return IsSystemServer() && jit_options_->GetSaveProfilingInfo();
+}
+
 bool Runtime::GetOatFilesExecutable() const {
-  return !IsAotCompiler() && !(IsSystemServer() && jit_options_->GetSaveProfilingInfo());
+  return !IsAotCompiler() && !IsSystemServerProfiled();
 }
 
 void Runtime::ProcessWeakClass(GcRoot<mirror::Class>* root_ptr,

@@ -30,7 +30,7 @@
 #include "base/utils.h"
 #include "optimizing/register_allocator.h"
 
-namespace art {
+namespace art HIDDEN {
 
 namespace jit {
 class JitCompiler;
@@ -49,7 +49,6 @@ class DexFile;
 enum class InstructionSet;
 class InstructionSetFeatures;
 class ProfileCompilationInfo;
-class VerificationResults;
 
 // Enum for CheckProfileMethodsCompiled. Outside CompilerOptions so it can be forward-declared.
 enum class ProfileMethodsCheck : uint8_t {
@@ -84,8 +83,8 @@ class CompilerOptions final {
     kAppImage,                // Creating app image.
   };
 
-  CompilerOptions();
-  ~CompilerOptions();
+  EXPORT CompilerOptions();
+  EXPORT ~CompilerOptions();
 
   CompilerFilter::Filter GetCompilerFilter() const {
     return compiler_filter_;
@@ -299,13 +298,11 @@ class CompilerOptions final {
     return image_classes_;
   }
 
-  bool IsImageClass(const char* descriptor) const;
+  EXPORT bool IsImageClass(const char* descriptor) const;
 
   // Returns whether the given `pretty_descriptor` is in the list of preloaded
   // classes. `pretty_descriptor` should be the result of calling `PrettyDescriptor`.
-  bool IsPreloadedClass(const char* pretty_descriptor) const;
-
-  const VerificationResults* GetVerificationResults() const;
+  EXPORT bool IsPreloadedClass(const char* pretty_descriptor) const;
 
   bool ParseCompilerOptions(const std::vector<std::string>& options,
                             bool ignore_unrecognized,
@@ -392,11 +389,11 @@ class CompilerOptions final {
   // initialized at compile-time, or won't be initialized by the zygote, add
   // initialization checks at entry. This will avoid the need of trampolines
   // which at runtime we will need to dirty after initialization.
-  bool ShouldCompileWithClinitCheck(ArtMethod* method) const;
+  EXPORT bool ShouldCompileWithClinitCheck(ArtMethod* method) const;
 
  private:
-  bool ParseDumpInitFailures(const std::string& option, std::string* error_msg);
-  bool ParseRegisterAllocationStrategy(const std::string& option, std::string* error_msg);
+  EXPORT bool ParseDumpInitFailures(const std::string& option, std::string* error_msg);
+  EXPORT bool ParseRegisterAllocationStrategy(const std::string& option, std::string* error_msg);
 
   CompilerFilter::Filter compiler_filter_;
   size_t huge_method_threshold_;
@@ -422,9 +419,6 @@ class CompilerOptions final {
   // Classes listed in the preloaded-classes file, used for boot image and
   // boot image extension compilation.
   HashSet<std::string> preloaded_classes_;
-
-  // Results of AOT verification.
-  const VerificationResults* verification_results_;
 
   CompilerType compiler_type_;
   ImageType image_type_;

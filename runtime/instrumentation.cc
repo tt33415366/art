@@ -196,8 +196,7 @@ static bool IsProxyInit(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_)
   // Annoyingly this can be called before we have actually initialized WellKnownClasses so therefore
   // we also need to check this based on the declaring-class descriptor. The check is valid because
   // Proxy only has a single constructor.
-  ArtMethod* well_known_proxy_init = jni::DecodeArtMethod(
-      WellKnownClasses::java_lang_reflect_Proxy_init);
+  ArtMethod* well_known_proxy_init = WellKnownClasses::java_lang_reflect_Proxy_init;
   if (well_known_proxy_init == method) {
     return true;
   }
@@ -355,6 +354,14 @@ static const void* GetOptimizedCodeFor(ArtMethod* method) REQUIRES_SHARED(Locks:
 
 void Instrumentation::InitializeMethodsCode(ArtMethod* method, const void* aot_code)
     REQUIRES_SHARED(Locks::mutator_lock_) {
+  if (!method->IsInvokable()) {
+    DCHECK(method->GetEntryPointFromQuickCompiledCode() == nullptr ||
+           Runtime::Current()->GetClassLinker()->IsQuickToInterpreterBridge(
+               method->GetEntryPointFromQuickCompiledCode()));
+    UpdateEntryPoints(method, GetQuickToInterpreterBridge());
+    return;
+  }
+
   // Use instrumentation entrypoints if instrumentation is installed.
   if (UNLIKELY(EntryExitStubsInstalled()) && !IsProxyInit(method)) {
     if (!method->IsNative() && InterpretOnly(method)) {
@@ -531,6 +538,14 @@ void InstrumentationInstallStack(Thread* thread, void* arg, bool deopt_all_frame
           LOG(INFO) << "Ignoring already instrumented " << frame.Dump();
         }
       } else {
+        if (!m->IsRuntimeMethod()) {
+          // Record the method so we can call method entry callbacks for all non-runtime methods on
+          // the stack. Runtime methods don't need method entry callbacks.
+          // TODO(232212577): Add tests to check the validity of the tracefiles generated.
+          // Currently the tracing tests only check a trace file is generated.
+          stack_methods_.push_back(m);
+        }
+
         if (m->IsNative() && Runtime::Current()->IsJavaDebuggable()) {
           // Native methods in debuggable runtimes don't use instrumentation stubs.
           return true;
@@ -542,8 +557,9 @@ void InstrumentationInstallStack(Thread* thread, void* arg, bool deopt_all_frame
         if (method_header != nullptr && method_header->HasShouldDeoptimizeFlag()) {
           if (deopt_all_frames_) {
             runtime_methods_need_deopt_check_ = true;
-            SetShouldDeoptimizeFlag(DeoptimizeFlagValue::kDebug);
+            SetShouldDeoptimizeFlag(DeoptimizeFlagValue::kForceDeoptForRedefinition);
           }
+          SetShouldDeoptimizeFlag(DeoptimizeFlagValue::kCheckCallerForDeopt);
           return true;
         }
         CHECK_NE(return_pc, 0U);
@@ -566,10 +582,6 @@ void InstrumentationInstallStack(Thread* thread, void* arg, bool deopt_all_frame
           LOG(INFO) << "Pushing frame " << instrumentation_frame.Dump();
         }
 
-        if (!m->IsRuntimeMethod()) {
-          // Runtime methods don't need to run method entry callbacks.
-          stack_methods_.push_back(m);
-        }
         instrumentation_stack_->insert({GetReturnPcAddr(), instrumentation_frame});
         SetReturnPc(instrumentation_exit_pc_);
       }
@@ -664,9 +676,6 @@ static void InstrumentationRestoreStack(Thread* thread, void* arg)
           runtime_methods_need_deopt_check_(false) {}
 
     bool VisitFrame() override REQUIRES_SHARED(Locks::mutator_lock_) {
-      if (instrumentation_stack_->size() == 0) {
-        return false;  // Stop.
-      }
       ArtMethod* m = GetMethod();
       if (GetCurrentQuickFrame() == nullptr) {
         if (kVerboseInstrumentation) {
@@ -683,9 +692,10 @@ static void InstrumentationRestoreStack(Thread* thread, void* arg)
       }
       const OatQuickMethodHeader* method_header = GetCurrentOatQuickMethodHeader();
       if (method_header != nullptr && method_header->HasShouldDeoptimizeFlag()) {
-        if (IsShouldDeoptimizeFlagForDebugSet()) {
+        if (ShouldForceDeoptForRedefinition()) {
           runtime_methods_need_deopt_check_ = true;
         }
+        UnsetShouldDeoptimizeFlag(DeoptimizeFlagValue::kCheckCallerForDeopt);
       }
       auto it = instrumentation_stack_->find(GetReturnPcAddr());
       if (it != instrumentation_stack_->end()) {
@@ -731,19 +741,17 @@ static void InstrumentationRestoreStack(Thread* thread, void* arg)
   }
   std::map<uintptr_t, instrumentation::InstrumentationStackFrame>* stack =
       thread->GetInstrumentationStack();
-  if (stack->size() > 0) {
-    Instrumentation* instrumentation = reinterpret_cast<Instrumentation*>(arg);
-    uintptr_t instrumentation_exit_pc =
-        reinterpret_cast<uintptr_t>(GetQuickInstrumentationExitPc());
-    RestoreStackVisitor visitor(thread, instrumentation_exit_pc, instrumentation);
-    visitor.WalkStack(true);
-    DCHECK_IMPLIES(visitor.runtime_methods_need_deopt_check_, thread->IsDeoptCheckRequired());
-    if (!visitor.runtime_methods_need_deopt_check_) {
-      thread->SetDeoptCheckRequired(false);
-    }
-    CHECK_EQ(visitor.frames_removed_, stack->size());
-    stack->clear();
+  Instrumentation* instrumentation = reinterpret_cast<Instrumentation*>(arg);
+  uintptr_t instrumentation_exit_pc =
+      reinterpret_cast<uintptr_t>(GetQuickInstrumentationExitPc());
+  RestoreStackVisitor visitor(thread, instrumentation_exit_pc, instrumentation);
+  visitor.WalkStack(true);
+  DCHECK_IMPLIES(visitor.runtime_methods_need_deopt_check_, thread->IsDeoptCheckRequired());
+  if (!visitor.runtime_methods_need_deopt_check_) {
+    thread->SetDeoptCheckRequired(false);
   }
+  CHECK_EQ(visitor.frames_removed_, stack->size());
+  stack->clear();
 }
 
 void Instrumentation::DeoptimizeAllThreadFrames() {
@@ -1148,7 +1156,7 @@ void Instrumentation::UpdateNativeMethodsCodeToJitCode(ArtMethod* method, const 
   // We don't do any read barrier on `method`'s declaring class in this code, as the JIT might
   // enter here on a soon-to-be deleted ArtMethod. Updating the entrypoint is OK though, as
   // the ArtMethod is still in memory.
-  if (EntryExitStubsInstalled()) {
+  if (EntryExitStubsInstalled() && CodeNeedsEntryExitStub(new_code, method)) {
     // If stubs are installed don't update.
     return;
   }
@@ -1321,14 +1329,10 @@ const void* Instrumentation::GetCodeForInvoke(ArtMethod* method) {
   DCHECK(!method->IsProxyMethod()) << method->PrettyMethod();
   ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
   const void* code = method->GetEntryPointFromQuickCompiledCodePtrSize(kRuntimePointerSize);
-  // If we don't have the instrumentation, the resolution stub, the
-  // interpreter, or the nterp with clinit as entrypoint, just return the current entrypoint,
+  // If we don't have the instrumentation, the resolution stub, or the
+  // interpreter, just return the current entrypoint,
   // assuming it's the most optimized.
-  // We don't want to return the nterp with clinit entrypoint as it calls the
-  // resolution stub, and the resolution stub will call `GetCodeForInvoke` to know the actual
-  // code to invoke.
   if (code != GetQuickInstrumentationEntryPoint() &&
-      code != interpreter::GetNterpWithClinitEntryPoint() &&
       !class_linker->IsQuickResolutionStub(code) &&
       !class_linker->IsQuickToInterpreterBridge(code)) {
     return code;
@@ -1660,14 +1664,17 @@ bool Instrumentation::ShouldDeoptimizeCaller(Thread* self, ArtMethod** sp) {
   ArtMethod* runtime_method = *sp;
   DCHECK(runtime_method->IsRuntimeMethod());
   QuickMethodFrameInfo frame_info = Runtime::Current()->GetRuntimeMethodFrameInfo(runtime_method);
+  return ShouldDeoptimizeCaller(self, sp, frame_info.FrameSizeInBytes());
+}
 
-  uintptr_t caller_sp = reinterpret_cast<uintptr_t>(sp) + frame_info.FrameSizeInBytes();
+bool Instrumentation::ShouldDeoptimizeCaller(Thread* self, ArtMethod** sp, size_t frame_size) {
+  uintptr_t caller_sp = reinterpret_cast<uintptr_t>(sp) + frame_size;
   ArtMethod* caller = *(reinterpret_cast<ArtMethod**>(caller_sp));
-  uintptr_t caller_pc_addr = reinterpret_cast<uintptr_t>(sp) + frame_info.GetReturnPcOffset();
+  uintptr_t caller_pc_addr = reinterpret_cast<uintptr_t>(sp) + (frame_size - sizeof(void*));
   uintptr_t caller_pc = *reinterpret_cast<uintptr_t*>(caller_pc_addr);
-
   return ShouldDeoptimizeCaller(self, caller, caller_pc, caller_sp);
 }
+
 
 bool Instrumentation::ShouldDeoptimizeCaller(Thread* self, const NthCallerVisitor& visitor) {
   uintptr_t caller_sp = reinterpret_cast<uintptr_t>(visitor.GetCurrentQuickFrame());
@@ -1684,6 +1691,7 @@ bool Instrumentation::ShouldDeoptimizeCaller(Thread* self,
                                              uintptr_t caller_sp) {
   if (caller == nullptr ||
       caller->IsNative() ||
+      caller->IsRuntimeMethod() ||
       caller_pc == reinterpret_cast<uintptr_t>(GetQuickInstrumentationExitPc())) {
     // If caller_pc is QuickInstrumentationExit then deoptimization will be handled by the
     // instrumentation exit trampoline so we don't need to handle deoptimizations here.
@@ -1699,15 +1707,17 @@ bool Instrumentation::ShouldDeoptimizeCaller(Thread* self,
   bool needs_deopt = NeedsSlowInterpreterForMethod(self, caller);
 
   // Non java debuggable apps don't support redefinition and hence it isn't required to check if
-  // frame needs to be deoptimized. We also want to avoid getting method header when we need a
-  // deopt anyway.
-  if (Runtime::Current()->IsJavaDebuggable() && !needs_deopt) {
+  // frame needs to be deoptimized. Even in debuggable apps, we only need this check when a
+  // redefinition has actually happened. This is indicated by IsDeoptCheckRequired flag. We also
+  // want to avoid getting method header when we need a deopt anyway.
+  if (Runtime::Current()->IsJavaDebuggable() && !needs_deopt && self->IsDeoptCheckRequired()) {
     const OatQuickMethodHeader* header = caller->GetOatQuickMethodHeader(caller_pc);
     if (header != nullptr && header->HasShouldDeoptimizeFlag()) {
       DCHECK(header->IsOptimized());
       uint8_t* should_deopt_flag_addr =
           reinterpret_cast<uint8_t*>(caller_sp) + header->GetShouldDeoptimizeFlagOffset();
-      if ((*should_deopt_flag_addr & static_cast<uint8_t>(DeoptimizeFlagValue::kDebug)) != 0) {
+      if ((*should_deopt_flag_addr &
+           static_cast<uint8_t>(DeoptimizeFlagValue::kForceDeoptForRedefinition)) != 0) {
         needs_deopt = true;
       }
     }

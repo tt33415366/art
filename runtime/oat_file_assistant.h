@@ -146,6 +146,8 @@ class OatFileAssistant {
   // device. For example, on an arm device, use arm or arm64. An oat file can
   // be loaded executable only if the ISA matches the current runtime.
   //
+  // context should be the class loader context to check against, or null to skip the check.
+  //
   // load_executable should be true if the caller intends to try and load
   // executable code for this dex location.
   //
@@ -182,7 +184,7 @@ class OatFileAssistant {
   static std::unique_ptr<OatFileAssistant> Create(
       const std::string& filename,
       const std::string& isa_str,
-      const std::string& context_str,
+      const std::optional<std::string>& context_str,
       bool load_executable,
       bool only_load_trusted_executable,
       OatFileAssistantContext* ofa_context,
@@ -282,8 +284,8 @@ class OatFileAssistant {
                            const std::string& dex_location,
                            std::vector<std::unique_ptr<const DexFile>>* out_dex_files);
 
-  // Returns whether this is an apk/zip wit a classes.dex entry.
-  bool HasDexFiles();
+  // Returns whether this is an apk/zip wit a classes.dex entry, or nullopt if an error occurred.
+  std::optional<bool> HasDexFiles(std::string* error_msg);
 
   // If the dex file has been installed with a compiled oat file alongside
   // it, the compiled oat file will have the extension .odex, and is referred
@@ -487,12 +489,10 @@ class OatFileAssistant {
   OatStatus GivenOatFileStatus(const OatFile& file);
 
   // Gets the dex checksums required for an up-to-date oat file.
-  // Returns cached_required_dex_checksums if the required checksums were
-  // located. Returns null if the required checksums were not found.  The
-  // caller shouldn't clean up or free the returned pointer.  This sets the
-  // has_original_dex_files_ field to true if the checksums were found for the
-  // dex_location_ dex file.
-  const std::vector<uint32_t>* GetRequiredDexChecksums();
+  // Returns cached_required_dex_checksums if the required checksums were located. Returns an empty
+  // list if `dex_location_` refers to a zip and there is no dex file in it. Returns nullptr if an
+  // error occurred. The caller shouldn't clean up or free the returned pointer.
+  const std::vector<uint32_t>* GetRequiredDexChecksums(std::string* error_msg);
 
   // Returns whether there is at least one boot image usable.
   bool IsPrimaryBootImageUsable();
@@ -523,6 +523,8 @@ class OatFileAssistant {
 
   std::string dex_location_;
 
+  // The class loader context to check against, or null representing that the check should be
+  // skipped.
   ClassLoaderContext* context_;
 
   // Whether or not the parent directory of the dex file is writable.
@@ -543,10 +545,9 @@ class OatFileAssistant {
 
   // Cached value of the required dex checksums.
   // This should be accessed only by the GetRequiredDexChecksums() method.
-  std::vector<uint32_t> cached_required_dex_checksums_;
+  std::optional<std::vector<uint32_t>> cached_required_dex_checksums_;
+  std::string cached_required_dex_checksums_error_;
   bool required_dex_checksums_attempted_ = false;
-  bool required_dex_checksums_found_;
-  bool has_original_dex_files_;
 
   // The AOT-compiled file of an app when the APK of the app is in /data.
   OatFileInfo odex_;

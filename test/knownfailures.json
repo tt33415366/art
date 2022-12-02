@@ -81,7 +81,7 @@
     },
     {
         "tests" : "629-vdex-speed",
-        "variant": "interp-ac | interpreter | jit",
+        "variant": "interp-ac | interpreter | no-prebuild | debuggable | trace | stream",
         "description": "629 requires compilation."
     },
     {
@@ -383,16 +383,10 @@
         "variant": "interp-ac"
     },
     {
-        "tests": ["629-vdex-speed",
-                  "634-vdex-duplicate"],
-        "description": ["Profile driven dexlayout does not work with vdex or dex verifier."],
-        "variant": "speed-profile"
-    },
-    {
         "test_patterns": ["616-cha.*"],
         "description": ["cha tests rely on knowing the exact set of optimizations available. ",
                         "Debuggable runtimes change the set of optimizations."],
-        "variant": "debuggable"
+        "variant": "debuggable | trace | stream"
     },
     {
         "test_patterns": ["616-cha.*"],
@@ -550,6 +544,7 @@
             "674-hiddenapi",
             "690-hiddenapi-same-name-methods",
             "804-class-extends-itself",
+            "842-vdex-hard-failure",
             "921-hello-failure",
             "999-redefine-hiddenapi"
         ],
@@ -712,10 +707,9 @@
         "description": "Test disabled due to redefine-stress disabling intrinsics which changes the trace output slightly."
     },
     {
-        "tests": ["137-cfi", "629-vdex-speed"],
-        "description": [ "Tests require speed compilation which is no longer the default for",
-                          "no-prebuild or no-image configs."],
-        "variant": "no-prebuild | no-image"
+        "tests": ["137-cfi"],
+        "description": [ "Tests require speed compilation which is no longer the default for no-prebuild"],
+        "variant": "no-prebuild"
     },
     {
         "tests": ["059-finalizer-throw", "063-process-manager"],
@@ -760,20 +754,13 @@
         "bug": "b/64683522"
     },
     {
-        "tests": ["628-vdex",
-                  "629-vdex-speed",
-                  "634-vdex-duplicate"],
-        "variant": "cdex-fast",
-        "description": ["Tests that depend on input-vdex are not supported with compact dex"]
-    },
-    {
         "tests": ["661-oat-writer-layout"],
         "variant": "interp-ac | interpreter | jit | jit-on-first-use | no-prebuild | no-image | trace | redefine-stress | jvmti-stress",
         "description": ["Test is designed to only check --optimizing"]
     },
     {
         "tests": ["004-StackWalk"],
-        "variant": "speed-profile | interp-ac | interpreter | jit | no-prebuild | no-image | trace | redefine-stress | jvmti-stress | debuggable",
+        "variant": "speed-profile | interp-ac | interpreter | jit | no-prebuild | no-image | trace | redefine-stress | jvmti-stress | debuggable | stream",
         "description": ["Test is designed to only check --optimizing"]
     },
     {
@@ -1030,6 +1017,7 @@
           "816-illegal-new-array",
           "819-verification-runtime",
           "823-cha-inlining",
+          "842-vdex-hard-failure",
           "900-hello-plugin",
           "901-hello-ti-agent",
           "903-hello-tagging",
@@ -1091,7 +1079,8 @@
           "1946-list-descriptors",
           "1947-breakpoint-redefine-deopt",
           "2041-bad-cleaner",
-          "2230-profile-save-hotness"
+          "2230-profile-save-hotness",
+          "2245-checker-smali-instance-of-comparison"
         ],
         "variant": "jvm",
         "bug": "b/73888836",
@@ -1140,7 +1129,7 @@
                   "2006-virtual-structural-finalizing",
                   "2007-virtual-structural-finalizable"
                 ],
-        "env_vars": {"ART_USE_READ_BARRIER": "false"},
+        "env_vars": {"ART_USE_READ_BARRIER": "false", "ART_DEFAULT_GC_TYPE": "CMS"},
         "description": ["Relies on the accuracy of the Heap::VisitObjects function which is broken",
                         " when READ_BARRIER==false (I.e. On CMS collector)."],
         "bug": "b/147207934"
@@ -1176,6 +1165,9 @@
                   "833-background-verification",
                   "836-32768classes",
                   "837-deopt",
+                  "844-exception",
+                  "844-exception2",
+                  "845-fast-verify",
                   "999-redefine-hiddenapi",
                   "1000-non-moving-space-stress",
                   "1001-app-image-regions",
@@ -1226,7 +1218,8 @@
                   "2036-structural-subclass-shadow",
                   "2038-hiddenapi-jvmti-ext",
                   "2040-huge-native-alloc",
-                  "2238-checker-polymorphic-recursive-inlining"],
+                  "2238-checker-polymorphic-recursive-inlining",
+                  "2240-tracing-non-invokable-method"],
         "variant": "jvm",
         "description": ["Doesn't run on RI."]
     },
@@ -1315,7 +1308,7 @@
     },
     {
         "tests": ["1339-dead-reference-safe"],
-        "variant": "debuggable",
+        "variant": "debuggable | trace | stream",
         "description": [ "Fails to eliminate dead reference when debuggable." ]
     },
     {
@@ -1334,14 +1327,11 @@
         "description": ["Test containing Checker assertions expecting Baker read barriers."]
     },
     {
-        "tests": ["2009-structural-local-ref",
-                  "2035-structural-native-method",
-	          "2036-structural-subclass-shadow",
-	          "2040-huge-native-alloc",
-	          "905-object-free"],
+        "tests": ["2040-huge-native-alloc"],
         "env_vars": {"ART_USE_READ_BARRIER": "false"},
+	"variant": "debug",
         "bug": "b/242181443",
-        "description": ["Tests temporarily disabled for userfaultfd GC. Remove once native GC-root updation is implemented."]
+        "description": ["Test fails due to delay delebrately added in the userfaultfd GC between marking and compaction."]
     },
     {
         "tests": ["1004-checker-volatile-ref-load"],
@@ -1377,17 +1367,17 @@
     },
     {
         "tests": ["2029-contended-monitors", "2043-reference-pauses"],
-        "variant": "interpreter | interp-ac | gcstress | trace",
+        "variant": "interpreter | interp-ac | gcstress | trace | stream",
         "description": ["Slow tests. Prone to timeouts."]
     },
     {
         "tests": ["2042-reference-processing"],
-        "variant": "interpreter | interp-ac | gcstress | trace | debuggable",
+        "variant": "interpreter | interp-ac | gcstress | trace | debuggable | stream",
         "description": ["Slow test. Prone to timeouts."]
     },
     {
         "tests": ["2043-reference-pauses"],
-        "env_vars": {"ART_USE_READ_BARRIER": "false"},
+        "env_vars": {"ART_USE_READ_BARRIER": "false", "ART_DEFAULT_GC_TYPE": "CMS"},
         "variant": "host",
         "bug": "b/232459100",
         "description": ["Fails intermittently for CMS."]
@@ -1450,7 +1440,7 @@
     },
     {
         "tests": ["692-vdex-secondary-loader"],
-        "env_vars": {"ART_USE_READ_BARRIER": "false"},
+        "env_vars": {"ART_USE_READ_BARRIER": "false", "ART_DEFAULT_GC_TYPE": "CMS"},
         "description": ["Uses the low-ram flag which does not work with CMS"]
     },
     {

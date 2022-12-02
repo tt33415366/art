@@ -58,7 +58,11 @@ art_module_cc_defaults {
             cflags: ["-Wno-frame-larger-than="],
         },
         host: {
-            cflags: ["-Wno-frame-larger-than="],
+            cflags: [
+                "-Wno-frame-larger-than=",
+                "-fsanitize-address-use-after-return=never",
+                "-Wno-unused-command-line-argument",
+            ],
         },
     },
 }
@@ -220,6 +224,10 @@ art_cc_defaults {
             shared_libs: [
                 "libziparchive",
             ],
+            cflags: [
+                "-fsanitize-address-use-after-return=never",
+                "-Wno-unused-command-line-argument",
+            ],
         },
     },
 }
@@ -343,6 +351,12 @@ art_cc_defaults {
         "libgtest_isolated",
     ],
     target: {
+        host: {
+            cflags: [
+                "-fsanitize-address-use-after-return=never",
+                "-Wno-unused-command-line-argument",
+            ],
+        },
         android32: {
             cflags: ["-DART_TARGET_NATIVETEST_DIR=/data/nativetest/art"],
         },
@@ -417,6 +431,12 @@ art_cc_defaults {
         "liblog",
     ],
     target: {
+        host: {
+            cflags: [
+                "-fsanitize-address-use-after-return=never",
+                "-Wno-unused-command-line-argument",
+            ],
+        },
         darwin: {
             enabled: false,
         },
@@ -1373,33 +1393,6 @@ csuite_test {
     test_config_template: "csuite-app-compile-launch.xml",
 }
 
-// Install run-test data in the output directory.
-prebuilt_etc_host {
-    name: "art-run-test-host-data",
-    defaults: ["art_module_source_build_prebuilt_defaults"],
-    src: ":art-run-test-host-data-merged",
-    sub_dir: "art",
-    filename: "art-run-test-host-data.zip",
-}
-
-// Install run-test data in the output directory.
-prebuilt_etc_host {
-    name: "art-run-test-jvm-data",
-    defaults: ["art_module_source_build_prebuilt_defaults"],
-    src: ":art-run-test-jvm-data-merged",
-    sub_dir: "art",
-    filename: "art-run-test-jvm-data.zip",
-}
-
-// Install run-test data in the output directory.
-prebuilt_etc_host {
-    name: "art-run-test-target-data",
-    defaults: ["art_module_source_build_prebuilt_defaults"],
-    src: ":art-run-test-target-data-merged",
-    sub_dir: "art",
-    filename: "art-run-test-target-data.zip",
-}
-
 filegroup {
     name: "art-gtest-jars",
     srcs: [
@@ -1893,13 +1886,7 @@ genrule_defaults {
         "art_module_source_build_genrule_defaults",
     ],
     tool_files: [
-        "art_build_rules.py",
-        "run-test-build.py",
-        "buildfailures.json",
-        "etc/default-build.py",
-        "etc/default-check",
-        "etc/default-run",
-        "etc/run-test-jar",
+        "run_test_build.py",
         ":art-run-test-bootclasspath",
     ],
     tools: [

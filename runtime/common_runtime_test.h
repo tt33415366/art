@@ -152,6 +152,7 @@ class CommonRuntimeTestImpl : public CommonArtTestImpl {
   jobject LoadMultiDex(const char* first_dex_name, const char* second_dex_name)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+  // The following helper functions return global JNI references to the class loader.
   jobject LoadDexInPathClassLoader(const std::string& dex_name,
                                    jobject parent_loader,
                                    jobject shared_libraries = nullptr,
@@ -162,11 +163,13 @@ class CommonRuntimeTestImpl : public CommonArtTestImpl {
                                    jobject shared_libraries_after = nullptr);
   jobject LoadDexInDelegateLastClassLoader(const std::string& dex_name, jobject parent_loader);
   jobject LoadDexInInMemoryDexClassLoader(const std::string& dex_name, jobject parent_loader);
-  jobject LoadDexInWellKnownClassLoader(const std::vector<std::string>& dex_names,
-                                        jclass loader_class,
+  jobject LoadDexInWellKnownClassLoader(ScopedObjectAccess& soa,
+                                        const std::vector<std::string>& dex_names,
+                                        ObjPtr<mirror::Class> loader_class,
                                         jobject parent_loader,
                                         jobject shared_libraries = nullptr,
-                                        jobject shared_libraries_after = nullptr);
+                                        jobject shared_libraries_after = nullptr)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   void VisitDexes(ArrayRef<const std::string> dexes,
                   const std::function<void(MethodReference)>& method_visitor,
@@ -198,8 +201,7 @@ class CommonRuntimeTestImpl : public CommonArtTestImpl {
   // Get the dex files from a PathClassLoader or DelegateLastClassLoader.
   // This only looks into the current class loader and does not recurse into the parents.
   std::vector<const DexFile*> GetDexFiles(jobject jclass_loader);
-  std::vector<const DexFile*> GetDexFiles(ScopedObjectAccess& soa,
-                                          Handle<mirror::ClassLoader> class_loader)
+  std::vector<const DexFile*> GetDexFiles(Thread* self, Handle<mirror::ClassLoader> class_loader)
     REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Get the first dex file from a PathClassLoader. Will abort if it is null.
@@ -221,7 +223,7 @@ class CommonRuntimeTestImpl : public CommonArtTestImpl {
   static std::string GetImageLocation();
   static std::string GetSystemImageFile();
 
-  static void EnterTransactionMode();
+  static void EnterTransactionMode() REQUIRES_SHARED(Locks::mutator_lock_);
   static void ExitTransactionMode();
   static void RollbackAndExitTransactionMode() REQUIRES_SHARED(Locks::mutator_lock_);
   static bool IsTransactionAborted();
@@ -295,12 +297,6 @@ class CheckJniAbortCatcher {
 #define TEST_DISABLED_FOR_X86_64() \
   if (kRuntimeISA == InstructionSet::kX86_64) { \
     printf("WARNING: TEST DISABLED FOR X86_64\n"); \
-    return; \
-  }
-
-#define TEST_DISABLED_FOR_STRING_COMPRESSION() \
-  if (mirror::kUseStringCompression) { \
-    printf("WARNING: TEST DISABLED FOR STRING COMPRESSION\n"); \
     return; \
   }
 

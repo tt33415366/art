@@ -89,7 +89,7 @@
 #include "jni/jni_id_manager.h"
 #include "jvmti.h"
 #include "jvmti_allocator.h"
-#include "linear_alloc.h"
+#include "linear_alloc-inl.h"
 #include "mirror/array-alloc-inl.h"
 #include "mirror/array.h"
 #include "mirror/class-alloc-inl.h"
@@ -130,7 +130,7 @@
 #include "transform.h"
 #include "verifier/class_verifier.h"
 #include "verifier/verifier_enums.h"
-#include "well_known_classes.h"
+#include "well_known_classes-inl.h"
 #include "write_barrier.h"
 
 namespace openjdkjvmti {
@@ -310,7 +310,9 @@ class ObsoleteMethodStackVisitor : public art::StackVisitor {
         art::ClassLinker* cl = runtime->GetClassLinker();
         auto ptr_size = cl->GetImagePointerSize();
         const size_t method_size = art::ArtMethod::Size(ptr_size);
-        auto* method_storage = allocator_->Alloc(art::Thread::Current(), method_size);
+        auto* method_storage = allocator_->Alloc(art::Thread::Current(),
+                                                 method_size,
+                                                 art::LinearAllocKind::kArtMethod);
         CHECK(method_storage != nullptr) << "Unable to allocate storage for obsolete version of '"
                                          << old_method->PrettyMethod() << "'";
         new_obsolete_method = new (method_storage) art::ArtMethod();
@@ -454,8 +456,7 @@ jvmtiError Redefiner::GetClassRedefinitionError(art::Handle<art::mirror::Class> 
     }
     // Check Thread specifically since it's not a root but too many things reach into it with Unsafe
     // too allow structural redefinition.
-    if (klass->IsAssignableFrom(
-            self->DecodeJObject(art::WellKnownClasses::java_lang_Thread)->AsClass())) {
+    if (klass->IsAssignableFrom(art::WellKnownClasses::java_lang_Thread.Get())) {
       *error_msg =
           "java.lang.Thread has fields accessed using sun.misc.unsafe directly. It is not "
           "safe to structurally redefine it.";
@@ -551,6 +552,13 @@ Redefiner::ClassRedefinition::ClassRedefinition(
 Redefiner::ClassRedefinition::~ClassRedefinition() {
   if (driver_ != nullptr && lock_acquired_) {
     GetMirrorClass()->MonitorExit(driver_->self_);
+  }
+  if (art::kIsDebugBuild) {
+    if (dex_file_ != nullptr) {
+      art::Thread* self = art::Thread::Current();
+      art::ClassLinker* cl = art::Runtime::Current()->GetClassLinker();
+      CHECK(!cl->IsDexFileRegistered(self, *dex_file_));
+    }
   }
 }
 
@@ -1224,6 +1232,8 @@ class RedefinitionDataHolder {
     actually_structural_(redefinitions_->size(), false),
     initial_structural_(redefinitions_->size(), false) {}
 
+  ~RedefinitionDataHolder() REQUIRES_SHARED(art::Locks::mutator_lock_);
+
   bool IsNull() const REQUIRES_SHARED(art::Locks::mutator_lock_) {
     return arr_.IsNull();
   }
@@ -1621,6 +1631,24 @@ RedefinitionDataIter RedefinitionDataHolder::end() {
   return RedefinitionDataIter(Length(), *this);
 }
 
+RedefinitionDataHolder::~RedefinitionDataHolder() {
+  art::Thread* self = art::Thread::Current();
+  art::ClassLinker* cl = art::Runtime::Current()->GetClassLinker();
+  for (RedefinitionDataIter data = begin(); data != end(); ++data) {
+    art::ObjPtr<art::mirror::DexCache> dex_cache = data.GetNewDexCache();
+    // When redefinition fails, the dex file will be deleted in the
+    // `ClassRedefinition` destructor. To avoid having a heap `DexCache` pointing
+    // to a dangling pointer, we clear the entries of those dex caches that are
+    // not registered in the runtime.
+    if (dex_cache != nullptr &&
+        dex_cache->GetDexFile() != nullptr &&
+        !cl->IsDexFileRegistered(self, *dex_cache->GetDexFile())) {
+      dex_cache->ResetNativeArrays();
+      dex_cache->SetDexFile(nullptr);
+    }
+  }
+}
+
 bool Redefiner::ClassRedefinition::CheckVerification(const RedefinitionDataIter& iter) {
   DCHECK_EQ(dex_file_->NumClassDefs(), 1u);
   art::StackHandleScope<3> hs(driver_->self_);
@@ -1813,13 +1841,12 @@ bool Redefiner::ClassRedefinition::CollectAndCreateNewInstances(
 
 bool Redefiner::ClassRedefinition::FinishRemainingCommonAllocations(
     /*out*/RedefinitionDataIter* cur_data) {
-  art::ScopedObjectAccessUnchecked soa(driver_->self_);
   art::StackHandleScope<2> hs(driver_->self_);
   cur_data->SetMirrorClass(GetMirrorClass());
   // This shouldn't allocate
   art::Handle<art::mirror::ClassLoader> loader(hs.NewHandle(GetClassLoader()));
   // The bootclasspath is handled specially so it doesn't have a j.l.DexFile.
-  if (!art::ClassLinker::IsBootClassLoader(soa, loader.Get())) {
+  if (!art::ClassLinker::IsBootClassLoader(loader.Get())) {
     cur_data->SetSourceClassLoader(loader.Get());
     art::Handle<art::mirror::Object> dex_file_obj(hs.NewHandle(
         ClassLoaderHelper::FindSourceDexFileObject(driver_->self_, loader)));
@@ -2229,6 +2256,11 @@ bool Redefiner::FinishAllRemainingCommonAllocations(RedefinitionDataHolder& hold
 }
 
 void Redefiner::ClassRedefinition::ReleaseDexFile() {
+  if (art::kIsDebugBuild) {
+    art::Thread* self = art::Thread::Current();
+    art::ClassLinker* cl = art::Runtime::Current()->GetClassLinker();
+    CHECK(cl->IsDexFileRegistered(self, *dex_file_));
+  }
   dex_file_.release();  // NOLINT b/117926937
 }
 
