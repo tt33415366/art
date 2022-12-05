@@ -382,6 +382,7 @@ apex {
     name: "com.android.art",
     defaults: ["com.android.art-device-defaults"],
     certificate: ":com.android.art.certificate",
+    androidManifest: "AndroidManifest.xml",
 }
 
 // "Debug" version of the ART APEX module (containing both release and
