@@ -38,7 +38,7 @@ license {
         "SPDX-license-identifier-GPL-with-classpath-exception",
     ],
     license_text: [
-        "NOTICE",
+        "LICENSE",
     ],
 }
 
