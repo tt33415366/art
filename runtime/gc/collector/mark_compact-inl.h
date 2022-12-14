@@ -17,13 +17,25 @@
 #ifndef ART_RUNTIME_GC_COLLECTOR_MARK_COMPACT_INL_H_
 #define ART_RUNTIME_GC_COLLECTOR_MARK_COMPACT_INL_H_
 
+#include "gc/space/bump_pointer_space.h"
 #include "mark_compact.h"
-
 #include "mirror/object-inl.h"
 
 namespace art {
 namespace gc {
 namespace collector {
+
+inline void MarkCompact::UpdateClassAfterObjectMap(mirror::Object* obj) {
+  mirror::Class* klass = obj->GetClass<kVerifyNone, kWithoutReadBarrier>();
+  if (UNLIKELY(std::less<mirror::Object*>{}(obj, klass) &&
+               bump_pointer_space_->HasAddress(klass))) {
+    auto [iter, success] = class_after_obj_map_.try_emplace(ObjReference::FromMirrorPtr(klass),
+                                                            ObjReference::FromMirrorPtr(obj));
+    if (!success && std::less<mirror::Object*>{}(obj, iter->second.AsMirrorPtr())) {
+      iter->second = ObjReference::FromMirrorPtr(obj);
+    }
+  }
+}
 
 template <size_t kAlignment>
 inline uintptr_t MarkCompact::LiveWordsBitmap<kAlignment>::SetLiveWords(uintptr_t begin,
@@ -221,31 +233,31 @@ inline void MarkCompact::UpdateRef(mirror::Object* obj, MemberOffset offset) {
 inline bool MarkCompact::VerifyRootSingleUpdate(void* root,
                                                 mirror::Object* old_ref,
                                                 const RootInfo& info) {
-  void* stack_end = stack_end_;
-  void* stack_addr = stack_addr_;
-  if (!live_words_bitmap_->HasAddress(old_ref)) {
-    return false;
+  // ASAN promotes stack-frames to heap in order to detect
+  // stack-use-after-return issues. So skip using this double-root update
+  // detection on ASAN as well.
+  if (kIsDebugBuild && !kMemoryToolIsAvailable) {
+    void* stack_low_addr = stack_low_addr_;
+    void* stack_high_addr = stack_high_addr_;
+    if (!live_words_bitmap_->HasAddress(old_ref)) {
+      return false;
+    }
+    if (UNLIKELY(stack_low_addr == nullptr)) {
+      Thread* self = Thread::Current();
+      stack_low_addr = self->GetStackEnd();
+      stack_high_addr = reinterpret_cast<char*>(stack_low_addr) + self->GetStackSize();
+    }
+    if (root < stack_low_addr || root > stack_high_addr) {
+      auto ret = updated_roots_.insert(root);
+      DCHECK(ret.second) << "root=" << root << " old_ref=" << old_ref
+                         << " stack_low_addr=" << stack_low_addr
+                         << " stack_high_addr=" << stack_high_addr;
+    }
+    DCHECK(reinterpret_cast<uint8_t*>(old_ref) >= black_allocations_begin_ ||
+           live_words_bitmap_->Test(old_ref))
+        << "ref=" << old_ref << " <" << mirror::Object::PrettyTypeOf(old_ref) << "> RootInfo ["
+        << info << "]";
   }
-  if (UNLIKELY(stack_end == nullptr)) {
-    pthread_attr_t attr;
-    size_t stack_size;
-    pthread_getattr_np(pthread_self(), &attr);
-    pthread_attr_getstack(&attr, &stack_addr, &stack_size);
-    pthread_attr_destroy(&attr);
-    stack_end = reinterpret_cast<char*>(stack_addr) + stack_size;
-  }
-  if (root < stack_addr || root > stack_end) {
-    auto ret = updated_roots_.insert(root);
-    DCHECK(ret.second) << "root=" << root
-                       << " old_ref=" << old_ref
-                       << " stack_addr=" << stack_addr
-                       << " stack_end=" << stack_end;
-  }
-  DCHECK(reinterpret_cast<uint8_t*>(old_ref) >= black_allocations_begin_
-         || live_words_bitmap_->Test(old_ref))
-        << "ref=" << old_ref
-        << " <" << mirror::Object::PrettyTypeOf(old_ref)
-        << "> RootInfo [" << info << "]";
   return true;
 }
 
@@ -253,7 +265,7 @@ inline void MarkCompact::UpdateRoot(mirror::CompressedReference<mirror::Object>*
                                     const RootInfo& info) {
   DCHECK(!root->IsNull());
   mirror::Object* old_ref = root->AsMirrorPtr();
-  if (!kIsDebugBuild || VerifyRootSingleUpdate(root, old_ref, info)) {
+  if (VerifyRootSingleUpdate(root, old_ref, info)) {
     mirror::Object* new_ref = PostCompactAddress(old_ref);
     if (old_ref != new_ref) {
       root->Assign(new_ref);
@@ -263,7 +275,7 @@ inline void MarkCompact::UpdateRoot(mirror::CompressedReference<mirror::Object>*
 
 inline void MarkCompact::UpdateRoot(mirror::Object** root, const RootInfo& info) {
   mirror::Object* old_ref = *root;
-  if (!kIsDebugBuild || VerifyRootSingleUpdate(root, old_ref, info)) {
+  if (VerifyRootSingleUpdate(root, old_ref, info)) {
     mirror::Object* new_ref = PostCompactAddress(old_ref);
     if (old_ref != new_ref) {
       *root = new_ref;
