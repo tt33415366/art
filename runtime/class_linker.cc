@@ -2128,8 +2128,7 @@ bool ClassLinker::AddImageSpace(
           // Set image methods' entry point that point to the nterp trampoline to the
           // nterp entry point. This allows taking the fast path when doing a
           // nterp->nterp call.
-          DCHECK_IMPLIES(NeedsClinitCheckBeforeCall(&method),
-                         method.GetDeclaringClass()->IsVisiblyInitialized());
+          DCHECK(!method.StillNeedsClinitCheck());
           method.SetEntryPointFromQuickCompiledCode(interpreter::GetNterpEntryPoint());
         } else {
           method.SetEntryPointFromQuickCompiledCode(GetQuickToInterpreterBridge());
@@ -2491,7 +2490,7 @@ void ClassLinker::DeleteClassLoader(Thread* self, const ClassLoaderData& data, b
     }
   } else if (cha_ != nullptr) {
     // If we don't have a JIT, we need to manually remove the CHA dependencies manually.
-    cha_->RemoveDependenciesForLinearAlloc(data.allocator);
+    cha_->RemoveDependenciesForLinearAlloc(self, data.allocator);
   }
   // Cleanup references to single implementation ArtMethods that will be deleted.
   if (cleanup_cha) {
@@ -3504,10 +3503,9 @@ void ClassLinker::FixupStaticTrampolines(Thread* self, ObjPtr<mirror::Class> kla
   instrumentation::Instrumentation* instrumentation = runtime->GetInstrumentation();
   for (size_t method_index = 0; method_index < num_direct_methods; ++method_index) {
     ArtMethod* method = klass->GetDirectMethod(method_index, pointer_size);
-    if (!NeedsClinitCheckBeforeCall(method)) {
-      continue;
+    if (method->NeedsClinitCheckBeforeCall()) {
+      instrumentation->UpdateMethodsCode(method, instrumentation->GetCodeForInvoke(method));
     }
-    instrumentation->UpdateMethodsCode(method, instrumentation->GetCodeForInvoke(method));
   }
   // Ignore virtual methods on the iterator.
 }
@@ -3921,7 +3919,8 @@ void ClassLinker::RegisterDexFileLocked(const DexFile& dex_file,
   std::string dex_file_location = dex_file.GetLocation();
   // The following paths checks don't work on preopt when using boot dex files, where the dex
   // cache location is the one on device, and the dex_file's location is the one on host.
-  if (!(Runtime::Current()->IsAotCompiler() && class_loader == nullptr && !kIsTargetBuild)) {
+  Runtime* runtime = Runtime::Current();
+  if (!(runtime->IsAotCompiler() && class_loader == nullptr && !kIsTargetBuild)) {
     CHECK_GE(dex_file_location.length(), dex_cache_length)
         << dex_cache_location << " " << dex_file.GetLocation();
     const std::string dex_file_suffix = dex_file_location.substr(
@@ -3933,7 +3932,7 @@ void ClassLinker::RegisterDexFileLocked(const DexFile& dex_file,
   }
 
   // Check if we need to initialize OatFile data (.data.bimg.rel.ro and .bss
-  // sections) needed for code execution.
+  // sections) needed for code execution and register the oat code range.
   const OatFile* oat_file =
       (dex_file.GetOatDexFile() != nullptr) ? dex_file.GetOatDexFile()->GetOatFile() : nullptr;
   bool initialize_oat_file_data = (oat_file != nullptr) && oat_file->IsExecutable();
@@ -3949,6 +3948,13 @@ void ClassLinker::RegisterDexFileLocked(const DexFile& dex_file,
   }
   if (initialize_oat_file_data) {
     oat_file->InitializeRelocations();
+    // Notify the fault handler about the new executable code range if needed.
+    size_t exec_offset = oat_file->GetOatHeader().GetExecutableOffset();
+    DCHECK_LE(exec_offset, oat_file->Size());
+    size_t exec_size = oat_file->Size() - exec_offset;
+    if (exec_size != 0u) {
+      runtime->AddGeneratedCodeRange(oat_file->Begin() + exec_offset, exec_size);
+    }
   }
 
   // Let hiddenapi assign a domain to the newly registered dex file.
@@ -10315,34 +10321,40 @@ void ClassLinker::InsertDexFileInToClassLoader(ObjPtr<mirror::Object> dex_file,
 
 void ClassLinker::CleanupClassLoaders() {
   Thread* const self = Thread::Current();
-  std::vector<ClassLoaderData> to_delete;
+  std::list<ClassLoaderData> to_delete;
   // Do the delete outside the lock to avoid lock violation in jit code cache.
   {
     WriterMutexLock mu(self, *Locks::classlinker_classes_lock_);
     for (auto it = class_loaders_.begin(); it != class_loaders_.end(); ) {
-      const ClassLoaderData& data = *it;
+      auto this_it = it;
+      ++it;
+      const ClassLoaderData& data = *this_it;
       // Need to use DecodeJObject so that we get null for cleared JNI weak globals.
       ObjPtr<mirror::ClassLoader> class_loader =
           ObjPtr<mirror::ClassLoader>::DownCast(self->DecodeJObject(data.weak_root));
-      if (class_loader != nullptr) {
-        ++it;
-      } else {
+      if (class_loader == nullptr) {
         VLOG(class_linker) << "Freeing class loader";
-        to_delete.push_back(data);
-        it = class_loaders_.erase(it);
+        to_delete.splice(to_delete.end(), class_loaders_, this_it);
       }
     }
   }
+  std::set<const OatFile*> unregistered_oat_files;
   if (!to_delete.empty()) {
     JavaVMExt* vm = self->GetJniEnv()->GetVm();
     WriterMutexLock mu(self, *Locks::dex_lock_);
     for (auto it = dex_caches_.begin(), end = dex_caches_.end(); it != end; ) {
+      const DexFile* dex_file = it->first;
       const DexCacheData& data = it->second;
       if (self->DecodeJObject(data.weak_root) == nullptr) {
         DCHECK(to_delete.end() != std::find_if(
             to_delete.begin(),
             to_delete.end(),
             [&](const ClassLoaderData& cld) { return cld.class_table == data.class_table; }));
+        if (dex_file->GetOatDexFile() != nullptr &&
+            dex_file->GetOatDexFile()->GetOatFile() != nullptr &&
+            dex_file->GetOatDexFile()->GetOatFile()->IsExecutable()) {
+          unregistered_oat_files.insert(dex_file->GetOatDexFile()->GetOatFile());
+        }
         vm->DeleteWeakGlobalRef(self, data.weak_root);
         it = dex_caches_.erase(it);
       } else {
@@ -10350,9 +10362,24 @@ void ClassLinker::CleanupClassLoaders() {
       }
     }
   }
-  for (ClassLoaderData& data : to_delete) {
-    // CHA unloading analysis and SingleImplementaion cleanups are required.
-    DeleteClassLoader(self, data, /*cleanup_cha=*/ true);
+  {
+    ScopedDebugDisallowReadBarriers sddrb(self);
+    for (ClassLoaderData& data : to_delete) {
+      // CHA unloading analysis and SingleImplementaion cleanups are required.
+      DeleteClassLoader(self, data, /*cleanup_cha=*/ true);
+    }
+  }
+  if (!unregistered_oat_files.empty()) {
+    for (const OatFile* oat_file : unregistered_oat_files) {
+      // Notify the fault handler about removal of the executable code range if needed.
+      DCHECK(oat_file->IsExecutable());
+      size_t exec_offset = oat_file->GetOatHeader().GetExecutableOffset();
+      DCHECK_LE(exec_offset, oat_file->Size());
+      size_t exec_size = oat_file->Size() - exec_offset;
+      if (exec_size != 0u) {
+        Runtime::Current()->RemoveGeneratedCodeRange(oat_file->Begin() + exec_offset, exec_size);
+      }
+    }
   }
 }
 
@@ -10407,6 +10434,15 @@ void ClassLinker::SetEnablePublicSdkChecks(bool enabled ATTRIBUTE_UNUSED) {
   // Should not be called on ClassLinker, only on AotClassLinker that overrides this.
   LOG(FATAL) << "UNREACHABLE";
   UNREACHABLE();
+}
+
+void ClassLinker::RemoveDexFromCaches(const DexFile& dex_file) {
+  ReaderMutexLock mu(Thread::Current(), *Locks::dex_lock_);
+
+  auto it = dex_caches_.find(&dex_file);
+  if (it != dex_caches_.end()) {
+      dex_caches_.erase(it);
+  }
 }
 
 // Instantiate ClassLinker::AllocClass.

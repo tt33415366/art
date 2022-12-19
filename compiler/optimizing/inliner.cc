@@ -1440,17 +1440,17 @@ bool HInliner::IsInliningSupported(const HInvoke* invoke_instruction,
           << " is not inlined because inlining try catches is disabled globally";
       return false;
     }
-    const bool inlined_into_try_catch =
-        // Direct parent is a try catch.
-        invoke_instruction->GetBlock()->GetTryCatchInformation() != nullptr ||
-        // Indirect parent is a try catch.
+    const bool disallowed_try_catch_inlining =
+        // Direct parent is a try block.
+        invoke_instruction->GetBlock()->IsTryBlock() ||
+        // Indirect parent disallows try catch inlining.
         !try_catch_inlining_allowed_;
-    if (inlined_into_try_catch) {
+    if (disallowed_try_catch_inlining) {
       LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedTryCatchCallee)
           << "Method " << method->PrettyMethod()
           << " is not inlined because it has a try catch and we are not supporting it for this"
           << " particular call. This is could be because e.g. it would be inlined inside another"
-          << " try catch, we arrived here from TryInlinePolymorphicCall, etc.";
+          << " try block, we arrived here from TryInlinePolymorphicCall, etc.";
       return false;
     }
   }
@@ -1883,7 +1883,6 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
                              HInvoke* invoke,
                              size_t* out_number_of_instructions,
                              bool is_speculative) const {
-  const HBasicBlock* target_block = invoke->GetBlock();
   ArtMethod* const resolved_method = callee_graph->GetArtMethod();
 
   HBasicBlock* exit_block = callee_graph->GetExitBlock();
@@ -1897,22 +1896,29 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
   bool has_one_return = false;
   for (HBasicBlock* predecessor : exit_block->GetPredecessors()) {
     const HInstruction* last_instruction = predecessor->GetLastInstruction();
-    // On inlinees, we can have Throw -> TryBoundary -> Exit. To check for the actual last
-    // instruction, we have to skip it.
+    // On inlinees, we can have Return/ReturnVoid/Throw -> TryBoundary -> Exit. To check for the
+    // actual last instruction, we have to skip the TryBoundary instruction.
     if (last_instruction->IsTryBoundary()) {
       predecessor = predecessor->GetSinglePredecessor();
       last_instruction = predecessor->GetLastInstruction();
+
+      // If the last instruction chain is Return/ReturnVoid -> TryBoundary -> Exit we will have to
+      // split a critical edge in InlineInto and might recompute loop information, which is
+      // unsupported for irreducible loops.
+      if (!last_instruction->IsThrow() && graph_->HasIrreducibleLoops()) {
+        DCHECK(last_instruction->IsReturn() || last_instruction->IsReturnVoid());
+        // TODO(ngeoffray): Support re-computing loop information to graphs with
+        // irreducible loops?
+        LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedIrreducibleLoopCaller)
+            << "Method " << resolved_method->PrettyMethod()
+            << " could not be inlined because we will have to recompute the loop information and"
+            << " the caller has irreducible loops";
+        return false;
+      }
     }
 
     if (last_instruction->IsThrow()) {
-      if (target_block->IsTryBlock()) {
-        // TODO(ngeoffray): Support adding HTryBoundary in Hgraph::InlineInto.
-        LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedTryCatchCaller)
-            << "Method " << resolved_method->PrettyMethod()
-            << " could not be inlined because one branch always throws and"
-            << " caller is in a try/catch block";
-        return false;
-      } else if (graph_->GetExitBlock() == nullptr) {
+      if (graph_->GetExitBlock() == nullptr) {
         // TODO(ngeoffray): Support adding HExit in the caller graph.
         LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedInfiniteLoop)
             << "Method " << resolved_method->PrettyMethod()
@@ -1922,9 +1928,10 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
       } else if (graph_->HasIrreducibleLoops()) {
         // TODO(ngeoffray): Support re-computing loop information to graphs with
         // irreducible loops?
-        VLOG(compiler) << "Method " << resolved_method->PrettyMethod()
-                       << " could not be inlined because one branch always throws and"
-                       << " caller has irreducible loops";
+        LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedIrreducibleLoopCaller)
+            << "Method " << resolved_method->PrettyMethod()
+            << " could not be inlined because one branch always throws and"
+            << " the caller has irreducible loops";
         return false;
       }
     } else {
@@ -1960,7 +1967,7 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
       if (block->GetLoopInformation()->IsIrreducible()) {
         // Don't inline methods with irreducible loops, they could prevent some
         // optimizations to run.
-        LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedIrreducibleLoop)
+        LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedIrreducibleLoopCallee)
             << "Method " << resolved_method->PrettyMethod()
             << " could not be inlined because it contains an irreducible loop";
         return false;
@@ -2127,7 +2134,7 @@ bool HInliner::TryBuildAndInlineHelper(HInvoke* invoke_instruction,
                         codegen_,
                         inline_stats_);
 
-  if (builder.BuildGraph(/* build_for_inline= */ true) != kAnalysisSuccess) {
+  if (builder.BuildGraph() != kAnalysisSuccess) {
     LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedCannotBuild)
         << "Method " << callee_dex_file.PrettyMethod(method_index)
         << " could not be built, so cannot be inlined";
@@ -2139,8 +2146,8 @@ bool HInliner::TryBuildAndInlineHelper(HInvoke* invoke_instruction,
   const bool try_catch_inlining_allowed_for_recursive_inline =
       // It was allowed previously.
       try_catch_inlining_allowed_ &&
-      // The current invoke is not in a try or a catch.
-      invoke_instruction->GetBlock()->GetTryCatchInformation() == nullptr;
+      // The current invoke is not a try block.
+      !invoke_instruction->GetBlock()->IsTryBlock();
   RunOptimizations(callee_graph,
                    code_item,
                    dex_compilation_unit,

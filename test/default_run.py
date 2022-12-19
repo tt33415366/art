@@ -290,7 +290,7 @@ def default_run(ctx, args, **kwargs):
   PREBUILD = args.prebuild
   RELOCATE = args.relocate
   SECONDARY_DEX = ""
-  TIME_OUT = "n"  # "n" (disabled), "timeout" (use timeout), "gdb" (use gdb)
+  TIME_OUT = "timeout"  # "n" (disabled), "timeout" (use timeout), "gdb" (use gdb)
   TIMEOUT_DUMPER = "signal_dumper"
   # Values in seconds.
   TIME_OUT_EXTRA = 0
@@ -762,7 +762,7 @@ def default_run(ctx, args, **kwargs):
     ANDROID_ART_BIN_DIR = f"{DEX_LOCATION}/zipapex/bin"
     # Force since some tests manually run this file twice.
     # If the {RUN} is executed multiple times we don't need to recreate the link
-    installapex_cmdline = f"ln -s -f --verbose {EXTRACTED_ZIPAPEX_LOC} {DEX_LOCATION}/zipapex"
+    installapex_cmdline = f"ln -sfTv {EXTRACTED_ZIPAPEX_LOC} {DEX_LOCATION}/zipapex"
 
   # PROFILE takes precedence over RANDOM_PROFILE, since PROFILE tests require a
   # specific profile to run properly.
@@ -1060,7 +1060,7 @@ def default_run(ctx, args, **kwargs):
       #       dumping do not lead to a deadlock, we also use the "-k" option to definitely kill the
       #       child.
       # Note: Using "--foreground" to not propagate the signal to children, i.e., the runtime.
-      timeout_prefix = f"timeout --foreground -k 120s {TIME_OUT_VALUE}s {timeout_dumper_cmd} {cmdline}"
+      timeout_prefix = f"timeout --foreground -k 120s {TIME_OUT_VALUE}s {timeout_dumper_cmd}"
 
     ctx.export(
       ASAN_OPTIONS = RUN_TEST_ASAN_OPTIONS,

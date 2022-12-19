@@ -113,6 +113,7 @@
 #include "stack_map.h"
 #include "thread-inl.h"
 #include "thread_list.h"
+#include "trace.h"
 #include "verifier/method_verifier.h"
 #include "verify_object.h"
 #include "well_known_classes-inl.h"
@@ -2558,6 +2559,10 @@ void Thread::Destroy(bool should_run_callbacks) {
 
   if (tlsPtr_.opeer != nullptr) {
     ScopedObjectAccess soa(self);
+    if (UNLIKELY(self->GetMethodTraceBuffer() != nullptr)) {
+      Trace::FlushThreadBuffer(self);
+      self->ResetMethodTraceBuffer();
+    }
     // We may need to call user-supplied managed code, do this before final clean-up.
     HandleUncaughtExceptions();
     RemoveFromThreadGroup();
@@ -2633,6 +2638,10 @@ Thread::~Thread() {
   delete tlsPtr_.instrumentation_stack;
   SetCachedThreadName(nullptr);  // Deallocate name.
   delete tlsPtr_.deps_or_stack_trace_sample.stack_trace_sample;
+
+  if (tlsPtr_.method_trace_buffer != nullptr) {
+    delete[] tlsPtr_.method_trace_buffer;
+  }
 
   Runtime::Current()->GetHeap()->AssertThreadLocalBuffersAreRevoked(this);
 
@@ -2768,9 +2777,9 @@ ObjPtr<mirror::Object> Thread::DecodeJObject(jobject obj) const {
   bool expect_null = false;
   // The "kinds" below are sorted by the frequency we expect to encounter them.
   if (kind == kLocal) {
-    IndirectReferenceTable& locals = tlsPtr_.jni_env->locals_;
+    jni::LocalReferenceTable& locals = tlsPtr_.jni_env->locals_;
     // Local references do not need a read barrier.
-    result = locals.Get<kWithoutReadBarrier>(ref);
+    result = locals.Get(ref);
   } else if (kind == kJniTransition) {
     // The `jclass` for a static method points to the CompressedReference<> in the
     // `ArtMethod::declaring_class_`. Other `jobject` arguments point to spilled stack
