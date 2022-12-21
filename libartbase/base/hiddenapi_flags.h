@@ -244,11 +244,12 @@ class ApiList {
   bool operator!=(const ApiList& other) const { return !(*this == other); }
   bool operator<(const ApiList& other) const { return dex_flags_ < other.dex_flags_; }
 
-  // Returns true if combining this ApiList with `other` will succeed.
+  // Returns true if combining this ApiList (using | operator) with `other` will succeed.
+  //
+  // b/253335210 - This returns true as the | operator will combine any two ApiLists.
   bool CanCombineWith(const ApiList& other) const {
-    const Value val1 = GetValue();
-    const Value val2 = other.GetValue();
-    return (val1 == val2) || (val1 == Value::kInvalid) || (val2 == Value::kInvalid);
+    UNUSED(other);
+    return true;
   }
 
   // Combine two ApiList instances.
@@ -256,8 +257,9 @@ class ApiList {
     // DomainApis are not mutually exclusive. Simply OR them.
     const uint32_t domain_apis = GetDomainApis() | other.GetDomainApis();
 
-    // Values are mutually exclusive. Check if `this` and `other` have the same Value
-    // or if at most one is set.
+    // Values are mutually exclusive but the most accessible value is chosen.
+    // Check if `this` and `other` have the same Value, or if at most one is set and
+    // if so use the set value. Otherwise, use the value that is most accessible.
     const Value val1 = GetValue();
     const Value val2 = other.GetValue();
     if (val1 == val2) {
@@ -266,6 +268,10 @@ class ApiList {
       return ApiList(val2, domain_apis);
     } else if (val2 == Value::kInvalid) {
       return ApiList(val1, domain_apis);
+    } else if (val1 < val2) {
+      return ApiList(val1, domain_apis);
+    } else if (val1 > val2) {
+      return ApiList(val2, domain_apis);
     } else {
       LOG(FATAL) << "Invalid combination of values " << Dumpable(ApiList(val1))
           << " and " << Dumpable(ApiList(val2));

@@ -35,7 +35,8 @@ HiddenApi::HiddenApi(const char* filename, const ApiListFilter& api_list_filter)
 
     hiddenapi::ApiList membership;
     bool success = hiddenapi::ApiList::FromNames(values.begin() + 1, values.end(), &membership);
-    CHECK(success) << "Unknown ApiList flag: " << str;
+    CHECK(success) << "Unknown ApiList flag: " << str << " from file "
+                   << filename;
     CHECK(membership.IsValid()) << "Invalid ApiList: " << membership;
 
     AddSignatureToApiList(signature, membership);
