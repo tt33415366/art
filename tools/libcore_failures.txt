@@ -330,5 +330,11 @@
   bug: 228441328,
   names: ["tck.java.time",
           "test.java.time"]
+},
+{
+  description: "Timing out after ojluni tests were enabled",
+  result: ERROR,
+  bug: 231439593,
+  names: ["org.apache.harmony.tests.java.math.BigIntegerConstructorsTest#testConstructorPrime"]
 }
 ]

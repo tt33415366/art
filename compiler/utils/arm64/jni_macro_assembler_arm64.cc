@@ -24,7 +24,7 @@
 
 using namespace vixl::aarch64;  // NOLINT(build/namespaces)
 
-namespace art {
+namespace art HIDDEN {
 namespace arm64 {
 
 #ifdef ___
@@ -218,10 +218,13 @@ void Arm64JNIMacroAssembler::StoreStackOffsetToThread(ThreadOffset64 tr_offs, Fr
   ___ Str(scratch, MEM_OP(reg_x(TR), tr_offs.Int32Value()));
 }
 
-void Arm64JNIMacroAssembler::StoreStackPointerToThread(ThreadOffset64 tr_offs) {
+void Arm64JNIMacroAssembler::StoreStackPointerToThread(ThreadOffset64 tr_offs, bool tag_sp) {
   UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
   Register scratch = temps.AcquireX();
   ___ Mov(scratch, reg_x(SP));
+  if (tag_sp) {
+    ___ Orr(scratch, scratch, 0x2);
+  }
   ___ Str(scratch, MEM_OP(reg_x(TR), tr_offs.Int32Value()));
 }
 
@@ -640,6 +643,12 @@ void Arm64JNIMacroAssembler::Move(ManagedRegister m_dst, ManagedRegister m_src, 
   }
 }
 
+void Arm64JNIMacroAssembler::Move(ManagedRegister m_dst, size_t value) {
+  Arm64ManagedRegister dst = m_dst.AsArm64();
+  DCHECK(dst.IsXRegister());
+  ___ Mov(reg_x(dst.AsXRegister()), value);
+}
+
 void Arm64JNIMacroAssembler::CopyRawPtrFromThread(FrameOffset fr_offs, ThreadOffset64 tr_offs) {
   UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
   Register scratch = temps.AcquireX();
@@ -1035,6 +1044,14 @@ void Arm64JNIMacroAssembler::TestMarkBit(ManagedRegister m_ref,
       LOG(FATAL) << "Not implemented unary condition: " << static_cast<int>(cond);
       UNREACHABLE();
   }
+}
+
+void Arm64JNIMacroAssembler::TestByteAndJumpIfNotZero(uintptr_t address, JNIMacroLabel* label) {
+  UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
+  Register scratch = temps.AcquireX();
+  ___ Mov(scratch, address);
+  ___ Ldrb(scratch.W(), MEM_OP(scratch, 0));
+  ___ Cbnz(scratch.W(), Arm64JNIMacroLabel::Cast(label)->AsArm64());
 }
 
 void Arm64JNIMacroAssembler::Bind(JNIMacroLabel* label) {

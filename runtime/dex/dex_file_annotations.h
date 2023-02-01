@@ -91,6 +91,11 @@ uint32_t GetNativeMethodAnnotationAccessFlags(const DexFile& dex_file,
 bool MethodIsNeverCompile(const DexFile& dex_file,
                           const dex::ClassDef& class_def,
                           uint32_t method_index);
+// Is the method from the `dex_file` with the given `field_index`
+// annotated with @dalvik.annotation.optimization.NeverInline?
+bool MethodIsNeverInline(const DexFile& dex_file,
+                         const dex::ClassDef& class_def,
+                         uint32_t method_index);
 // Is the field from the `dex_file` with the given `field_index`
 // annotated with @dalvik.annotation.optimization.ReachabilitySensitive?
 bool FieldIsReachabilitySensitive(const DexFile& dex_file,
@@ -135,6 +140,12 @@ bool GetInnerClassFlags(Handle<mirror::Class> klass, uint32_t* flags)
 ObjPtr<mirror::ObjectArray<mirror::String>> GetSignatureAnnotationForClass(
     Handle<mirror::Class> klass) REQUIRES_SHARED(Locks::mutator_lock_);
 const char* GetSourceDebugExtension(Handle<mirror::Class> klass)
+    REQUIRES_SHARED(Locks::mutator_lock_);
+ObjPtr<mirror::Class> GetNestHost(Handle<mirror::Class> klass)
+    REQUIRES_SHARED(Locks::mutator_lock_);
+ObjPtr<mirror::ObjectArray<mirror::Class>> GetNestMembers(Handle<mirror::Class> klass)
+    REQUIRES_SHARED(Locks::mutator_lock_);
+ObjPtr<mirror::ObjectArray<mirror::Class>> GetPermittedSubclasses(Handle<mirror::Class> klass)
     REQUIRES_SHARED(Locks::mutator_lock_);
 bool IsClassAnnotationPresent(Handle<mirror::Class> klass,
                               Handle<mirror::Class> annotation_class)

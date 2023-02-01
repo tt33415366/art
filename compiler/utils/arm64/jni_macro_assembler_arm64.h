@@ -37,7 +37,7 @@
 #include "aarch64/macro-assembler-aarch64.h"
 #pragma GCC diagnostic pop
 
-namespace art {
+namespace art HIDDEN {
 namespace arm64 {
 
 class Arm64JNIMacroAssembler final : public JNIMacroAssemblerFwd<Arm64Assembler, PointerSize::k64> {
@@ -72,7 +72,7 @@ class Arm64JNIMacroAssembler final : public JNIMacroAssemblerFwd<Arm64Assembler,
   void StoreRawPtr(FrameOffset dest, ManagedRegister src) override;
   void StoreImmediateToFrame(FrameOffset dest, uint32_t imm) override;
   void StoreStackOffsetToThread(ThreadOffset64 thr_offs, FrameOffset fr_offs) override;
-  void StoreStackPointerToThread(ThreadOffset64 thr_offs) override;
+  void StoreStackPointerToThread(ThreadOffset64 thr_offs, bool tag_sp) override;
   void StoreSpanning(FrameOffset dest, ManagedRegister src, FrameOffset in_off) override;
 
   // Load routines.
@@ -92,6 +92,7 @@ class Arm64JNIMacroAssembler final : public JNIMacroAssemblerFwd<Arm64Assembler,
                      ArrayRef<ArgumentLocation> srcs,
                      ArrayRef<FrameOffset> refs) override;
   void Move(ManagedRegister dest, ManagedRegister src, size_t size) override;
+  void Move(ManagedRegister dest, size_t value) override;
   void CopyRawPtrFromThread(FrameOffset fr_offs, ThreadOffset64 thr_offs) override;
   void CopyRawPtrToThread(ThreadOffset64 thr_offs, FrameOffset fr_offs, ManagedRegister scratch)
       override;
@@ -197,6 +198,8 @@ class Arm64JNIMacroAssembler final : public JNIMacroAssemblerFwd<Arm64Assembler,
   void TestGcMarking(JNIMacroLabel* label, JNIMacroUnaryCondition cond) override;
   // Emit a conditional jump to the label by applying a unary condition test to object's mark bit.
   void TestMarkBit(ManagedRegister ref, JNIMacroLabel* label, JNIMacroUnaryCondition cond) override;
+  // Emit a conditional jump to label if the loaded value from specified locations is not zero.
+  void TestByteAndJumpIfNotZero(uintptr_t address, JNIMacroLabel* label) override;
   // Code at this offset will serve as the target for the Jump call.
   void Bind(JNIMacroLabel* label) override;
 

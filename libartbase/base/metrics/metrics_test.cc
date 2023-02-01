@@ -737,6 +737,10 @@ TEST(CompilerReason, FromName) {
             CompilationReason::kCmdLine);
   ASSERT_EQ(CompilationReasonFromName("error"),
             CompilationReason::kError);
+  ASSERT_EQ(CompilationReasonFromName("vdex"),
+            CompilationReason::kVdex);
+  ASSERT_EQ(CompilationReasonFromName("boot-after-mainline-update"),
+            CompilationReason::kBootAfterMainlineUpdate);
 }
 
 TEST(CompilerReason, Name) {
@@ -776,6 +780,10 @@ TEST(CompilerReason, Name) {
             "cmdline");
   ASSERT_EQ(CompilationReasonName(CompilationReason::kError),
             "error");
+  ASSERT_EQ(CompilationReasonName(CompilationReason::kVdex),
+            "vdex");
+  ASSERT_EQ(CompilationReasonName(CompilationReason::kBootAfterMainlineUpdate),
+            "boot-after-mainline-update");
 }
 }  // namespace metrics
 }  // namespace art

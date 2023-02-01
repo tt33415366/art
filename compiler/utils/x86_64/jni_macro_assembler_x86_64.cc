@@ -22,7 +22,7 @@
 #include "lock_word.h"
 #include "thread.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace x86_64 {
 
 static dwarf::Reg DWARFReg(Register reg) {
@@ -217,8 +217,15 @@ void X86_64JNIMacroAssembler::StoreStackOffsetToThread(ThreadOffset64 thr_offs,
   __ gs()->movq(Address::Absolute(thr_offs, true), scratch);
 }
 
-void X86_64JNIMacroAssembler::StoreStackPointerToThread(ThreadOffset64 thr_offs) {
-  __ gs()->movq(Address::Absolute(thr_offs, true), CpuRegister(RSP));
+void X86_64JNIMacroAssembler::StoreStackPointerToThread(ThreadOffset64 thr_offs, bool tag_sp) {
+  if (tag_sp) {
+    CpuRegister reg = GetScratchRegister();
+    __ movq(reg, CpuRegister(RSP));
+    __ orq(reg, Immediate(0x2));
+    __ gs()->movq(Address::Absolute(thr_offs, true), reg);
+  } else {
+    __ gs()->movq(Address::Absolute(thr_offs, true), CpuRegister(RSP));
+  }
 }
 
 void X86_64JNIMacroAssembler::StoreSpanning(FrameOffset /*dst*/,
@@ -475,6 +482,12 @@ void X86_64JNIMacroAssembler::Move(ManagedRegister mdest, ManagedRegister msrc, 
       UNIMPLEMENTED(FATAL) << ": Move " << dest << ", " << src;
     }
   }
+}
+
+
+void X86_64JNIMacroAssembler::Move(ManagedRegister mdest, size_t value) {
+  X86_64ManagedRegister dest = mdest.AsX86_64();
+  __ movq(dest.AsCpuRegister(), Immediate(value));
 }
 
 void X86_64JNIMacroAssembler::CopyRef(FrameOffset dest, FrameOffset src) {
@@ -801,6 +814,13 @@ void X86_64JNIMacroAssembler::TestMarkBit(ManagedRegister mref,
   __ testl(Address(ref, mirror::Object::MonitorOffset().SizeValue()),
            Immediate(LockWord::kMarkBitStateMaskShifted));
   __ j(UnaryConditionToX86_64Condition(cond), X86_64JNIMacroLabel::Cast(label)->AsX86_64());
+}
+
+void X86_64JNIMacroAssembler::TestByteAndJumpIfNotZero(uintptr_t address, JNIMacroLabel* label) {
+  CpuRegister scratch = GetScratchRegister();
+  __ movq(scratch, Immediate(address));
+  __ cmpb(Address(scratch, 0), Immediate(0));
+  __ j(kNotZero, X86_64JNIMacroLabel::Cast(label)->AsX86_64());
 }
 
 void X86_64JNIMacroAssembler::Bind(JNIMacroLabel* label) {

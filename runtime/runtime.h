@@ -68,6 +68,10 @@ class JitCodeCache;
 class JitOptions;
 }  // namespace jit
 
+namespace jni {
+class SmallLrtAllocator;
+}  // namespace jni
+
 namespace mirror {
 class Array;
 class ClassLoader;
@@ -107,7 +111,6 @@ class Plugin;
 struct RuntimeArgumentMap;
 class RuntimeCallbacks;
 class SignalCatcher;
-class SmallIrtAllocator;
 class StackOverflowHandler;
 class SuspensionHandler;
 class ThreadList;
@@ -132,6 +135,19 @@ class Runtime {
   // Creates and initializes a new runtime.
   static bool Create(const RuntimeOptions& raw_options, bool ignore_unrecognized)
       SHARED_TRYLOCK_FUNCTION(true, Locks::mutator_lock_);
+
+  enum class RuntimeDebugState {
+    // This doesn't support any debug features / method tracing. This is the expected state usually.
+    kNonJavaDebuggable,
+    // This supports method tracing and a restricted set of debug features (for ex: redefinition
+    // isn't supported). We transition to this state when method tracing has started or when the
+    // debugger was attached and transition back to NonDebuggable once the tracing has stopped /
+    // the debugger agent has detached..
+    kJavaDebuggable,
+    // The runtime was started as a debuggable runtime. This allows us to support the extended set
+    // of debug features (for ex: redefinition). We never transition out of this state.
+    kJavaDebuggableAtInit
+  };
 
   bool EnsurePluginLoaded(const char* plugin_name, std::string* error_msg);
   bool EnsurePerfettoPlugin(std::string* error_msg);
@@ -257,6 +273,13 @@ class Runtime {
     return instance_;
   }
 
+  // Set the current runtime to be the given instance.
+  // Note that this function is not responsible for cleaning up the old instance or taking the
+  // ownership of the new instance.
+  //
+  // For test use only.
+  static void TestOnlySetCurrent(Runtime* instance) { instance_ = instance; }
+
   // Aborts semi-cleanly. Used in the implementation of LOG(FATAL), which most
   // callers should prefer.
   NO_RETURN static void Abort(const char* msg) REQUIRES(!Locks::abort_lock_);
@@ -298,6 +321,28 @@ class Runtime {
     return boot_class_path_locations_.empty() ? boot_class_path_ : boot_class_path_locations_;
   }
 
+  // Dynamically adds an element to boot class path.
+  void AppendToBootClassPath(const std::string& filename,
+                             const std::string& location,
+                             const std::vector<std::unique_ptr<const art::DexFile>>& dex_files);
+
+  // Same as above, but takes raw pointers.
+  void AppendToBootClassPath(const std::string& filename,
+                             const std::string& location,
+                             const std::vector<const art::DexFile*>& dex_files);
+
+  // Same as above, but also takes a dex cache for each dex file.
+  void AppendToBootClassPath(
+      const std::string& filename,
+      const std::string& location,
+      const std::vector<std::pair<const art::DexFile*, ObjPtr<mirror::DexCache>>>&
+          dex_files_and_cache);
+
+  // Dynamically adds an element to boot class path and takes ownership of the dex files.
+  void AddExtraBootDexFiles(const std::string& filename,
+                            const std::string& location,
+                            std::vector<std::unique_ptr<const art::DexFile>>&& dex_files);
+
   const std::vector<int>& GetBootClassPathFds() const {
     return boot_class_path_fds_;
   }
@@ -328,8 +373,8 @@ class Runtime {
     return class_linker_;
   }
 
-  SmallIrtAllocator* GetSmallIrtAllocator() const {
-    return small_irt_allocator_;
+  jni::SmallLrtAllocator* GetSmallLrtAllocator() const {
+    return small_lrt_allocator_;
   }
 
   jni::JniIdManager* GetJniIdManager() const {
@@ -500,6 +545,10 @@ class Runtime {
     return OFFSETOF_MEMBER(Runtime, callee_save_methods_[static_cast<size_t>(type)]);
   }
 
+  static constexpr MemberOffset GetInstrumentationOffset() {
+    return MemberOffset(OFFSETOF_MEMBER(Runtime, instrumentation_));
+  }
+
   InstructionSet GetInstructionSet() const {
     return instruction_set_;
   }
@@ -569,7 +618,8 @@ class Runtime {
 
   // Transaction support.
   bool IsActiveTransaction() const;
-  void EnterTransactionMode(bool strict, mirror::Class* root);
+  // EnterTransactionMode may suspend.
+  void EnterTransactionMode(bool strict, mirror::Class* root) REQUIRES_SHARED(Locks::mutator_lock_);
   void ExitTransactionMode();
   void RollbackAllTransactions() REQUIRES_SHARED(Locks::mutator_lock_);
   // Transaction rollback and exit transaction are always done together, it's convenience to
@@ -773,12 +823,21 @@ class Runtime {
     return linear_alloc_.get();
   }
 
+  LinearAlloc* GetStartupLinearAlloc() {
+    return startup_linear_alloc_.get();
+  }
+
   jit::JitOptions* GetJITOptions() {
     return jit_options_.get();
   }
 
   bool IsJavaDebuggable() const {
-    return is_java_debuggable_;
+    return runtime_debug_state_ == RuntimeDebugState::kJavaDebuggable ||
+           runtime_debug_state_ == RuntimeDebugState::kJavaDebuggableAtInit;
+  }
+
+  bool IsJavaDebuggableAtInit() const {
+    return runtime_debug_state_ == RuntimeDebugState::kJavaDebuggableAtInit;
   }
 
   void SetProfileableFromShell(bool value) {
@@ -797,7 +856,7 @@ class Runtime {
     return is_profileable_;
   }
 
-  void SetJavaDebuggable(bool value);
+  void SetRuntimeDebugState(RuntimeDebugState state);
 
   // Deoptimize the boot image, called for Java debuggable apps.
   void DeoptimizeBootImage() REQUIRES(Locks::mutator_lock_);
@@ -900,7 +959,8 @@ class Runtime {
 
   // Returns if the code can be deoptimized asynchronously. Code may be compiled with some
   // optimization that makes it impossible to deoptimize.
-  bool IsAsyncDeoptimizeable(uintptr_t code) const REQUIRES_SHARED(Locks::mutator_lock_);
+  bool IsAsyncDeoptimizeable(ArtMethod* method, uintptr_t code) const
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Returns a saved copy of the environment (getenv/setenv values).
   // Used by Fork to protect against overwriting LD_LIBRARY_PATH, etc.
@@ -1014,6 +1074,10 @@ class Runtime {
     ThreadPool* const thread_pool_;
   };
 
+  LinearAlloc* ReleaseStartupLinearAlloc() {
+    return startup_linear_alloc_.release();
+  }
+
   bool LoadAppImageStartupCache() const {
     return load_app_image_startup_cache_;
   }
@@ -1060,7 +1124,11 @@ class Runtime {
   uint64_t GetMonitorTimeoutNs() const {
     return monitor_timeout_ns_;
   }
-  // Return true if we should load oat files as executable or not.
+
+  // Return whether this is system server and it is being profiled.
+  bool IsSystemServerProfiled() const;
+
+  // Return whether we should load oat files as executable or not.
   bool GetOatFilesExecutable() const;
 
   metrics::ArtMetrics* GetMetrics() { return &metrics_; }
@@ -1087,6 +1155,10 @@ class Runtime {
     return no_sig_chain_;
   }
 
+  void AddGeneratedCodeRange(const void* start, size_t size);
+  void RemoveGeneratedCodeRange(const void* start, size_t size)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
   // Trigger a flag reload from system properties or device congfigs.
   //
   // Should only be called from runtime init and zygote post fork as
@@ -1098,10 +1170,32 @@ class Runtime {
   // See Flags::ReloadAllFlags as well.
   static void ReloadAllFlags(const std::string& caller);
 
+  // Parses /apex/apex-info-list.xml to build a string containing apex versions of boot classpath
+  // jars, which is encoded into .oat files.
+  static std::string GetApexVersions(ArrayRef<const std::string> boot_class_path_locations);
+
+  bool AllowInMemoryCompilation() const { return allow_in_memory_compilation_; }
+
+  // Used by plugin code to attach a hook for OOME.
+  void SetOutOfMemoryErrorHook(void (*hook)()) {
+    out_of_memory_error_hook_ = hook;
+  }
+
+  void OutOfMemoryErrorHook() {
+    if (out_of_memory_error_hook_ != nullptr) {
+      out_of_memory_error_hook_();
+    }
+  }
+
  private:
   static void InitPlatformSignalHandlers();
 
   Runtime();
+
+  bool HandlesSignalsInCompiledCode() const {
+    return !no_sig_chain_ &&
+           (implicit_null_checks_ || implicit_so_checks_ || implicit_suspend_checks_);
+  }
 
   void BlockSignals();
 
@@ -1111,7 +1205,7 @@ class Runtime {
   void RegisterRuntimeNativeMethods(JNIEnv* env);
   void InitMetrics();
 
-  void StartDaemonThreads();
+  void StartDaemonThreads() REQUIRES_SHARED(Locks::mutator_lock_);
   void StartSignalCatcher();
 
   void MaybeSaveJitProfilingInfo();
@@ -1138,9 +1232,10 @@ class Runtime {
   ThreadPool* AcquireThreadPool() REQUIRES(!Locks::runtime_thread_pool_lock_);
   void ReleaseThreadPool() REQUIRES(!Locks::runtime_thread_pool_lock_);
 
-  // Parses /apex/apex-info-list.xml to initialize a string containing versions
-  // of boot classpath jars and encoded into .oat files.
+  // Caches the apex versions produced by `GetApexVersions`.
   void InitializeApexVersions();
+
+  void AppendToBootClassPath(const std::string& filename, const std::string& location);
 
   // A pointer to the active runtime or null.
   static Runtime* instance_;
@@ -1219,6 +1314,10 @@ class Runtime {
   // Shared linear alloc for now.
   std::unique_ptr<LinearAlloc> linear_alloc_;
 
+  // Linear alloc used for allocations during startup. Will be deleted after
+  // startup.
+  std::unique_ptr<LinearAlloc> startup_linear_alloc_;
+
   // The number of spins that are done before thread suspension is used to forcibly inflate.
   size_t max_spins_before_thin_lock_inflation_;
   MonitorList* monitor_list_;
@@ -1232,7 +1331,7 @@ class Runtime {
 
   SignalCatcher* signal_catcher_;
 
-  SmallIrtAllocator* small_irt_allocator_;
+  jni::SmallLrtAllocator* small_lrt_allocator_;
 
   std::unique_ptr<jni::JniIdManager> jni_id_manager_;
 
@@ -1349,7 +1448,7 @@ class Runtime {
   bool non_standard_exits_enabled_;
 
   // Whether Java code needs to be debuggable.
-  bool is_java_debuggable_;
+  RuntimeDebugState runtime_debug_state_;
 
   bool monitor_timeout_enable_;
   uint64_t monitor_timeout_ns_;
@@ -1454,6 +1553,9 @@ class Runtime {
   // True if files in /data/misc/apexdata/com.android.art are considered untrustworthy.
   bool deny_art_apex_data_files_;
 
+  // Whether to allow compiling the boot classpath in memory when the given boot image is unusable.
+  bool allow_in_memory_compilation_ = false;
+
   // Saved environment.
   class EnvSnapshot {
    public:
@@ -1489,6 +1591,9 @@ class Runtime {
   bool force_java_zygote_fork_loop_;
   bool perfetto_hprof_enabled_;
   bool perfetto_javaheapprof_enabled_;
+
+  // Called on out of memory error
+  void (*out_of_memory_error_hook_)();
 
   metrics::ArtMetrics metrics_;
   std::unique_ptr<metrics::MetricsReporter> metrics_reporter_;

@@ -44,7 +44,7 @@
 #include "runtime.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread.h"
-#include "well_known_classes.h"
+#include "well_known_classes-inl.h"
 
 namespace art {
 
@@ -778,14 +778,15 @@ void ClassLoaderContext::EncodeSharedLibAndParent(const ClassLoaderInfo& info,
 }
 
 // Returns the WellKnownClass for the given class loader type.
-static jclass GetClassLoaderClass(ClassLoaderContext::ClassLoaderType type) {
+static ObjPtr<mirror::Class> GetClassLoaderClass(ClassLoaderContext::ClassLoaderType type)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
   switch (type) {
     case ClassLoaderContext::kPathClassLoader:
-      return WellKnownClasses::dalvik_system_PathClassLoader;
+      return WellKnownClasses::dalvik_system_PathClassLoader.Get();
     case ClassLoaderContext::kDelegateLastClassLoader:
-      return WellKnownClasses::dalvik_system_DelegateLastClassLoader;
+      return WellKnownClasses::dalvik_system_DelegateLastClassLoader.Get();
     case ClassLoaderContext::kInMemoryDexClassLoader:
-      return WellKnownClasses::dalvik_system_InMemoryDexClassLoader;
+      return WellKnownClasses::dalvik_system_InMemoryDexClassLoader.Get();
     case ClassLoaderContext::kInvalidClassLoader: break;  // will fail after the switch.
   }
   LOG(FATAL) << "Invalid class loader type " << type;
@@ -883,8 +884,7 @@ static ObjPtr<mirror::ClassLoader> CreateClassLoaderInternal(
                             compilation_sources.begin(),
                             compilation_sources.end());
   }
-  Handle<mirror::Class> loader_class = hs.NewHandle<mirror::Class>(
-      soa.Decode<mirror::Class>(GetClassLoaderClass(info.type)));
+  Handle<mirror::Class> loader_class = hs.NewHandle<mirror::Class>(GetClassLoaderClass(info.type));
   ObjPtr<mirror::ClassLoader> loader =
       Runtime::Current()->GetClassLinker()->CreateWellKnownClassLoader(
           self,
@@ -950,12 +950,13 @@ std::vector<const DexFile*> ClassLoaderContext::FlattenOpenedDexFiles() const {
   return result;
 }
 
-std::string ClassLoaderContext::FlattenDexPaths() const {
+std::vector<std::string> ClassLoaderContext::FlattenDexPaths() const {
+  std::vector<std::string> result;
+
   if (class_loader_chain_ == nullptr) {
-    return "";
+    return result;
   }
 
-  std::vector<std::string> result;
   std::vector<ClassLoaderInfo*> work_list;
   work_list.push_back(class_loader_chain_.get());
   while (!work_list.empty()) {
@@ -966,7 +967,7 @@ std::string ClassLoaderContext::FlattenDexPaths() const {
     }
     AddToWorkList(info, work_list);
   }
-  return FlattenClasspath(result);
+  return result;
 }
 
 const char* ClassLoaderContext::GetClassLoaderTypeName(ClassLoaderType type) {
@@ -1019,21 +1020,18 @@ static bool CollectDexFilesFromJavaDexFile(ObjPtr<mirror::Object> java_dex_file,
 // Collects all the dex files loaded by the given class loader.
 // Returns true for success or false if an unexpected state is discovered (e.g. a null dex cookie,
 // a null list of dex elements or a null dex element).
-static bool CollectDexFilesFromSupportedClassLoader(ScopedObjectAccessAlreadyRunnable& soa,
+static bool CollectDexFilesFromSupportedClassLoader(Thread* self,
                                                     Handle<mirror::ClassLoader> class_loader,
                                                     std::vector<const DexFile*>* out_dex_files)
       REQUIRES_SHARED(Locks::mutator_lock_) {
-  CHECK(IsInstanceOfBaseDexClassLoader(soa, class_loader));
+  CHECK(IsInstanceOfBaseDexClassLoader(class_loader));
 
   // All supported class loaders inherit from BaseDexClassLoader.
   // We need to get the DexPathList and loop through it.
-  ArtField* const cookie_field =
-      jni::DecodeArtField(WellKnownClasses::dalvik_system_DexFile_cookie);
-  ArtField* const dex_file_field =
-      jni::DecodeArtField(WellKnownClasses::dalvik_system_DexPathList__Element_dexFile);
+  ArtField* const cookie_field = WellKnownClasses::dalvik_system_DexFile_cookie;
+  ArtField* const dex_file_field = WellKnownClasses::dalvik_system_DexPathList__Element_dexFile;
   ObjPtr<mirror::Object> dex_path_list =
-      jni::DecodeArtField(WellKnownClasses::dalvik_system_BaseDexClassLoader_pathList)->
-          GetObject(class_loader.Get());
+      WellKnownClasses::dalvik_system_BaseDexClassLoader_pathList->GetObject(class_loader.Get());
   CHECK(cookie_field != nullptr);
   CHECK(dex_file_field != nullptr);
   if (dex_path_list == nullptr) {
@@ -1043,8 +1041,7 @@ static bool CollectDexFilesFromSupportedClassLoader(ScopedObjectAccessAlreadyRun
   }
   // DexPathList has an array dexElements of Elements[] which each contain a dex file.
   ObjPtr<mirror::Object> dex_elements_obj =
-      jni::DecodeArtField(WellKnownClasses::dalvik_system_DexPathList_dexElements)->
-          GetObject(dex_path_list);
+      WellKnownClasses::dalvik_system_DexPathList_dexElements->GetObject(dex_path_list);
   // Loop through each dalvik.system.DexPathList$Element's dalvik.system.DexFile and look
   // at the mCookie which is a DexFile vector.
   if (dex_elements_obj == nullptr) {
@@ -1052,7 +1049,7 @@ static bool CollectDexFilesFromSupportedClassLoader(ScopedObjectAccessAlreadyRun
     // and assume we have no elements.
     return true;
   } else {
-    StackHandleScope<1> hs(soa.Self());
+    StackHandleScope<1> hs(self);
     Handle<mirror::ObjectArray<mirror::Object>> dex_elements(
         hs.NewHandle(dex_elements_obj->AsObjectArray<mirror::Object>()));
     for (auto element : dex_elements.Iterate<mirror::Object>()) {
@@ -1075,19 +1072,15 @@ static bool CollectDexFilesFromSupportedClassLoader(ScopedObjectAccessAlreadyRun
 }
 
 static bool GetDexFilesFromDexElementsArray(
-    ScopedObjectAccessAlreadyRunnable& soa,
     Handle<mirror::ObjectArray<mirror::Object>> dex_elements,
     std::vector<const DexFile*>* out_dex_files) REQUIRES_SHARED(Locks::mutator_lock_) {
   DCHECK(dex_elements != nullptr);
 
-  ArtField* const cookie_field =
-      jni::DecodeArtField(WellKnownClasses::dalvik_system_DexFile_cookie);
-  ArtField* const dex_file_field =
-      jni::DecodeArtField(WellKnownClasses::dalvik_system_DexPathList__Element_dexFile);
-  const ObjPtr<mirror::Class> element_class = soa.Decode<mirror::Class>(
-      WellKnownClasses::dalvik_system_DexPathList__Element);
-  const ObjPtr<mirror::Class> dexfile_class = soa.Decode<mirror::Class>(
-      WellKnownClasses::dalvik_system_DexFile);
+  ArtField* const cookie_field = WellKnownClasses::dalvik_system_DexFile_cookie;
+  ArtField* const dex_file_field = WellKnownClasses::dalvik_system_DexPathList__Element_dexFile;
+  const ObjPtr<mirror::Class> element_class =
+      WellKnownClasses::dalvik_system_DexPathList__Element.Get();
+  const ObjPtr<mirror::Class> dexfile_class = WellKnownClasses::dalvik_system_DexFile.Get();
 
   for (auto element : dex_elements.Iterate<mirror::Object>()) {
     // We can hit a null element here because this is invoked with a partially filled dex_elements
@@ -1131,17 +1124,17 @@ bool ClassLoaderContext::CreateInfoFromClassLoader(
       bool is_shared_library,
       bool is_after)
     REQUIRES_SHARED(Locks::mutator_lock_) {
-  if (ClassLinker::IsBootClassLoader(soa, class_loader.Get())) {
+  if (ClassLinker::IsBootClassLoader(class_loader.Get())) {
     // Nothing to do for the boot class loader as we don't add its dex files to the context.
     return true;
   }
 
   ClassLoaderContext::ClassLoaderType type;
-  if (IsPathOrDexClassLoader(soa, class_loader)) {
+  if (IsPathOrDexClassLoader(class_loader)) {
     type = kPathClassLoader;
-  } else if (IsDelegateLastClassLoader(soa, class_loader)) {
+  } else if (IsDelegateLastClassLoader(class_loader)) {
     type = kDelegateLastClassLoader;
-  } else if (IsInMemoryDexClassLoader(soa, class_loader)) {
+  } else if (IsInMemoryDexClassLoader(class_loader)) {
     type = kInMemoryDexClassLoader;
   } else {
     LOG(WARNING) << "Unsupported class loader";
@@ -1150,7 +1143,7 @@ bool ClassLoaderContext::CreateInfoFromClassLoader(
 
   // Inspect the class loader for its dex files.
   std::vector<const DexFile*> dex_files_loaded;
-  CollectDexFilesFromSupportedClassLoader(soa, class_loader, &dex_files_loaded);
+  CollectDexFilesFromSupportedClassLoader(soa.Self(), class_loader, &dex_files_loaded);
 
   // If we have a dex_elements array extract its dex elements now.
   // This is used in two situations:
@@ -1162,7 +1155,7 @@ bool ClassLoaderContext::CreateInfoFromClassLoader(
   //      BaseDexClassLoader, the paths already present in the class loader will be passed
   //      in the dex_elements array.
   if (dex_elements != nullptr) {
-    GetDexFilesFromDexElementsArray(soa, dex_elements, &dex_files_loaded);
+    GetDexFilesFromDexElementsArray(dex_elements, &dex_files_loaded);
   }
 
   ClassLoaderInfo* info = new ClassLoaderContext::ClassLoaderInfo(type);
@@ -1197,8 +1190,7 @@ bool ClassLoaderContext::CreateInfoFromClassLoader(
 
   // Add the shared libraries.
   StackHandleScope<5> hs(Thread::Current());
-  ArtField* field =
-      jni::DecodeArtField(WellKnownClasses::dalvik_system_BaseDexClassLoader_sharedLibraryLoaders);
+  ArtField* field = WellKnownClasses::dalvik_system_BaseDexClassLoader_sharedLibraryLoaders;
   ObjPtr<mirror::Object> raw_shared_libraries = field->GetObject(class_loader.Get());
   if (raw_shared_libraries != nullptr) {
     Handle<mirror::ObjectArray<mirror::ClassLoader>> shared_libraries =
@@ -1216,8 +1208,7 @@ bool ClassLoaderContext::CreateInfoFromClassLoader(
       }
     }
   }
-  ArtField* field2 = jni::DecodeArtField(
-      WellKnownClasses::dalvik_system_BaseDexClassLoader_sharedLibraryLoadersAfter);
+  ArtField* field2 = WellKnownClasses::dalvik_system_BaseDexClassLoader_sharedLibraryLoadersAfter;
   ObjPtr<mirror::Object> raw_shared_libraries_after = field2->GetObject(class_loader.Get());
   if (raw_shared_libraries_after != nullptr) {
     Handle<mirror::ObjectArray<mirror::ClassLoader>> shared_libraries_after =
@@ -1287,12 +1278,12 @@ ClassLoaderContext::EncodeClassPathContextsForClassLoader(jobject class_loader) 
   StackHandleScope<1> hs(soa.Self());
   Handle<mirror::ClassLoader> h_class_loader =
       hs.NewHandle(soa.Decode<mirror::ClassLoader>(class_loader));
-  if (!IsInstanceOfBaseDexClassLoader(soa, h_class_loader)) {
+  if (!IsInstanceOfBaseDexClassLoader(h_class_loader)) {
     return std::map<std::string, std::string>{};
   }
 
   std::vector<const DexFile*> dex_files_loaded;
-  CollectDexFilesFromSupportedClassLoader(soa, h_class_loader, &dex_files_loaded);
+  CollectDexFilesFromSupportedClassLoader(soa.Self(), h_class_loader, &dex_files_loaded);
 
   std::map<std::string, std::string> results;
   for (const DexFile* dex_file : dex_files_loaded) {

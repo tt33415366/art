@@ -21,8 +21,6 @@
 #include <string>
 #include <vector>
 
-#include <gtest/gtest.h>
-
 #include "base/file_utils.h"
 #include "base/os.h"
 #include "base/stl_util.h"
@@ -34,8 +32,10 @@
 #include "exec_utils.h"
 #include "gc/heap.h"
 #include "gc/space/image_space.h"
+#include "gtest/gtest.h"
 #include "oat_file_assistant.h"
 #include "runtime.h"
+#include "ziparchive/zip_writer.h"
 
 namespace art {
 
@@ -109,10 +109,9 @@ class Dex2oatEnvironmentTest : public Dex2oatScratchDirs, public CommonRuntimeTe
       << "Expected dex file to be at: " << GetDexSrc1();
     ASSERT_TRUE(OS::FileExists(GetResourceOnlySrc1().c_str()))
       << "Expected stripped dex file to be at: " << GetResourceOnlySrc1();
-    ASSERT_FALSE(
-        dex_file_loader.GetMultiDexChecksums(
-            GetResourceOnlySrc1().c_str(), &checksums, &dex_locations, &error_msg))
-      << "Expected stripped dex file to be stripped: " << GetResourceOnlySrc1();
+    ASSERT_TRUE(dex_file_loader.GetMultiDexChecksums(
+        GetResourceOnlySrc1().c_str(), &checksums, &dex_locations, &error_msg))
+        << "Expected stripped dex file to be stripped: " << GetResourceOnlySrc1();
     ASSERT_TRUE(OS::FileExists(GetDexSrc2().c_str()))
       << "Expected dex file to be at: " << GetDexSrc2();
 
@@ -242,6 +241,23 @@ class Dex2oatEnvironmentTest : public Dex2oatScratchDirs, public CommonRuntimeTe
     }
 
     return res.status_code;
+  }
+
+  void CreateDexMetadata(const std::string& vdex, const std::string& out_dm) {
+    // Read the vdex bytes.
+    std::unique_ptr<File> vdex_file(OS::OpenFileForReading(vdex.c_str()));
+    std::vector<uint8_t> data(vdex_file->GetLength());
+    ASSERT_TRUE(vdex_file->ReadFully(data.data(), data.size()));
+
+    // Zip the content.
+    FILE* file = fopen(out_dm.c_str(), "wb");
+    ZipWriter writer(file);
+    writer.StartEntry("primary.vdex", ZipWriter::kAlign32);
+    writer.WriteBytes(data.data(), data.size());
+    writer.FinishEntry();
+    writer.Finish();
+    fflush(file);
+    fclose(file);
   }
 };
 
