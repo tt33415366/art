@@ -30,10 +30,11 @@
 #include "utils/assembler_test_base.h"
 
 #include "base/hex_dump.h"
+#include "base/macros.h"
 #include "base/malloc_arena_pool.h"
 #include "common_runtime_test.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace arm {
 
 // Include results file (generated manually)
@@ -159,7 +160,8 @@ TEST_F(ArmVIXLAssemblerTest, VixlJniHelpers) {
   __ StoreRef(FrameOffset(48), scratch_register);
   __ StoreSpanning(FrameOffset(48), method_register, FrameOffset(48));
   __ StoreStackOffsetToThread(ThreadOffset32(512), FrameOffset(4096));
-  __ StoreStackPointerToThread(ThreadOffset32(512));
+  __ StoreStackPointerToThread(ThreadOffset32(512), false);
+  __ StoreStackPointerToThread(ThreadOffset32(512), true);
 
   // Other
   __ Call(method_register, FrameOffset(48));

@@ -589,10 +589,11 @@ class ConcurrentCopying::FlipCallback : public Closure {
     if (kIsDebugBuild && !cc->use_generational_cc_) {
       cc->region_space_->AssertAllRegionLiveBytesZeroOrCleared();
     }
-    if (UNLIKELY(Runtime::Current()->IsActiveTransaction())) {
-      CHECK(Runtime::Current()->IsAotCompiler());
+    Runtime* runtime = Runtime::Current();
+    if (UNLIKELY(runtime->IsActiveTransaction())) {
+      CHECK(runtime->IsAotCompiler());
       TimingLogger::ScopedTiming split3("(Paused)VisitTransactionRoots", cc->GetTimings());
-      Runtime::Current()->VisitTransactionRoots(cc);
+      runtime->VisitTransactionRoots(cc);
     }
     if (kUseBakerReadBarrier && kGrayDirtyImmuneObjects) {
       cc->GrayAllNewlyDirtyImmuneObjects();
@@ -601,15 +602,10 @@ class ConcurrentCopying::FlipCallback : public Closure {
         cc->VerifyGrayImmuneObjects();
       }
     }
-    // May be null during runtime creation, in this case leave java_lang_Object null.
-    // This is safe since single threaded behavior should mean FillWithFakeObject does not
-    // happen when java_lang_Object_ is null.
-    if (WellKnownClasses::java_lang_Object != nullptr) {
-      cc->java_lang_Object_ = down_cast<mirror::Class*>(cc->Mark(thread,
-          WellKnownClasses::ToClass(WellKnownClasses::java_lang_Object).Ptr()));
-    } else {
-      cc->java_lang_Object_ = nullptr;
-    }
+    ObjPtr<mirror::Class> java_lang_Object =
+        GetClassRoot<mirror::Object, kWithoutReadBarrier>(runtime->GetClassLinker());
+    DCHECK(java_lang_Object != nullptr);
+    cc->java_lang_Object_ = down_cast<mirror::Class*>(cc->Mark(thread, java_lang_Object.Ptr()));
   }
 
  private:
@@ -1706,8 +1702,6 @@ void ConcurrentCopying::CopyingPhase() {
     if (kVerboseMode) {
       LOG(INFO) << "SweepSystemWeaks done";
     }
-    // Free data for class loaders that we unloaded.
-    Runtime::Current()->GetClassLinker()->CleanupClassLoaders();
     // Marking is done. Disable marking.
     DisableMarking();
     CheckEmptyMarkStack();
@@ -2733,6 +2727,11 @@ void ConcurrentCopying::ReclaimPhase() {
     LOG(INFO) << "GC ReclaimPhase";
   }
   Thread* self = Thread::Current();
+
+  // Free data for class loaders that we unloaded. This includes removing
+  // dead methods from JIT's internal maps. This must be done before
+  // reclaiming the memory of the dead methods' declaring classes.
+  Runtime::Current()->GetClassLinker()->CleanupClassLoaders();
 
   {
     // Double-check that the mark stack is empty.

@@ -27,7 +27,6 @@
 #include "class_root-inl.h"
 #include "class_table.h"
 #include "code_generator_utils.h"
-#include "compiled_method.h"
 #include "entrypoints/quick/quick_entrypoints.h"
 #include "entrypoints/quick/quick_entrypoints_enum.h"
 #include "gc/accounting/card_table.h"
@@ -44,6 +43,7 @@
 #include "mirror/var_handle.h"
 #include "offsets.h"
 #include "optimizing/common_arm64.h"
+#include "optimizing/nodes.h"
 #include "thread.h"
 #include "utils/arm64/assembler_arm64.h"
 #include "utils/assembler.h"
@@ -58,7 +58,7 @@ using vixl::EmissionCheckScope;
 #error "ARM64 Codegen VIXL macro-assembler macro already defined."
 #endif
 
-namespace art {
+namespace art HIDDEN {
 
 template<class MirrorType>
 class GcRoot;
@@ -825,6 +825,9 @@ class MethodEntryExitHooksSlowPathARM64 : public SlowPathCodeARM64 {
     CodeGeneratorARM64* arm64_codegen = down_cast<CodeGeneratorARM64*>(codegen);
     __ Bind(GetEntryLabel());
     SaveLiveRegisters(codegen, locations);
+    if (instruction_->IsMethodExitHook()) {
+      __ Mov(vixl::aarch64::x4, arm64_codegen->GetFrameSize());
+    }
     arm64_codegen->InvokeRuntime(entry_point, instruction_, instruction_->GetDexPc(), this);
     RestoreLiveRegisters(codegen, locations);
     __ B(GetExitLabel());
@@ -1169,9 +1172,21 @@ void InstructionCodeGeneratorARM64::GenerateMethodEntryExitHook(HInstruction* in
       new (codegen_->GetScopedAllocator()) MethodEntryExitHooksSlowPathARM64(instruction);
   codegen_->AddSlowPath(slow_path);
 
+  if (instruction->IsMethodExitHook()) {
+    // Check if we are required to check if the caller needs a deoptimization. Strictly speaking it
+    // would be sufficient to check if CheckCallerForDeopt bit is set. Though it is faster to check
+    // if it is just non-zero. kCHA bit isn't used in debuggable runtimes as cha optimization is
+    // disabled in debuggable runtime. The other bit is used when this method itself requires a
+    // deoptimization due to redefinition. So it is safe to just check for non-zero value here.
+    __ Ldr(value, MemOperand(sp, codegen_->GetStackOffsetOfShouldDeoptimizeFlag()));
+    __ Cbnz(value, slow_path->GetEntryLabel());
+  }
+
   uint64_t address = reinterpret_cast64<uint64_t>(Runtime::Current()->GetInstrumentation());
-  int offset = instrumentation::Instrumentation::NeedsEntryExitHooksOffset().Int32Value();
-  __ Mov(temp, address + offset);
+  MemberOffset  offset = instruction->IsMethodExitHook() ?
+      instrumentation::Instrumentation::HaveMethodExitListenersOffset() :
+      instrumentation::Instrumentation::HaveMethodEntryListenersOffset();
+  __ Mov(temp, address + offset.Int32Value());
   __ Ldrb(value, MemOperand(temp, 0));
   __ Cbnz(value, slow_path->GetEntryLabel());
   __ Bind(slow_path->GetExitLabel());
@@ -1233,6 +1248,54 @@ void CodeGeneratorARM64::MaybeIncrementHotness(bool is_frame_entry) {
 
 void CodeGeneratorARM64::GenerateFrameEntry() {
   MacroAssembler* masm = GetVIXLAssembler();
+
+  // Check if we need to generate the clinit check. We will jump to the
+  // resolution stub if the class is not initialized and the executing thread is
+  // not the thread initializing it.
+  // We do this before constructing the frame to get the correct stack trace if
+  // an exception is thrown.
+  if (GetCompilerOptions().ShouldCompileWithClinitCheck(GetGraph()->GetArtMethod())) {
+    UseScratchRegisterScope temps(masm);
+    vixl::aarch64::Label resolution;
+    vixl::aarch64::Label memory_barrier;
+
+    Register temp1 = temps.AcquireW();
+    Register temp2 = temps.AcquireW();
+
+    // Check if we're visibly initialized.
+
+    // We don't emit a read barrier here to save on code size. We rely on the
+    // resolution trampoline to do a suspend check before re-entering this code.
+    __ Ldr(temp1, MemOperand(kArtMethodRegister, ArtMethod::DeclaringClassOffset().Int32Value()));
+    __ Ldrb(temp2, HeapOperand(temp1, status_byte_offset));
+    __ Cmp(temp2, shifted_visibly_initialized_value);
+    __ B(hs, &frame_entry_label_);
+
+    // Check if we're initialized and jump to code that does a memory barrier if
+    // so.
+    __ Cmp(temp2, shifted_initialized_value);
+    __ B(hs, &memory_barrier);
+
+    // Check if we're initializing and the thread initializing is the one
+    // executing the code.
+    __ Cmp(temp2, shifted_initializing_value);
+    __ B(lo, &resolution);
+
+    __ Ldr(temp1, HeapOperand(temp1, mirror::Class::ClinitThreadIdOffset().Int32Value()));
+    __ Ldr(temp2, MemOperand(tr, Thread::TidOffset<kArm64PointerSize>().Int32Value()));
+    __ Cmp(temp1, temp2);
+    __ B(eq, &frame_entry_label_);
+    __ Bind(&resolution);
+
+    // Jump to the resolution stub.
+    ThreadOffset64 entrypoint_offset =
+        GetThreadOffset<kArm64PointerSize>(kQuickQuickResolutionTrampoline);
+    __ Ldr(temp1.X(), MemOperand(tr, entrypoint_offset.Int32Value()));
+    __ Br(temp1.X());
+
+    __ Bind(&memory_barrier);
+    GenerateMemoryBarrier(MemBarrierKind::kAnyAny);
+  }
   __ Bind(&frame_entry_label_);
 
   bool do_overflow_check =
@@ -1364,12 +1427,12 @@ void CodeGeneratorARM64::AddLocationAsTemp(Location location, LocationSummary* l
   }
 }
 
-void CodeGeneratorARM64::MarkGCCard(Register object, Register value, bool value_can_be_null) {
+void CodeGeneratorARM64::MarkGCCard(Register object, Register value, bool emit_null_check) {
   UseScratchRegisterScope temps(GetVIXLAssembler());
   Register card = temps.AcquireX();
   Register temp = temps.AcquireW();   // Index within the CardTable - 32bit.
   vixl::aarch64::Label done;
-  if (value_can_be_null) {
+  if (emit_null_check) {
     __ Cbz(value, &done);
   }
   // Load the address of the card table into `card`.
@@ -1391,7 +1454,7 @@ void CodeGeneratorARM64::MarkGCCard(Register object, Register value, bool value_
   // of the card to mark; and 2. to load the `kCardDirty` value) saves a load
   // (no need to explicitly load `kCardDirty` as an immediate value).
   __ Strb(card, MemOperand(card, temp.X()));
-  if (value_can_be_null) {
+  if (emit_null_check) {
     __ Bind(&done);
   }
 }
@@ -1904,11 +1967,6 @@ void InstructionCodeGeneratorARM64::GenerateClassInitializationCheck(SlowPathCod
                                                                      Register class_reg) {
   UseScratchRegisterScope temps(GetVIXLAssembler());
   Register temp = temps.AcquireW();
-  constexpr size_t status_lsb_position = SubtypeCheckBits::BitStructSizeOf();
-  const size_t status_byte_offset =
-      mirror::Class::StatusOffset().SizeValue() + (status_lsb_position / kBitsPerByte);
-  constexpr uint32_t shifted_visibly_initialized_value =
-      enum_cast<uint32_t>(ClassStatus::kVisiblyInitialized) << (status_lsb_position % kBitsPerByte);
 
   // CMP (immediate) is limited to imm12 or imm12<<12, so we would need to materialize
   // the constant 0xf0000000 for comparison with the full 32-bit field. To reduce the code
@@ -1974,6 +2032,13 @@ bool CodeGeneratorARM64::CanUseImplicitSuspendCheck() const {
 
 void InstructionCodeGeneratorARM64::GenerateSuspendCheck(HSuspendCheck* instruction,
                                                          HBasicBlock* successor) {
+  if (instruction->IsNoOp()) {
+    if (successor != nullptr) {
+      __ B(codegen_->GetLabelOf(successor));
+    }
+    return;
+  }
+
   if (codegen_->CanUseImplicitSuspendCheck()) {
     __ Ldr(kImplicitSuspendCheckRegister, MemOperand(kImplicitSuspendCheckRegister));
     codegen_->RecordPcInfo(instruction, instruction->GetDexPc());
@@ -2165,7 +2230,8 @@ void LocationsBuilderARM64::HandleFieldSet(HInstruction* instruction) {
 
 void InstructionCodeGeneratorARM64::HandleFieldSet(HInstruction* instruction,
                                                    const FieldInfo& field_info,
-                                                   bool value_can_be_null) {
+                                                   bool value_can_be_null,
+                                                   WriteBarrierKind write_barrier_kind) {
   DCHECK(instruction->IsInstanceFieldSet() || instruction->IsStaticFieldSet());
   bool is_predicated =
       instruction->IsInstanceFieldSet() && instruction->AsInstanceFieldSet()->GetIsPredicatedSet();
@@ -2205,8 +2271,12 @@ void InstructionCodeGeneratorARM64::HandleFieldSet(HInstruction* instruction,
     }
   }
 
-  if (CodeGenerator::StoreNeedsWriteBarrier(field_type, instruction->InputAt(1))) {
-    codegen_->MarkGCCard(obj, Register(value), value_can_be_null);
+  if (CodeGenerator::StoreNeedsWriteBarrier(field_type, instruction->InputAt(1)) &&
+      write_barrier_kind != WriteBarrierKind::kDontEmit) {
+    codegen_->MarkGCCard(
+        obj,
+        Register(value),
+        value_can_be_null && write_barrier_kind == WriteBarrierKind::kEmitWithNullCheck);
   }
 
   if (is_predicated) {
@@ -2871,7 +2941,11 @@ void InstructionCodeGeneratorARM64::VisitArraySet(HArraySet* instruction) {
       }
     }
 
-    codegen_->MarkGCCard(array, value.W(), /* value_can_be_null= */ false);
+    if (instruction->GetWriteBarrierKind() != WriteBarrierKind::kDontEmit) {
+      DCHECK_EQ(instruction->GetWriteBarrierKind(), WriteBarrierKind::kEmitNoNullCheck)
+          << " Already null checked so we shouldn't do it again.";
+      codegen_->MarkGCCard(array, value.W(), /* emit_null_check= */ false);
+    }
 
     if (can_value_be_null) {
       DCHECK(do_store.IsLinked());
@@ -3845,12 +3919,12 @@ void InstructionCodeGeneratorARM64::VisitSelect(HSelect* select) {
   }
 }
 
-void LocationsBuilderARM64::VisitNativeDebugInfo(HNativeDebugInfo* info) {
-  new (GetGraph()->GetAllocator()) LocationSummary(info);
+void LocationsBuilderARM64::VisitNop(HNop* nop) {
+  new (GetGraph()->GetAllocator()) LocationSummary(nop);
 }
 
-void InstructionCodeGeneratorARM64::VisitNativeDebugInfo(HNativeDebugInfo*) {
-  // MaybeRecordNativeDebugInfo is already called implicitly in CodeGenerator::Compile.
+void InstructionCodeGeneratorARM64::VisitNop(HNop*) {
+  // The environment recording already happened in CodeGenerator::Compile.
 }
 
 void CodeGeneratorARM64::IncreaseFrame(size_t adjustment) {
@@ -3893,7 +3967,10 @@ void LocationsBuilderARM64::VisitInstanceFieldSet(HInstanceFieldSet* instruction
 }
 
 void InstructionCodeGeneratorARM64::VisitInstanceFieldSet(HInstanceFieldSet* instruction) {
-  HandleFieldSet(instruction, instruction->GetFieldInfo(), instruction->GetValueCanBeNull());
+  HandleFieldSet(instruction,
+                 instruction->GetFieldInfo(),
+                 instruction->GetValueCanBeNull(),
+                 instruction->GetWriteBarrierKind());
 }
 
 // Temp is used for read barrier.
@@ -6156,7 +6233,10 @@ void LocationsBuilderARM64::VisitStaticFieldSet(HStaticFieldSet* instruction) {
 }
 
 void InstructionCodeGeneratorARM64::VisitStaticFieldSet(HStaticFieldSet* instruction) {
-  HandleFieldSet(instruction, instruction->GetFieldInfo(), instruction->GetValueCanBeNull());
+  HandleFieldSet(instruction,
+                 instruction->GetFieldInfo(),
+                 instruction->GetValueCanBeNull(),
+                 instruction->GetWriteBarrierKind());
 }
 
 void LocationsBuilderARM64::VisitStringBuilderAppend(HStringBuilderAppend* instruction) {

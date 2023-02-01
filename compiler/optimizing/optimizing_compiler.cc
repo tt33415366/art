@@ -33,12 +33,11 @@
 #include "base/timing_logger.h"
 #include "builder.h"
 #include "code_generator.h"
-#include "compiled_method.h"
 #include "compiler.h"
 #include "debug/elf_debug_writer.h"
 #include "debug/method_debug_info.h"
 #include "dex/dex_file_types.h"
-#include "driver/compiled_method_storage.h"
+#include "driver/compiled_code_storage.h"
 #include "driver/compiler_options.h"
 #include "driver/dex_compilation_unit.h"
 #include "graph_checker.h"
@@ -52,6 +51,7 @@
 #include "linker/linker_patch.h"
 #include "nodes.h"
 #include "oat_quick_method_header.h"
+#include "optimizing/write_barrier_elimination.h"
 #include "prepare_for_register_allocation.h"
 #include "reference_type_propagation.h"
 #include "register_allocator_linear_scan.h"
@@ -62,7 +62,7 @@
 #include "stack_map_stream.h"
 #include "utils/assembler.h"
 
-namespace art {
+namespace art HIDDEN {
 
 static constexpr size_t kArenaAllocatorMemoryReportThreshold = 8 * MB;
 
@@ -269,7 +269,7 @@ class PassScope : public ValueObject {
 class OptimizingCompiler final : public Compiler {
  public:
   explicit OptimizingCompiler(const CompilerOptions& compiler_options,
-                              CompiledMethodStorage* storage);
+                              CompiledCodeStorage* storage);
   ~OptimizingCompiler() override;
 
   bool CanCompileMethod(uint32_t method_idx, const DexFile& dex_file) const override;
@@ -359,11 +359,11 @@ class OptimizingCompiler final : public Compiler {
                         const DexCompilationUnit& dex_compilation_unit,
                         PassObserver* pass_observer) const;
 
- private:
   // Create a 'CompiledMethod' for an optimized graph.
   CompiledMethod* Emit(ArenaAllocator* allocator,
                        CodeVectorAllocator* code_allocator,
                        CodeGenerator* codegen,
+                       bool is_intrinsic,
                        const dex::CodeItem* item) const;
 
   // Try compiling a method and return the code generator used for
@@ -413,7 +413,7 @@ class OptimizingCompiler final : public Compiler {
 static const int kMaximumCompilationTimeBeforeWarning = 100; /* ms */
 
 OptimizingCompiler::OptimizingCompiler(const CompilerOptions& compiler_options,
-                                       CompiledMethodStorage* storage)
+                                       CompiledCodeStorage* storage)
     : Compiler(compiler_options, storage, kMaximumCompilationTimeBeforeWarning) {
   // Enable C1visualizer output.
   const std::string& cfg_file_name = compiler_options.GetDumpCfgFileName();
@@ -671,17 +671,25 @@ void OptimizingCompiler::RunOptimizations(HGraph* graph,
            "constant_folding$after_bce"),
     OptDef(OptimizationPass::kAggressiveInstructionSimplifier,
            "instruction_simplifier$after_bce"),
+    OptDef(OptimizationPass::kDeadCodeElimination,
+           "dead_code_elimination$after_bce"),
     // Other high-level optimizations.
     OptDef(OptimizationPass::kLoadStoreElimination),
-    OptDef(OptimizationPass::kCHAGuardOptimization),
     OptDef(OptimizationPass::kDeadCodeElimination,
-           "dead_code_elimination$final"),
+           "dead_code_elimination$after_lse",
+           OptimizationPass::kLoadStoreElimination),
+    OptDef(OptimizationPass::kCHAGuardOptimization),
     OptDef(OptimizationPass::kCodeSinking),
     // The codegen has a few assumptions that only the instruction simplifier
     // can satisfy. For example, the code generator does not expect to see a
     // HTypeConversion from a type to the same type.
     OptDef(OptimizationPass::kAggressiveInstructionSimplifier,
            "instruction_simplifier$before_codegen"),
+    // Simplification may result in dead code that should be removed prior to
+    // code generation.
+    OptDef(OptimizationPass::kDeadCodeElimination,
+           "dead_code_elimination$before_codegen",
+           OptimizationPass::kAggressiveInstructionSimplifier),
     // Eliminate constructor fences after code sinking to avoid
     // complicated sinking logic to split a fence with many inputs.
     OptDef(OptimizationPass::kConstructorFenceRedundancyElimination)
@@ -711,18 +719,19 @@ static ArenaVector<linker::LinkerPatch> EmitAndSortLinkerPatches(CodeGenerator* 
 CompiledMethod* OptimizingCompiler::Emit(ArenaAllocator* allocator,
                                          CodeVectorAllocator* code_allocator,
                                          CodeGenerator* codegen,
+                                         bool is_intrinsic,
                                          const dex::CodeItem* code_item_for_osr_check) const {
   ArenaVector<linker::LinkerPatch> linker_patches = EmitAndSortLinkerPatches(codegen);
   ScopedArenaVector<uint8_t> stack_map = codegen->BuildStackMaps(code_item_for_osr_check);
 
-  CompiledMethodStorage* storage = GetCompiledMethodStorage();
-  CompiledMethod* compiled_method = CompiledMethod::SwapAllocCompiledMethod(
-      storage,
+  CompiledCodeStorage* storage = GetCompiledCodeStorage();
+  CompiledMethod* compiled_method = storage->CreateCompiledMethod(
       codegen->GetInstructionSet(),
       code_allocator->GetMemory(),
       ArrayRef<const uint8_t>(stack_map),
       ArrayRef<const uint8_t>(*codegen->GetAssembler()->cfi().data()),
-      ArrayRef<const linker::LinkerPatch>(linker_patches));
+      ArrayRef<const linker::LinkerPatch>(linker_patches),
+      is_intrinsic);
 
   for (const linker::LinkerPatch& patch : linker_patches) {
     if (codegen->NeedsThunkCode(patch) && storage->GetThunkCode(patch).empty()) {
@@ -891,6 +900,8 @@ CodeGenerator* OptimizingCompiler::TryCompile(ArenaAllocator* allocator,
     RunBaselineOptimizations(graph, codegen.get(), dex_compilation_unit, &pass_observer);
   } else {
     RunOptimizations(graph, codegen.get(), dex_compilation_unit, &pass_observer);
+    PassScope scope(WriteBarrierElimination::kWBEPassName, &pass_observer);
+    WriteBarrierElimination(graph, compilation_stats_.get()).Run();
   }
 
   RegisterAllocator::Strategy regalloc_strategy =
@@ -984,6 +995,10 @@ CodeGenerator* OptimizingCompiler::TryCompileIntrinsic(
                    optimizations);
 
   RunArchOptimizations(graph, codegen.get(), dex_compilation_unit, &pass_observer);
+  {
+    PassScope scope(WriteBarrierElimination::kWBEPassName, &pass_observer);
+    WriteBarrierElimination(graph, compilation_stats_.get()).Run();
+  }
 
   AllocateRegisters(graph,
                     codegen.get(),
@@ -1079,10 +1094,8 @@ CompiledMethod* OptimizingCompiler::Compile(const dex::CodeItem* code_item,
     compiled_method = Emit(&allocator,
                            &code_allocator,
                            codegen.get(),
+                           compiled_intrinsic,
                            compiled_intrinsic ? nullptr : code_item);
-    if (compiled_intrinsic) {
-      compiled_method->MarkAsIntrinsic();
-    }
 
     if (kArenaAllocatorCountAllocations) {
       codegen.reset();  // Release codegen's ScopedArenaAllocator for memory accounting.
@@ -1115,17 +1128,18 @@ CompiledMethod* OptimizingCompiler::Compile(const dex::CodeItem* code_item,
 
 static ScopedArenaVector<uint8_t> CreateJniStackMap(ScopedArenaAllocator* allocator,
                                                     const JniCompiledMethod& jni_compiled_method,
-                                                    size_t code_size) {
+                                                    size_t code_size,
+                                                    bool debuggable) {
   // StackMapStream is quite large, so allocate it using the ScopedArenaAllocator
   // to stay clear of the frame size limit.
   std::unique_ptr<StackMapStream> stack_map_stream(
       new (allocator) StackMapStream(allocator, jni_compiled_method.GetInstructionSet()));
-  stack_map_stream->BeginMethod(
-      jni_compiled_method.GetFrameSize(),
-      jni_compiled_method.GetCoreSpillMask(),
-      jni_compiled_method.GetFpSpillMask(),
-      /* num_dex_registers= */ 0,
-      /* baseline= */ false);
+  stack_map_stream->BeginMethod(jni_compiled_method.GetFrameSize(),
+                                jni_compiled_method.GetCoreSpillMask(),
+                                jni_compiled_method.GetFpSpillMask(),
+                                /* num_dex_registers= */ 0,
+                                /* baseline= */ false,
+                                debuggable);
   stack_map_stream->EndMethod(code_size);
   return stack_map_stream->Encode();
 }
@@ -1172,12 +1186,11 @@ CompiledMethod* OptimizingCompiler::JniCompile(uint32_t access_flags,
                               method,
                               &handles));
       if (codegen != nullptr) {
-        CompiledMethod* compiled_method = Emit(&allocator,
-                                               &code_allocator,
-                                               codegen.get(),
-                                               /* item= */ nullptr);
-        compiled_method->MarkAsIntrinsic();
-        return compiled_method;
+        return Emit(&allocator,
+                    &code_allocator,
+                    codegen.get(),
+                    /*is_intrinsic=*/ true,
+                    /*item=*/ nullptr);
       }
     }
   }
@@ -1187,19 +1200,22 @@ CompiledMethod* OptimizingCompiler::JniCompile(uint32_t access_flags,
   MaybeRecordStat(compilation_stats_.get(), MethodCompilationStat::kCompiledNativeStub);
 
   ScopedArenaAllocator stack_map_allocator(&arena_stack);  // Will hold the stack map.
-  ScopedArenaVector<uint8_t> stack_map = CreateJniStackMap(
-      &stack_map_allocator, jni_compiled_method, jni_compiled_method.GetCode().size());
-  return CompiledMethod::SwapAllocCompiledMethod(
-      GetCompiledMethodStorage(),
+  ScopedArenaVector<uint8_t> stack_map =
+      CreateJniStackMap(&stack_map_allocator,
+                        jni_compiled_method,
+                        jni_compiled_method.GetCode().size(),
+                        compiler_options.GetDebuggable() && compiler_options.IsJitCompiler());
+  return GetCompiledCodeStorage()->CreateCompiledMethod(
       jni_compiled_method.GetInstructionSet(),
       jni_compiled_method.GetCode(),
       ArrayRef<const uint8_t>(stack_map),
       jni_compiled_method.GetCfi(),
-      /* patches= */ ArrayRef<const linker::LinkerPatch>());
+      /*patches=*/ ArrayRef<const linker::LinkerPatch>(),
+      /*is_intrinsic=*/ false);
 }
 
 Compiler* CreateOptimizingCompiler(const CompilerOptions& compiler_options,
-                                   CompiledMethodStorage* storage) {
+                                   CompiledCodeStorage* storage) {
   return new OptimizingCompiler(compiler_options, storage);
 }
 
@@ -1233,6 +1249,14 @@ bool OptimizingCompiler::JitCompile(Thread* self,
   ArenaAllocator allocator(runtime->GetJitArenaPool());
 
   if (UNLIKELY(method->IsNative())) {
+    // Use GenericJniTrampoline for critical native methods in debuggable runtimes. We don't
+    // support calling method entry / exit hooks for critical native methods yet.
+    // TODO(mythria): Add support for calling method entry / exit hooks in JITed stubs for critical
+    // native methods too.
+    if (runtime->IsJavaDebuggable() && method->IsCriticalNative()) {
+      DCHECK(compiler_options.IsJitCompiler());
+      return false;
+    }
     JniCompiledMethod jni_compiled_method = ArtQuickJniCompileMethod(
         compiler_options, access_flags, method_idx, *dex_file, &allocator);
     std::vector<Handle<mirror::Object>> roots;
@@ -1241,8 +1265,11 @@ bool OptimizingCompiler::JitCompile(Thread* self,
     ArenaStack arena_stack(runtime->GetJitArenaPool());
     // StackMapStream is large and it does not fit into this frame, so we need helper method.
     ScopedArenaAllocator stack_map_allocator(&arena_stack);  // Will hold the stack map.
-    ScopedArenaVector<uint8_t> stack_map = CreateJniStackMap(
-        &stack_map_allocator, jni_compiled_method, jni_compiled_method.GetCode().size());
+    ScopedArenaVector<uint8_t> stack_map =
+        CreateJniStackMap(&stack_map_allocator,
+                          jni_compiled_method,
+                          jni_compiled_method.GetCode().size(),
+                          compiler_options.GetDebuggable() && compiler_options.IsJitCompiler());
 
     ArrayRef<const uint8_t> reserved_code;
     ArrayRef<const uint8_t> reserved_data;

@@ -29,7 +29,7 @@ namespace vixl32 = vixl::aarch32;
 using vixl::ExactAssemblyScope;
 using vixl::CodeBufferCheckScope;
 
-namespace art {
+namespace art HIDDEN {
 namespace arm {
 
 #ifdef ___
@@ -430,8 +430,15 @@ void ArmVIXLJNIMacroAssembler::StoreStackOffsetToThread(ThreadOffset32 thr_offs,
   asm_.StoreToOffset(kStoreWord, scratch, tr, thr_offs.Int32Value());
 }
 
-void ArmVIXLJNIMacroAssembler::StoreStackPointerToThread(ThreadOffset32 thr_offs) {
-  asm_.StoreToOffset(kStoreWord, sp, tr, thr_offs.Int32Value());
+void ArmVIXLJNIMacroAssembler::StoreStackPointerToThread(ThreadOffset32 thr_offs, bool tag_sp) {
+  if (tag_sp) {
+    UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
+    vixl32::Register reg = temps.Acquire();
+    ___ Orr(reg, sp, 0x2);
+    asm_.StoreToOffset(kStoreWord, reg, tr, thr_offs.Int32Value());
+  } else {
+    asm_.StoreToOffset(kStoreWord, sp, tr, thr_offs.Int32Value());
+  }
 }
 
 void ArmVIXLJNIMacroAssembler::SignExtend(ManagedRegister mreg ATTRIBUTE_UNUSED,
@@ -871,6 +878,11 @@ void ArmVIXLJNIMacroAssembler::Move(ManagedRegister mdst,
   }
 }
 
+void ArmVIXLJNIMacroAssembler::Move(ManagedRegister mdst, size_t value) {
+  ArmManagedRegister dst = mdst.AsArm();
+  ___ Mov(AsVIXLRegister(dst), static_cast<uint32_t>(value));
+}
+
 void ArmVIXLJNIMacroAssembler::Copy(FrameOffset dest, FrameOffset src, size_t size) {
   DCHECK(size == 4 || size == 8) << size;
   UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
@@ -1213,6 +1225,14 @@ void ArmVIXLJNIMacroAssembler::TestMarkBit(ManagedRegister mref,
       LOG(FATAL) << "Not implemented unary condition: " << static_cast<int>(cond);
       UNREACHABLE();
   }
+}
+
+void ArmVIXLJNIMacroAssembler::TestByteAndJumpIfNotZero(uintptr_t address, JNIMacroLabel* label) {
+  UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
+  vixl32::Register scratch = temps.Acquire();
+  ___ Mov(scratch, static_cast<uint32_t>(address));
+  ___ Ldrb(scratch, MemOperand(scratch, 0));
+  ___ CompareAndBranchIfNonZero(scratch, ArmVIXLJNIMacroLabel::Cast(label)->AsArm());
 }
 
 void ArmVIXLJNIMacroAssembler::Bind(JNIMacroLabel* label) {

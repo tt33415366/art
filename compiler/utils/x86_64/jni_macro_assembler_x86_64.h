@@ -28,7 +28,7 @@
 #include "utils/assembler.h"
 #include "utils/jni_macro_assembler.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace x86_64 {
 
 class X86_64JNIMacroAssembler final : public JNIMacroAssemblerFwd<X86_64Assembler,
@@ -67,7 +67,7 @@ class X86_64JNIMacroAssembler final : public JNIMacroAssemblerFwd<X86_64Assemble
 
   void StoreStackOffsetToThread(ThreadOffset64 thr_offs, FrameOffset fr_offs) override;
 
-  void StoreStackPointerToThread(ThreadOffset64 thr_offs) override;
+  void StoreStackPointerToThread(ThreadOffset64 thr_offs, bool tag_sp) override;
 
   void StoreSpanning(FrameOffset dest, ManagedRegister src, FrameOffset in_off) override;
 
@@ -94,6 +94,8 @@ class X86_64JNIMacroAssembler final : public JNIMacroAssemblerFwd<X86_64Assemble
                      ArrayRef<FrameOffset> refs) override;
 
   void Move(ManagedRegister dest, ManagedRegister src, size_t size) override;
+
+  void Move(ManagedRegister dest, size_t value) override;
 
   void CopyRawPtrFromThread(FrameOffset fr_offs, ThreadOffset64 thr_offs) override;
 
@@ -209,6 +211,8 @@ class X86_64JNIMacroAssembler final : public JNIMacroAssemblerFwd<X86_64Assemble
   void TestGcMarking(JNIMacroLabel* label, JNIMacroUnaryCondition cond) override;
   // Emit a conditional jump to the label by applying a unary condition test to object's mark bit.
   void TestMarkBit(ManagedRegister ref, JNIMacroLabel* label, JNIMacroUnaryCondition cond) override;
+  // Emit a conditional jump to label if the loaded value from specified locations is not zero.
+  void TestByteAndJumpIfNotZero(uintptr_t address, JNIMacroLabel* label) override;
   // Code at this offset will serve as the target for the Jump call.
   void Bind(JNIMacroLabel* label) override;
 

@@ -26,6 +26,7 @@
 
 #include "android-base/strings.h"
 
+#include "base/macros.h"
 #include "base/os.h"
 #include "base/utils.h"
 #include "common_runtime_test.h"  // For ScratchDir.
@@ -34,7 +35,7 @@
 #include "exec_utils.h"
 #include "stream/file_output_stream.h"
 
-namespace art {
+namespace art HIDDEN {
 
 // If you want to take a look at the differences between the ART assembler and clang,
 // set this flag to true. The disassembled files will then remain in the tmp directory.
@@ -59,7 +60,7 @@ class AssemblerTestBase : public testing::Test {
 
   // This is intended to be run as a test.
   bool CheckTools() {
-    for (auto cmd : { GetAssemblerCommand()[0], GetDisassemblerCommand()[0] }) {
+    for (const std::string& cmd : { GetAssemblerCommand()[0], GetDisassemblerCommand()[0] }) {
       if (!OS::FileExists(cmd.c_str())) {
         LOG(ERROR) << "Could not find " << cmd;
         return false;

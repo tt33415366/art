@@ -41,6 +41,11 @@ namespace odrefresh {
 // everything if any property matching a prefix changes.
 constexpr const char* kCheckedSystemPropertyPrefixes[]{"dalvik.vm.", "ro.dalvik.vm."};
 
+// System property for the phenotype flag to override the device or default-configured
+// system server compiler filter setting.
+static constexpr char kSystemPropertySystemServerCompilerFilterOverride[] =
+    "persist.device_config.runtime_native_boot.systemservercompilerfilter_override";
+
 // The list of system properties that odrefresh ignores. They don't affect compilation results.
 const std::unordered_set<std::string> kIgnoredSystemProperties{
     "dalvik.vm.dex2oat-cpu-set",
@@ -68,7 +73,9 @@ struct SystemPropertyConfig {
 const android::base::NoDestructor<std::vector<SystemPropertyConfig>> kSystemProperties{
     {SystemPropertyConfig{.name = "persist.device_config.runtime_native_boot.enable_uffd_gc",
                           .default_value = "false"},
-     SystemPropertyConfig{.name = kPhDisableCompactDex, .default_value = "false"}}};
+     SystemPropertyConfig{.name = kPhDisableCompactDex, .default_value = "false"},
+     SystemPropertyConfig{.name = kSystemPropertySystemServerCompilerFilterOverride,
+                          .default_value = ""}}};
 
 // An enumeration of the possible zygote configurations on Android.
 enum class ZygoteKind : uint8_t {
@@ -96,6 +103,7 @@ class OdrConfig final {
   InstructionSet isa_;
   std::string program_name_;
   std::string system_server_classpath_;
+  std::string boot_image_compiler_filter_;
   std::string system_server_compiler_filter_;
   ZygoteKind zygote_kind_;
   std::string boot_classpath_;
@@ -181,6 +189,9 @@ class OdrConfig final {
   const std::string& GetSystemServerClasspath() const {
     return system_server_classpath_;
   }
+  const std::string& GetBootImageCompilerFilter() const {
+    return boot_image_compiler_filter_;
+  }
   const std::string& GetSystemServerCompilerFilter() const {
     return system_server_compiler_filter_;
   }
@@ -217,6 +228,9 @@ class OdrConfig final {
     system_server_classpath_ = classpath;
   }
 
+  void SetBootImageCompilerFilter(const std::string& filter) {
+    boot_image_compiler_filter_ = filter;
+  }
   void SetSystemServerCompilerFilter(const std::string& filter) {
     system_server_compiler_filter_ = filter;
   }
@@ -261,6 +275,7 @@ class OdrConfig final {
       case art::InstructionSet::kX86:
       case art::InstructionSet::kX86_64:
         return std::make_pair(art::InstructionSet::kX86, art::InstructionSet::kX86_64);
+      case art::InstructionSet::kRiscv64:
       case art::InstructionSet::kThumb2:
       case art::InstructionSet::kNone:
         LOG(FATAL) << "Invalid instruction set " << isa_;

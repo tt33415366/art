@@ -28,27 +28,24 @@ bootstrap_go_package {
 }
 
 art_clang_tidy_errors = [
-    "android-cloexec-open",
-    "bugprone-lambda-function-name",
-    "bugprone-unused-raii", // Protect scoped things like MutexLock.
-    "bugprone-virtual-near-miss",
-    "modernize-use-bool-literals",
-    "performance-implicit-conversion-in-loop",
-    "performance-unnecessary-copy-initialization",
-]
-
-art_clang_tidy_allowed = [
-    // Many files have these warnings. Move them to art_clang_tidy_errors
-    // when all files are free of these warnings.
     "android-cloexec-dup",
+    "android-cloexec-open",
     "bugprone-argument-comment",
+    "bugprone-lambda-function-name",
+    "bugprone-macro-parentheses",
+    "bugprone-unused-raii", // Protect scoped things like MutexLock.
     "bugprone-unused-return-value",
+    "bugprone-virtual-near-miss",
     "misc-unused-using-decls",
+    "modernize-use-bool-literals",
     "modernize-use-nullptr",
-    "modernize-use-using",
     "performance-faster-string-find",
     "performance-for-range-copy",
+    "performance-implicit-conversion-in-loop",
+    "performance-inefficient-vector-operation",
+    "performance-no-automatic-move",
     "performance-noexcept-move-constructor",
+    "performance-unnecessary-copy-initialization",
     "performance-unnecessary-value-param",
 ]
 
@@ -66,6 +63,9 @@ art_clang_tidy_disabled = [
     "-modernize-return-braced-init-list",
     "-modernize-use-default-member-init",
     "-modernize-pass-by-value",
+    // The only two remaining offenders are art/openjdkjvmti/include/jvmti.h and
+    // libcore/ojluni/src/main/native/jvm.h, which are both external files by Oracle
+    "-modernize-use-using",
 ]
 
 soong_config_module_type_import {
@@ -246,7 +246,7 @@ art_module_art_global_defaults {
         },
     },
 
-    tidy_checks: art_clang_tidy_errors + art_clang_tidy_allowed + art_clang_tidy_disabled,
+    tidy_checks: art_clang_tidy_errors + art_clang_tidy_disabled,
 
     tidy_checks_as_errors: art_clang_tidy_errors,
 
