@@ -833,6 +833,8 @@ class Heap {
     return collector_type_;
   }
 
+  CollectorType GetForegroundCollectorType() const { return foreground_collector_type_; }
+
   bool IsGcConcurrentAndMoving() const {
     if (IsGcConcurrent() && IsMovingGc(collector_type_)) {
       // Assume no transition when a concurrent moving collector is used.
@@ -1124,9 +1126,6 @@ class Heap {
                                                size_t alloc_size,
                                                bool grow);
 
-  // Run the finalizers. If timeout is non zero, then we use the VMRuntime version.
-  void RunFinalization(JNIEnv* env, uint64_t timeout);
-
   // Blocks the caller until the garbage collector becomes idle and returns the type of GC we
   // waited for.
   collector::GcType WaitForGcToCompleteLocked(GcCause cause, Thread* self)
@@ -1334,7 +1333,7 @@ class Heap {
   // The current collector type.
   CollectorType collector_type_;
   // Which collector we use when the app is in the foreground.
-  CollectorType foreground_collector_type_;
+  const CollectorType foreground_collector_type_;
   // Which collector we will use when the app is notified of a transition to background.
   CollectorType background_collector_type_;
   // Desired collector type, heap trimming daemon transitions the heap if it is != collector_type_.
@@ -1445,8 +1444,9 @@ class Heap {
 
   // Computed with foreground-multiplier in GrowForUtilization() when run in
   // jank non-perceptible state. On update to process state from background to
-  // foreground we set target_footprint_ to this value.
+  // foreground we set target_footprint_ and concurrent_start_bytes_ to the corresponding value.
   size_t min_foreground_target_footprint_ GUARDED_BY(process_state_update_lock_);
+  size_t min_foreground_concurrent_start_bytes_ GUARDED_BY(process_state_update_lock_);
 
   // When num_bytes_allocated_ exceeds this amount then a concurrent GC should be requested so that
   // it completes ahead of an allocation failing.

@@ -48,6 +48,7 @@ namespace art {
 class ArtField;
 class ArtMethod;
 class ClassHierarchyAnalysis;
+class ClassLoaderContext;
 enum class ClassRoot : uint32_t;
 class ClassTable;
 class DexFile;
@@ -176,6 +177,7 @@ class ClassLinker {
 
   // Add boot class path dex files that were not included in the boot image.
   // ClassLinker takes ownership of these dex files.
+  // DO NOT use directly. Use `Runtime::AddExtraBootDexFiles`.
   void AddExtraBootDexFiles(Thread* self,
                             std::vector<std::unique_ptr<const DexFile>>&& additional_dex_files)
       REQUIRES_SHARED(Locks::mutator_lock_);
@@ -187,6 +189,7 @@ class ClassLinker {
   // properly handle read barriers and object marking.
   bool AddImageSpace(gc::space::ImageSpace* space,
                      Handle<mirror::ClassLoader> class_loader,
+                     ClassLoaderContext* context,
                      std::vector<std::unique_ptr<const DexFile>>* out_dex_files,
                      std::string* error_msg)
       REQUIRES(!Locks::dex_lock_)
@@ -366,14 +369,11 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_, !Roles::uninterruptible_);
 
-  template <InvokeType type, ResolveMode kResolveMode>
-  ArtMethod* GetResolvedMethod(uint32_t method_idx, ArtMethod* referrer)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
   template <ResolveMode kResolveMode>
   ArtMethod* ResolveMethod(Thread* self, uint32_t method_idx, ArtMethod* referrer, InvokeType type)
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_, !Roles::uninterruptible_);
+
   ArtMethod* ResolveMethodWithoutInvokeType(uint32_t method_idx,
                                             Handle<mirror::DexCache> dex_cache,
                                             Handle<mirror::ClassLoader> class_loader)
@@ -457,6 +457,12 @@ class ClassLinker {
                          Handle<mirror::Class> c,
                          bool can_init_fields,
                          bool can_init_parents)
+      REQUIRES_SHARED(Locks::mutator_lock_)
+      REQUIRES(!Locks::dex_lock_, !Roles::uninterruptible_);
+
+  // Initializes a few essential classes, namely `java.lang.Class`,
+  // `java.lang.Object` and `java.lang.reflect.Field`.
+  void RunEarlyRootClinits(Thread* self)
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_, !Roles::uninterruptible_);
 
@@ -663,31 +669,19 @@ class ClassLinker {
       REQUIRES(!Locks::classlinker_classes_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  // Creates a GlobalRef PathClassLoader or DelegateLastClassLoader (specified by loader_class)
-  // that can be used to load classes from the given dex files. The parent of the class loader
-  // will be set to `parent_loader`. If `parent_loader` is null the parent will be
-  // the boot class loader.
-  // If class_loader points to a different class than PathClassLoader or DelegateLastClassLoader
-  // this method will abort.
-  // Note: the objects are not completely set up. Do not use this outside of tests and the compiler.
-  jobject CreateWellKnownClassLoader(Thread* self,
-                                     const std::vector<const DexFile*>& dex_files,
-                                     jclass loader_class,
-                                     jobject parent_loader,
-                                     jobject shared_libraries = nullptr,
-                                     jobject shared_libraries_after = nullptr)
-      REQUIRES_SHARED(Locks::mutator_lock_)
-      REQUIRES(!Locks::dex_lock_);
-
-  // Calls CreateWellKnownClassLoader(self,
-  //                                  dex_files,
-  //                                  WellKnownClasses::dalvik_system_PathClassLoader,
-  //                                  nullptr)
+  // Calls `CreateWellKnownClassLoader()` with `WellKnownClasses::dalvik_system_PathClassLoader`,
+  // and null parent and libraries. Wraps the result in a JNI global reference.
   jobject CreatePathClassLoader(Thread* self, const std::vector<const DexFile*>& dex_files)
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
-  // Non-GlobalRef version of CreateWellKnownClassLoader
+  // Creates a `PathClassLoader`, `DelegateLastClassLoader` or `InMemoryDexClassLoader`
+  // (specified by loader_class) that can be used to load classes from the given dex files.
+  // The parent of the class loader will be set to `parent_loader`. If `parent_loader` is
+  // null the parent will be the boot class loader.
+  // If `loader_class` points to a different class than `PathClassLoader`,
+  // `DelegateLastClassLoader` or `InMemoryDexClassLoader` this method will abort.
+  // Note: the objects are not completely set up. Do not use this outside of tests and the compiler.
   ObjPtr<mirror::ClassLoader> CreateWellKnownClassLoader(
       Thread* self,
       const std::vector<const DexFile*>& dex_files,
@@ -728,8 +722,7 @@ class ClassLinker {
       REQUIRES(!Locks::classlinker_classes_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  static bool IsBootClassLoader(ScopedObjectAccessAlreadyRunnable& soa,
-                                ObjPtr<mirror::ClassLoader> class_loader)
+  static bool IsBootClassLoader(ObjPtr<mirror::Object> class_loader)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   ArtMethod* AddMethodToConflictTable(ObjPtr<mirror::Class> klass,
@@ -773,6 +766,11 @@ class ClassLinker {
   ObjPtr<mirror::Class> GetHoldingClassOfCopiedMethod(ArtMethod* method)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+  // Get the class loader holding class for a copied method.
+  ObjPtr<mirror::ClassLoader> GetHoldingClassLoaderOfCopiedMethod(Thread* self, ArtMethod* method)
+      REQUIRES_SHARED(Locks::mutator_lock_)
+      REQUIRES(!Locks::classlinker_classes_lock_);
+
   // Returns null if not found.
   // This returns a pointer to the class-table, without requiring any locking - including the
   // boot class-table. It is the caller's responsibility to access this under lock, if required.
@@ -780,10 +778,12 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_)
       NO_THREAD_SAFETY_ANALYSIS;
 
+  // DO NOT use directly. Use `Runtime::AppendToBootClassPath`.
   void AppendToBootClassPath(Thread* self, const DexFile* dex_file)
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
+  // DO NOT use directly. Use `Runtime::AppendToBootClassPath`.
   void AppendToBootClassPath(const DexFile* dex_file, ObjPtr<mirror::DexCache> dex_cache)
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
@@ -804,7 +804,7 @@ class ClassLinker {
     return cha_.get();
   }
 
-  void MakeInitializedClassesVisiblyInitialized(Thread* self, bool wait);
+  void MakeInitializedClassesVisiblyInitialized(Thread* self, bool wait /* ==> no locks held */);
 
   // Registers the native method and returns the new entry point. NB The returned entry point
   // might be different from the native_method argument if some MethodCallback modifies it.
@@ -859,6 +859,7 @@ class ClassLinker {
   virtual bool DenyAccessBasedOnPublicSdk(const char* type_descriptor) const;
   // Enable or disable public sdk checks.
   virtual void SetEnablePublicSdkChecks(bool enabled);
+  void RemoveDexFromCaches(const DexFile& dex_file);
 
  protected:
   virtual bool InitializeClass(Thread* self,
@@ -1009,8 +1010,7 @@ class ClassLinker {
   // class-loader chain could be handled, false otherwise, i.e., a non-supported class-loader
   // was encountered while walking the parent chain (currently only BootClassLoader and
   // PathClassLoader are supported).
-  bool FindClassInBaseDexClassLoader(ScopedObjectAccessAlreadyRunnable& soa,
-                                     Thread* self,
+  bool FindClassInBaseDexClassLoader(Thread* self,
                                      const char* descriptor,
                                      size_t hash,
                                      Handle<mirror::ClassLoader> class_loader,
@@ -1018,8 +1018,7 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
-  bool FindClassInSharedLibraries(ScopedObjectAccessAlreadyRunnable& soa,
-                                  Thread* self,
+  bool FindClassInSharedLibraries(Thread* self,
                                   const char* descriptor,
                                   size_t hash,
                                   Handle<mirror::ClassLoader> class_loader,
@@ -1027,8 +1026,7 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
-  bool FindClassInSharedLibrariesHelper(ScopedObjectAccessAlreadyRunnable& soa,
-                                        Thread* self,
+  bool FindClassInSharedLibrariesHelper(Thread* self,
                                         const char* descriptor,
                                         size_t hash,
                                         Handle<mirror::ClassLoader> class_loader,
@@ -1037,8 +1035,7 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
-  bool FindClassInSharedLibrariesAfter(ScopedObjectAccessAlreadyRunnable& soa,
-                                       Thread* self,
+  bool FindClassInSharedLibrariesAfter(Thread* self,
                                        const char* descriptor,
                                        size_t hash,
                                        Handle<mirror::ClassLoader> class_loader,
@@ -1054,7 +1051,7 @@ class ClassLinker {
   // The method always returns true, to notify to the caller a
   // BaseDexClassLoader has a known lookup.
   bool FindClassInBaseDexClassLoaderClassPath(
-          ScopedObjectAccessAlreadyRunnable& soa,
+          Thread* self,
           const char* descriptor,
           size_t hash,
           Handle<mirror::ClassLoader> class_loader,
