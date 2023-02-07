@@ -243,6 +243,7 @@ MarkCompact::MarkCompact(Heap* heap)
       gc_barrier_(0),
       mark_stack_lock_("mark compact mark stack lock", kMarkSweepMarkStackLock),
       bump_pointer_space_(heap->GetBumpPointerSpace()),
+      moving_space_bitmap_(bump_pointer_space_->GetMarkBitmap()),
       moving_to_space_fd_(kFdUnused),
       moving_from_space_fd_(kFdUnused),
       uffd_(kFdUnused),
@@ -250,9 +251,12 @@ MarkCompact::MarkCompact(Heap* heap)
       compaction_in_progress_count_(0),
       compacting_(false),
       uffd_initialized_(false),
-      uffd_minor_fault_supported_(GetUffdAndMinorFault().second),
+      uffd_minor_fault_supported_(false),
       minor_fault_initialized_(false),
       map_linear_alloc_shared_(false) {
+  if (kIsDebugBuild) {
+    updated_roots_.reset(new std::unordered_set<void*>());
+  }
   // TODO: Depending on how the bump-pointer space move is implemented. If we
   // switch between two virtual memories each time, then we will have to
   // initialize live_words_bitmap_ accordingly.
@@ -435,17 +439,34 @@ void MarkCompact::BindAndResetBitmaps() {
       // in these spaces. This card-table will eventually be used to track
       // mutations while concurrent marking is going on.
       card_table->ClearCardRange(space->Begin(), space->Limit());
-      if (space == bump_pointer_space_) {
-        // It is OK to clear the bitmap with mutators running since the only
-        // place it is read is VisitObjects which has exclusion with this GC.
-        moving_space_bitmap_ = bump_pointer_space_->GetMarkBitmap();
-        moving_space_bitmap_->Clear();
-      } else {
-        CHECK(space == heap_->GetNonMovingSpace());
+      if (space != bump_pointer_space_) {
+        CHECK_EQ(space, heap_->GetNonMovingSpace());
         non_moving_space_ = space;
         non_moving_space_bitmap_ = space->GetMarkBitmap();
       }
     }
+  }
+}
+
+void MarkCompact::MarkZygoteLargeObjects() {
+  Thread* self = thread_running_gc_;
+  DCHECK_EQ(self, Thread::Current());
+  space::LargeObjectSpace* const los = heap_->GetLargeObjectsSpace();
+  if (los != nullptr) {
+    // Pick the current live bitmap (mark bitmap if swapped).
+    accounting::LargeObjectBitmap* const live_bitmap = los->GetLiveBitmap();
+    accounting::LargeObjectBitmap* const mark_bitmap = los->GetMarkBitmap();
+    // Walk through all of the objects and explicitly mark the zygote ones so they don't get swept.
+    std::pair<uint8_t*, uint8_t*> range = los->GetBeginEndAtomic();
+    live_bitmap->VisitMarkedRange(reinterpret_cast<uintptr_t>(range.first),
+                                  reinterpret_cast<uintptr_t>(range.second),
+                                  [mark_bitmap, los, self](mirror::Object* obj)
+                                      REQUIRES(Locks::heap_bitmap_lock_)
+                                          REQUIRES_SHARED(Locks::mutator_lock_) {
+                                            if (los->IsZygoteLargeObject(self, obj)) {
+                                              mark_bitmap->Set(obj);
+                                            }
+                                          });
   }
 }
 
@@ -3456,6 +3477,7 @@ void MarkCompact::MarkingPhase() {
   DCHECK_EQ(thread_running_gc_, Thread::Current());
   WriterMutexLock mu(thread_running_gc_, *Locks::heap_bitmap_lock_);
   BindAndResetBitmaps();
+  MarkZygoteLargeObjects();
   MarkRoots(
         static_cast<VisitRootFlags>(kVisitRootFlagAllRoots | kVisitRootFlagStartLoggingNewRoots));
   MarkReachableObjects();
@@ -3626,8 +3648,15 @@ inline bool MarkCompact::MarkObjectNonNullNoPush(mirror::Object* obj,
         << " doesn't belong to any of the spaces and large object space doesn't exist";
     accounting::LargeObjectBitmap* los_bitmap = heap_->GetLargeObjectsSpace()->GetMarkBitmap();
     DCHECK(los_bitmap->HasAddress(obj));
-    return kParallel ? !los_bitmap->AtomicTestAndSet(obj)
-                     : !los_bitmap->Set(obj);
+    if (kParallel) {
+      los_bitmap->AtomicTestAndSet(obj);
+    } else {
+      los_bitmap->Set(obj);
+    }
+    // We only have primitive arrays in large object space. So there is no
+    // reason to push into mark-stack.
+    DCHECK(obj->IsString() || (obj->IsArrayInstance() && !obj->IsObjectArray()));
+    return false;
   }
 }
 
@@ -3752,6 +3781,11 @@ void MarkCompact::FinishPhase() {
 
   info_map_.MadviseDontNeedAndZero();
   live_words_bitmap_->ClearBitmap();
+  // TODO: We can clear this bitmap right before compaction pause. But in that
+  // case we need to ensure that we don't assert on this bitmap afterwards.
+  // Also, we would still need to clear it here again as we may have to use the
+  // bitmap for black-allocations (see UpdateMovingSpaceBlackAllocations()).
+  moving_space_bitmap_->Clear();
 
   if (UNLIKELY(is_zygote && IsValidFd(uffd_))) {
     heap_->DeleteThreadPool();
@@ -3762,7 +3796,9 @@ void MarkCompact::FinishPhase() {
   }
   CHECK(mark_stack_->IsEmpty());  // Ensure that the mark stack is empty.
   mark_stack_->Reset();
-  updated_roots_.clear();
+  if (kIsDebugBuild && updated_roots_.get() != nullptr) {
+    updated_roots_->clear();
+  }
   class_after_obj_ordered_map_.clear();
   delete[] moving_pages_status_;
   linear_alloc_arenas_.clear();
