@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "android-base/stringprintf.h"
+#include "android-base/strings.h"
 
 #include "art_field-inl.h"
 #include "art_method-inl.h"
@@ -2055,30 +2056,77 @@ bool ClassLinker::AddImageSpace(
     if (special_root == nullptr) {
       *error_msg = "Unexpected null special root in app image";
       return false;
-    } else if (special_root->IsObjectArray()) {
-      ObjPtr<mirror::IntArray> checksums =
-          special_root->AsObjectArray<mirror::Object>()->Get(1)->AsIntArray();
-      size_t count = checksums->GetLength();
-      if (oat_file->GetVdexFile()->GetNumberOfDexFiles() != count) {
+    } else if (special_root->IsByteArray()) {
+      OatHeader* oat_header = reinterpret_cast<OatHeader*>(special_root->AsByteArray()->GetData());
+      if (!oat_header->IsValid()) {
+        *error_msg = "Invalid oat header in special root";
+        return false;
+      }
+      if (oat_file->GetVdexFile()->GetNumberOfDexFiles() != oat_header->GetDexFileCount()) {
         *error_msg = "Checksums count does not match";
         return false;
       }
-      static_assert(sizeof(VdexFile::VdexChecksum) == sizeof(int32_t));
-      const VdexFile::VdexChecksum* art_checksums =
-          reinterpret_cast<VdexFile::VdexChecksum*>(checksums->GetData());
-      const VdexFile::VdexChecksum* vdex_checksums =
-          oat_file->GetVdexFile()->GetDexChecksumsArray();
-      if (memcmp(art_checksums, vdex_checksums, sizeof(VdexFile::VdexChecksum) * count) != 0) {
-        *error_msg = "Image and vdex checksums did not match";
+
+      // Check if the dex checksums match the dex files that we just loaded.
+      uint32_t* checksums = reinterpret_cast<uint32_t*>(
+          reinterpret_cast<uint8_t*>(oat_header) + oat_header->GetHeaderSize());
+      for (uint32_t i = 0; i  < oat_header->GetDexFileCount(); ++i) {
+        uint32_t dex_checksum = out_dex_files->at(i)->GetHeader().checksum_;
+        if (checksums[i] != dex_checksum) {
+          *error_msg = StringPrintf(
+              "Image and dex file checksums did not match for %s: image has %d, dex file has %d",
+              out_dex_files->at(i)->GetLocation().c_str(),
+              checksums[i],
+              dex_checksum);
+          return false;
+        }
+      }
+
+      // Validate the class loader context.
+      const char* stored_context = oat_header->GetStoreValueByKey(OatHeader::kClassPathKey);
+      if (stored_context == nullptr) {
+        *error_msg = "Missing class loader context in special root";
         return false;
       }
-      ObjPtr<mirror::String> encoded_context =
-          special_root->AsObjectArray<mirror::Object>()->Get(0)->AsString();
-      std::string encoded_context_str = encoded_context->ToModifiedUtf8();
-      if (context->VerifyClassLoaderContextMatch(encoded_context_str.c_str()) ==
+      if (context->VerifyClassLoaderContextMatch(stored_context) ==
               ClassLoaderContext::VerificationResult::kMismatch) {
-        *error_msg =
-            StringPrintf("Class loader contexts don't match: %s", encoded_context_str.c_str());
+        *error_msg = StringPrintf("Class loader contexts don't match: %s", stored_context);
+        return false;
+      }
+
+      // Validate the apex versions.
+      if (!gc::space::ImageSpace::ValidateApexVersions(*oat_header,
+                                                       runtime->GetApexVersions(),
+                                                       space->GetImageLocation(),
+                                                       error_msg)) {
+        return false;
+      }
+
+      // Validate the boot classpath.
+      const char* bcp = oat_header->GetStoreValueByKey(OatHeader::kBootClassPathKey);
+      if (bcp == nullptr) {
+        *error_msg = "Missing boot classpath in special root";
+        return false;
+      }
+      std::string runtime_bcp = android::base::Join(runtime->GetBootClassPathLocations(), ':');
+      if (strcmp(bcp, runtime_bcp.c_str()) != 0) {
+        *error_msg = StringPrintf("Mismatch boot classpath: image has %s, runtime has %s",
+                                  bcp,
+                                  runtime_bcp.c_str());
+        return false;
+      }
+
+      // Validate the dex checksums of the boot classpath.
+      const char* bcp_checksums =
+          oat_header->GetStoreValueByKey(OatHeader::kBootClassPathChecksumsKey);
+      if (bcp_checksums == nullptr) {
+        *error_msg = "Missing boot classpath checksums in special root";
+        return false;
+      }
+      if (strcmp(bcp_checksums, runtime->GetBootClassPathChecksums().c_str()) != 0) {
+        *error_msg = StringPrintf("Mismatch boot classpath checksums: image has %s, runtime has %s",
+                                  bcp_checksums,
+                                  runtime->GetBootClassPathChecksums().c_str());
         return false;
       }
     } else if (IsBootClassLoader(special_root.Get())) {
@@ -5988,17 +6036,6 @@ ClassTable* ClassLinker::ClassTableForClassLoader(ObjPtr<mirror::ClassLoader> cl
   return class_loader == nullptr ? boot_class_table_.get() : class_loader->GetClassTable();
 }
 
-static ImTable* FindSuperImt(ObjPtr<mirror::Class> klass, PointerSize pointer_size)
-    REQUIRES_SHARED(Locks::mutator_lock_) {
-  while (klass->HasSuperClass()) {
-    klass = klass->GetSuperClass();
-    if (klass->ShouldHaveImt()) {
-      return klass->GetImt(pointer_size);
-    }
-  }
-  return nullptr;
-}
-
 bool ClassLinker::LinkClass(Thread* self,
                             const char* descriptor,
                             Handle<mirror::Class> klass,
@@ -6034,7 +6071,7 @@ bool ClassLinker::LinkClass(Thread* self,
     // will possibly create a table that is incorrect for either of the classes.
     // Same IMT with new_conflict does not happen very often.
     if (!new_conflict) {
-      ImTable* super_imt = FindSuperImt(klass.Get(), image_pointer_size_);
+      ImTable* super_imt = klass->FindSuperImt(image_pointer_size_);
       if (super_imt != nullptr) {
         bool imt_equals = true;
         for (size_t i = 0; i < ImTable::kSize && imt_equals; ++i) {
@@ -6317,13 +6354,36 @@ class MethodNameAndSignatureComparator final : public ValueObject {
   std::string_view name_view_;
 };
 
+static ObjPtr<mirror::Class> GetImtOwner(ObjPtr<mirror::Class> klass)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  ImTable* imt = klass->GetImt(kRuntimePointerSize);
+  DCHECK(imt != nullptr);
+  while (klass->HasSuperClass()) {
+    ObjPtr<mirror::Class> super_class = klass->GetSuperClass();
+    if (super_class->ShouldHaveImt() && imt != super_class->GetImt(kRuntimePointerSize)) {
+      // IMT not shared with the super class, return the current class.
+      return klass;
+    }
+    klass = super_class;
+  }
+  return nullptr;
+}
+
 ArtMethod* ClassLinker::AddMethodToConflictTable(ObjPtr<mirror::Class> klass,
                                                  ArtMethod* conflict_method,
                                                  ArtMethod* interface_method,
                                                  ArtMethod* method) {
   ImtConflictTable* current_table = conflict_method->GetImtConflictTable(kRuntimePointerSize);
   Runtime* const runtime = Runtime::Current();
-  LinearAlloc* linear_alloc = GetAllocatorForClassLoader(klass->GetClassLoader());
+
+  // The IMT may be shared with a super class, in which case we need to use that
+  // super class's `LinearAlloc`. The conflict itself should be limited to
+  // methods at or higher up the chain of the IMT owner, otherwise class
+  // linker would have created a different IMT.
+  ObjPtr<mirror::Class> imt_owner = GetImtOwner(klass);
+  DCHECK(imt_owner != nullptr);
+
+  LinearAlloc* linear_alloc = GetAllocatorForClassLoader(imt_owner->GetClassLoader());
 
   // Create a new entry if the existing one is the shared conflict method.
   ArtMethod* new_conflict_method = (conflict_method == runtime->GetImtConflictMethod())
@@ -6408,9 +6468,8 @@ void ClassLinker::FillIMTAndConflictTables(ObjPtr<mirror::Class> klass) {
   // Compare the IMT with the super class including the conflict methods. If they are equivalent,
   // we can just use the same pointer.
   ImTable* imt = nullptr;
-  ObjPtr<mirror::Class> super_class = klass->GetSuperClass();
-  if (super_class != nullptr && super_class->ShouldHaveImt()) {
-    ImTable* super_imt = super_class->GetImt(image_pointer_size_);
+  ImTable* super_imt = klass->FindSuperImt(image_pointer_size_);
+  if (super_imt != nullptr) {
     bool same = true;
     for (size_t i = 0; same && i < ImTable::kSize; ++i) {
       ArtMethod* method = imt_data[i];
@@ -6439,6 +6498,7 @@ void ClassLinker::FillIMTAndConflictTables(ObjPtr<mirror::Class> klass) {
   if (imt == nullptr) {
     imt = klass->GetImt(image_pointer_size_);
     DCHECK(imt != nullptr);
+    DCHECK_NE(imt, super_imt);
     imt->Populate(imt_data, image_pointer_size_);
   } else {
     klass->SetImt(imt, image_pointer_size_);
