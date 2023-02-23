@@ -43,6 +43,10 @@ cc_library {
     shared_libs: [
         "libbase",
     ],
+    whole_static_libs: [
+        // TODO(b/270049598): Investigate the cost of libc++fs compared to its utility.
+        "libc++fs",
+    ],
     export_shared_lib_headers: ["libbase"],
 }
 
