@@ -63,6 +63,7 @@
 #include "android-base/scopeguard.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
+#include "android-modules-utils/sdk_level.h"
 #include "android/log.h"
 #include "arch/instruction_set.h"
 #include "base/file_utils.h"
@@ -101,6 +102,7 @@ namespace art_apex = com::android::art;
 using ::android::base::ParseBool;
 using ::android::base::ParseBoolResult;
 using ::android::base::Result;
+using ::android::modules::sdklevel::IsAtLeastU;
 
 using ::fmt::literals::operator""_format;  // NOLINT
 
@@ -288,7 +290,6 @@ std::vector<T> GenerateComponents(
         custom_generator) {
   std::vector<T> components;
 
-  ArtDexFileLoader loader;
   for (const std::string& path : jars) {
     std::string actual_path = RewriteParentDirectoryIfNeeded(path);
     struct stat sb;
@@ -300,7 +301,8 @@ std::vector<T> GenerateComponents(
     std::vector<uint32_t> checksums;
     std::vector<std::string> dex_locations;
     std::string error_msg;
-    if (!loader.GetMultiDexChecksums(actual_path.c_str(), &checksums, &dex_locations, &error_msg)) {
+    if (!ArtDexFileLoader::GetMultiDexChecksums(
+            actual_path.c_str(), &checksums, &dex_locations, &error_msg)) {
       LOG(ERROR) << "Failed to get multi-dex checksums: " << error_msg;
       return {};
     }
@@ -388,21 +390,38 @@ bool IsCpuSetSpecValid(const std::string& cpu_set) {
   return true;
 }
 
-bool AddDex2OatConcurrencyArguments(/*inout*/ std::vector<std::string>& args) {
-  std::string threads = android::base::GetProperty("dalvik.vm.boot-dex2oat-threads", "");
+bool AddDex2OatConcurrencyArguments(/*inout*/ std::vector<std::string>& args,
+                                    bool is_compilation_os) {
+  std::string threads;
+  if (is_compilation_os) {
+    threads = android::base::GetProperty("dalvik.vm.background-dex2oat-threads", "");
+    if (threads.empty()) {
+      threads = android::base::GetProperty("dalvik.vm.dex2oat-threads", "");
+    }
+  } else {
+    threads = android::base::GetProperty("dalvik.vm.boot-dex2oat-threads", "");
+  }
   if (!threads.empty()) {
     args.push_back("-j" + threads);
   }
 
-  std::string cpu_set = android::base::GetProperty("dalvik.vm.boot-dex2oat-cpu-set", "");
-  if (cpu_set.empty()) {
-    return true;
+  std::string cpu_set;
+  if (is_compilation_os) {
+    cpu_set = android::base::GetProperty("dalvik.vm.background-dex2oat-cpu-set", "");
+    if (cpu_set.empty()) {
+      cpu_set = android::base::GetProperty("dalvik.vm.dex2oat-cpu-set", "");
+    }
+  } else {
+    cpu_set = android::base::GetProperty("dalvik.vm.boot-dex2oat-cpu-set", "");
   }
-  if (!IsCpuSetSpecValid(cpu_set)) {
-    LOG(ERROR) << "Invalid CPU set spec: " << cpu_set;
-    return false;
+  if (!cpu_set.empty()) {
+    if (!IsCpuSetSpecValid(cpu_set)) {
+      LOG(ERROR) << "Invalid CPU set spec: " << cpu_set;
+      return false;
+    }
+    args.push_back("--cpu-set=" + cpu_set);
   }
-  args.push_back("--cpu-set=" + cpu_set);
+
   return true;
 }
 
@@ -559,6 +578,13 @@ WARN_UNUSED bool CheckCompilationSpace() {
 }
 
 std::string GetSystemBootImageDir() { return GetAndroidRoot() + "/framework"; }
+
+bool HasVettedDeviceSystemServerProfiles() {
+  // While system_server profiles were bundled on the device prior to U+, they were not used by
+  // default or rigorously tested, so we cannot vouch for their efficacy.
+  static const bool kDeviceIsAtLeastU = IsAtLeastU();
+  return kDeviceIsAtLeastU;
+}
 
 }  // namespace
 
@@ -1471,7 +1497,7 @@ WARN_UNUSED bool OnDeviceRefresh::CompileBootClasspathArtifacts(
   AddDex2OatCommonOptions(args);
   AddDex2OatDebugInfo(args);
   AddDex2OatInstructionSet(args, isa);
-  if (!AddDex2OatConcurrencyArguments(args)) {
+  if (!AddDex2OatConcurrencyArguments(args, config_.GetCompilationOsMode())) {
     return false;
   }
 
@@ -1641,17 +1667,20 @@ WARN_UNUSED bool OnDeviceRefresh::CompileSystemServerArtifacts(
     AddDex2OatCommonOptions(args);
     AddDex2OatDebugInfo(args);
     AddDex2OatInstructionSet(args, isa);
-    if (!AddDex2OatConcurrencyArguments(args)) {
+    if (!AddDex2OatConcurrencyArguments(args, config_.GetCompilationOsMode())) {
       return false;
     }
 
     const std::string jar_name(android::base::Basename(jar));
     const std::string profile = Concatenate({GetAndroidRoot(), "/framework/", jar_name, ".prof"});
-    bool has_any_profile = AddDex2OatProfile(args, readonly_files_raii, {profile});
     const std::string& compiler_filter = config_.GetSystemServerCompilerFilter();
+    const bool maybe_add_profile =
+        !compiler_filter.empty() || HasVettedDeviceSystemServerProfiles();
+    const bool has_added_profile =
+        maybe_add_profile && AddDex2OatProfile(args, readonly_files_raii, {profile});
     if (!compiler_filter.empty()) {
       args.emplace_back("--compiler-filter=" + compiler_filter);
-    } else if (has_any_profile) {
+    } else if (has_added_profile) {
       args.emplace_back("--compiler-filter=speed-profile");
     } else {
       args.emplace_back("--compiler-filter=speed");

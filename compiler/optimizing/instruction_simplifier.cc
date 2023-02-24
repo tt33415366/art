@@ -970,7 +970,7 @@ void InstructionSimplifierVisitor::VisitPredicatedInstanceFieldGet(
                           pred_get->GetFieldInfo().GetDexFile(),
                           pred_get->GetDexPc());
     if (pred_get->GetType() == DataType::Type::kReference) {
-      replace_with->SetReferenceTypeInfo(pred_get->GetReferenceTypeInfo());
+      replace_with->SetReferenceTypeInfoIfValid(pred_get->GetReferenceTypeInfo());
     }
     pred_get->GetBlock()->InsertInstructionBefore(replace_with, pred_get);
     pred_get->ReplaceWith(replace_with);
@@ -1142,13 +1142,13 @@ void InstructionSimplifierVisitor::VisitArraySet(HArraySet* instruction) {
   if (value->IsArrayGet()) {
     if (value->AsArrayGet()->GetArray() == instruction->GetArray()) {
       // If the code is just swapping elements in the array, no need for a type check.
-      instruction->ClearNeedsTypeCheck();
+      instruction->ClearTypeCheck();
       return;
     }
   }
 
   if (value->IsNullConstant()) {
-    instruction->ClearNeedsTypeCheck();
+    instruction->ClearTypeCheck();
     return;
   }
 
@@ -1160,13 +1160,13 @@ void InstructionSimplifierVisitor::VisitArraySet(HArraySet* instruction) {
   }
 
   if (value_rti.IsValid() && array_rti.CanArrayHold(value_rti)) {
-    instruction->ClearNeedsTypeCheck();
+    instruction->ClearTypeCheck();
     return;
   }
 
   if (array_rti.IsObjectArray()) {
     if (array_rti.IsExact()) {
-      instruction->ClearNeedsTypeCheck();
+      instruction->ClearTypeCheck();
       return;
     }
     instruction->SetStaticTypeOfArrayIsObjectArray();
@@ -1860,13 +1860,16 @@ void InstructionSimplifierVisitor::VisitDiv(HDiv* instruction) {
 
 // Search HDiv having the specified dividend and divisor which is in the specified basic block.
 // Return nullptr if nothing has been found.
-static HInstruction* FindDivWithInputsInBasicBlock(HInstruction* dividend,
-                                                   HInstruction* divisor,
-                                                   HBasicBlock* basic_block) {
+static HDiv* FindDivWithInputsInBasicBlock(HInstruction* dividend,
+                                           HInstruction* divisor,
+                                           HBasicBlock* basic_block) {
   for (const HUseListNode<HInstruction*>& use : dividend->GetUses()) {
     HInstruction* user = use.GetUser();
-    if (user->GetBlock() == basic_block && user->IsDiv() && user->InputAt(1) == divisor) {
-      return user;
+    if (user->GetBlock() == basic_block &&
+        user->IsDiv() &&
+        user->InputAt(0) == dividend &&
+        user->InputAt(1) == divisor) {
+      return user->AsDiv();
     }
   }
   return nullptr;
@@ -1900,7 +1903,7 @@ void InstructionSimplifierVisitor::TryToReuseDiv(HRem* rem) {
     }
   }
 
-  HInstruction* quotient = FindDivWithInputsInBasicBlock(dividend, divisor, basic_block);
+  HDiv* quotient = FindDivWithInputsInBasicBlock(dividend, divisor, basic_block);
   if (quotient == nullptr) {
     return;
   }
@@ -2652,6 +2655,7 @@ static bool TryReplaceStringBuilderAppend(HInvoke* invoke) {
   bool seen_to_string = false;
   uint32_t format = 0u;
   uint32_t num_args = 0u;
+  bool has_fp_args = false;
   HInstruction* args[StringBuilderAppend::kMaxArgs];  // Added in reverse order.
   for (HBackwardInstructionIterator iter(block->GetInstructions()); !iter.Done(); iter.Advance()) {
     HInstruction* user = iter.Current();
@@ -2697,6 +2701,14 @@ static bool TryReplaceStringBuilderAppend(HInvoke* invoke) {
         case Intrinsics::kStringBuilderAppendLong:
           arg = StringBuilderAppend::Argument::kLong;
           break;
+        case Intrinsics::kStringBuilderAppendFloat:
+          arg = StringBuilderAppend::Argument::kFloat;
+          has_fp_args = true;
+          break;
+        case Intrinsics::kStringBuilderAppendDouble:
+          arg = StringBuilderAppend::Argument::kDouble;
+          has_fp_args = true;
+          break;
         case Intrinsics::kStringBuilderAppendCharSequence: {
           ReferenceTypeInfo rti = user->AsInvokeVirtual()->InputAt(1)->GetReferenceTypeInfo();
           if (!rti.IsValid()) {
@@ -2716,10 +2728,6 @@ static bool TryReplaceStringBuilderAppend(HInvoke* invoke) {
           }
           break;
         }
-        case Intrinsics::kStringBuilderAppendFloat:
-        case Intrinsics::kStringBuilderAppendDouble:
-          // TODO: Unimplemented, needs to call FloatingDecimal.getBinaryToASCIIConverter().
-          return false;
         default: {
           return false;
         }
@@ -2772,9 +2780,9 @@ static bool TryReplaceStringBuilderAppend(HInvoke* invoke) {
   // Create replacement instruction.
   HIntConstant* fmt = block->GetGraph()->GetIntConstant(static_cast<int32_t>(format));
   ArenaAllocator* allocator = block->GetGraph()->GetAllocator();
-  HStringBuilderAppend* append =
-      new (allocator) HStringBuilderAppend(fmt, num_args, allocator, invoke->GetDexPc());
-  append->SetReferenceTypeInfo(invoke->GetReferenceTypeInfo());
+  HStringBuilderAppend* append = new (allocator) HStringBuilderAppend(
+      fmt, num_args, has_fp_args, allocator, invoke->GetDexPc());
+  append->SetReferenceTypeInfoIfValid(invoke->GetReferenceTypeInfo());
   for (size_t i = 0; i != num_args; ++i) {
     append->SetArgumentAt(i, args[num_args - 1u - i]);
   }

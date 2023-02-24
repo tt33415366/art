@@ -51,6 +51,7 @@
 #include "linker/linker_patch.h"
 #include "nodes.h"
 #include "oat_quick_method_header.h"
+#include "optimizing/write_barrier_elimination.h"
 #include "prepare_for_register_allocation.h"
 #include "reference_type_propagation.h"
 #include "register_allocator_linear_scan.h"
@@ -567,6 +568,9 @@ bool OptimizingCompiler::RunArchOptimizations(HGraph* graph,
     }
 #endif
     default:
+      UNUSED(graph);
+      UNUSED(dex_compilation_unit);
+      UNUSED(pass_observer);
       return false;
   }
 }
@@ -667,18 +671,18 @@ void OptimizingCompiler::RunOptimizations(HGraph* graph,
     OptDef(OptimizationPass::kLoopOptimization),
     // Simplification.
     OptDef(OptimizationPass::kConstantFolding,
-           "constant_folding$after_bce"),
+           "constant_folding$after_loop_opt"),
     OptDef(OptimizationPass::kAggressiveInstructionSimplifier,
-           "instruction_simplifier$after_bce"),
+           "instruction_simplifier$after_loop_opt"),
     OptDef(OptimizationPass::kDeadCodeElimination,
-           "dead_code_elimination$after_bce"),
+           "dead_code_elimination$after_loop_opt"),
     // Other high-level optimizations.
     OptDef(OptimizationPass::kLoadStoreElimination),
-    OptDef(OptimizationPass::kDeadCodeElimination,
-           "dead_code_elimination$after_lse",
-           OptimizationPass::kLoadStoreElimination),
     OptDef(OptimizationPass::kCHAGuardOptimization),
     OptDef(OptimizationPass::kCodeSinking),
+    // Simplification.
+    OptDef(OptimizationPass::kConstantFolding,
+           "constant_folding$before_codegen"),
     // The codegen has a few assumptions that only the instruction simplifier
     // can satisfy. For example, the code generator does not expect to see a
     // HTypeConversion from a type to the same type.
@@ -687,8 +691,7 @@ void OptimizingCompiler::RunOptimizations(HGraph* graph,
     // Simplification may result in dead code that should be removed prior to
     // code generation.
     OptDef(OptimizationPass::kDeadCodeElimination,
-           "dead_code_elimination$before_codegen",
-           OptimizationPass::kAggressiveInstructionSimplifier),
+           "dead_code_elimination$before_codegen"),
     // Eliminate constructor fences after code sinking to avoid
     // complicated sinking logic to split a fence with many inputs.
     OptDef(OptimizationPass::kConstructorFenceRedundancyElimination)
@@ -877,11 +880,6 @@ CodeGenerator* OptimizingCompiler::TryCompile(ArenaAllocator* allocator,
                           MethodCompilationStat::kNotCompiledAmbiguousArrayOp);
           break;
         }
-        case kAnalysisFailInliningIrreducibleLoop: {
-          MaybeRecordStat(compilation_stats_.get(),
-                          MethodCompilationStat::kNotCompiledInliningIrreducibleLoop);
-          break;
-        }
         case kAnalysisFailIrreducibleLoopAndStringInit: {
           MaybeRecordStat(compilation_stats_.get(),
                           MethodCompilationStat::kNotCompiledIrreducibleLoopAndStringInit);
@@ -904,6 +902,8 @@ CodeGenerator* OptimizingCompiler::TryCompile(ArenaAllocator* allocator,
     RunBaselineOptimizations(graph, codegen.get(), dex_compilation_unit, &pass_observer);
   } else {
     RunOptimizations(graph, codegen.get(), dex_compilation_unit, &pass_observer);
+    PassScope scope(WriteBarrierElimination::kWBEPassName, &pass_observer);
+    WriteBarrierElimination(graph, compilation_stats_.get()).Run();
   }
 
   RegisterAllocator::Strategy regalloc_strategy =
@@ -997,6 +997,10 @@ CodeGenerator* OptimizingCompiler::TryCompileIntrinsic(
                    optimizations);
 
   RunArchOptimizations(graph, codegen.get(), dex_compilation_unit, &pass_observer);
+  {
+    PassScope scope(WriteBarrierElimination::kWBEPassName, &pass_observer);
+    WriteBarrierElimination(graph, compilation_stats_.get()).Run();
+  }
 
   AllocateRegisters(graph,
                     codegen.get(),

@@ -607,25 +607,29 @@ class ProfMan final {
     static constexpr bool kVerifyChecksum = true;
     for (size_t i = 0; i < dex_locations_.size(); ++i) {
       std::string error_msg;
-      const ArtDexFileLoader dex_file_loader;
       std::vector<std::unique_ptr<const DexFile>> dex_files_for_location;
       // We do not need to verify the apk for processing profiles.
       if (use_apk_fd_list) {
-        if (dex_file_loader.OpenZip(apks_fd_[i],
-                                    dex_locations_[i],
-                                    /* verify= */ false,
-                                    kVerifyChecksum,
-                                    &error_msg,
-                                    &dex_files_for_location)) {
-        } else {
-          LOG(ERROR) << "OpenZip failed for '" << dex_locations_[i] << "' " << error_msg;
+          ArtDexFileLoader dex_file_loader(apks_fd_[i], dex_locations_[i]);
+          if (dex_file_loader.Open(/*verify=*/false,
+                                   kVerifyChecksum,
+                                   /*allow_no_dex_files=*/true,
+                                   &error_msg,
+                                   &dex_files_for_location)) {
+          } else {
+            LOG(ERROR) << "OpenZip failed for '" << dex_locations_[i] << "' " << error_msg;
+            return false;
+          }
+      } else {
+        File file(apk_files_[i], O_RDONLY, /*check_usage=*/false);
+        if (file.Fd() < 0) {
+          PLOG(ERROR) << "Unable to open '" << apk_files_[i] << "'";
           return false;
         }
-      } else {
-        if (dex_file_loader.Open(apk_files_[i].c_str(),
-                                 dex_locations_[i],
-                                 /* verify= */ false,
+        ArtDexFileLoader dex_file_loader(file.Release(), dex_locations_[i]);
+        if (dex_file_loader.Open(/*verify=*/false,
                                  kVerifyChecksum,
+                                 /*allow_no_dex_files=*/true,
                                  &error_msg,
                                  &dex_files_for_location)) {
         } else {
@@ -1207,8 +1211,23 @@ class ProfMan final {
       for (std::string_view t :
            SplitString(ic_line.substr(1), kProfileParsingInlineChacheTargetSep)) {
         InlineCacheSegment out;
-        DCHECK_EQ(t[0], 'L') << "Target is not a class? " << t;
-        size_t recv_end = t.find_first_of(';');
+        // The target may be an array for methods defined in `j.l.Object`, such as `clone()`.
+        size_t recv_end;
+        if (UNLIKELY(t[0] == '[')) {
+          recv_end = t.find_first_not_of('[', 1u);
+          DCHECK_NE(recv_end, std::string_view::npos);
+          if (t[recv_end] == 'L') {
+            recv_end = t.find_first_of(';', recv_end + 1u);
+            DCHECK_NE(recv_end, std::string_view::npos);
+          } else {
+            // Primitive array.
+            DCHECK_NE(Primitive::GetType(t[recv_end]), Primitive::kPrimNot);
+          }
+        } else {
+          DCHECK_EQ(t[0], 'L') << "Target is not a class? " << t;
+          recv_end = t.find_first_of(';', 1u);
+          DCHECK_NE(recv_end, std::string_view::npos);
+        }
         out.receiver_ = t.substr(0, recv_end + 1);
         Split(t.substr(recv_end + 1), kProfileParsingTypeSep, &out.inline_caches_);
         res->push_back(out);

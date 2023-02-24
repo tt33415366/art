@@ -480,6 +480,10 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
         << array_set->GetValueCanBeNull() << std::noboolalpha;
     StartAttributeStream("needs_type_check") << std::boolalpha
         << array_set->NeedsTypeCheck() << std::noboolalpha;
+    StartAttributeStream("can_trigger_gc")
+        << std::boolalpha << array_set->GetSideEffects().Includes(SideEffects::CanTriggerGC())
+        << std::noboolalpha;
+    StartAttributeStream("write_barrier_kind") << array_set->GetWriteBarrierKind();
   }
 
   void VisitCompare(HCompare* compare) override {
@@ -549,7 +553,9 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
         iset->GetFieldInfo().GetDexFile().PrettyField(iset->GetFieldInfo().GetFieldIndex(),
                                                       /* with type */ false);
     StartAttributeStream("field_type") << iset->GetFieldType();
-    StartAttributeStream("predicated") << std::boolalpha << iset->GetIsPredicatedSet();
+    StartAttributeStream("predicated")
+        << std::boolalpha << iset->GetIsPredicatedSet() << std::noboolalpha;
+    StartAttributeStream("write_barrier_kind") << iset->GetWriteBarrierKind();
   }
 
   void VisitStaticFieldGet(HStaticFieldGet* sget) override {
@@ -564,6 +570,7 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
         sset->GetFieldInfo().GetDexFile().PrettyField(sset->GetFieldInfo().GetFieldIndex(),
                                                       /* with type */ false);
     StartAttributeStream("field_type") << sset->GetFieldType();
+    StartAttributeStream("write_barrier_kind") << sset->GetWriteBarrierKind();
   }
 
   void VisitUnresolvedInstanceFieldGet(HUnresolvedInstanceFieldGet* field_access) override {
@@ -757,15 +764,7 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
                  instruction->IsCheckCast()) {
         StartAttributeStream("klass") << "unresolved";
       } else {
-        // The NullConstant may be added to the graph during other passes that happen between
-        // ReferenceTypePropagation and Inliner (e.g. InstructionSimplifier). If the inliner
-        // doesn't run or doesn't inline anything, the NullConstant remains untyped.
-        // So we should check NullConstants for validity only after reference type propagation.
-        DCHECK(graph_in_bad_state_ ||
-               IsDebugDump() ||
-               (!is_after_pass_ && IsPass(HGraphBuilder::kBuilderPassName)))
-            << instruction->DebugName() << instruction->GetId() << " has invalid rti "
-            << (is_after_pass_ ? "after" : "before") << " pass " << pass_name_;
+        StartAttributeStream("klass") << "invalid";
       }
     }
     if (disasm_info_ != nullptr) {

@@ -43,6 +43,7 @@
 #include "mirror/var_handle.h"
 #include "offsets.h"
 #include "optimizing/common_arm64.h"
+#include "optimizing/nodes.h"
 #include "thread.h"
 #include "utils/arm64/assembler_arm64.h"
 #include "utils/assembler.h"
@@ -1426,12 +1427,12 @@ void CodeGeneratorARM64::AddLocationAsTemp(Location location, LocationSummary* l
   }
 }
 
-void CodeGeneratorARM64::MarkGCCard(Register object, Register value, bool value_can_be_null) {
+void CodeGeneratorARM64::MarkGCCard(Register object, Register value, bool emit_null_check) {
   UseScratchRegisterScope temps(GetVIXLAssembler());
   Register card = temps.AcquireX();
   Register temp = temps.AcquireW();   // Index within the CardTable - 32bit.
   vixl::aarch64::Label done;
-  if (value_can_be_null) {
+  if (emit_null_check) {
     __ Cbz(value, &done);
   }
   // Load the address of the card table into `card`.
@@ -1453,7 +1454,7 @@ void CodeGeneratorARM64::MarkGCCard(Register object, Register value, bool value_
   // of the card to mark; and 2. to load the `kCardDirty` value) saves a load
   // (no need to explicitly load `kCardDirty` as an immediate value).
   __ Strb(card, MemOperand(card, temp.X()));
-  if (value_can_be_null) {
+  if (emit_null_check) {
     __ Bind(&done);
   }
 }
@@ -2229,7 +2230,8 @@ void LocationsBuilderARM64::HandleFieldSet(HInstruction* instruction) {
 
 void InstructionCodeGeneratorARM64::HandleFieldSet(HInstruction* instruction,
                                                    const FieldInfo& field_info,
-                                                   bool value_can_be_null) {
+                                                   bool value_can_be_null,
+                                                   WriteBarrierKind write_barrier_kind) {
   DCHECK(instruction->IsInstanceFieldSet() || instruction->IsStaticFieldSet());
   bool is_predicated =
       instruction->IsInstanceFieldSet() && instruction->AsInstanceFieldSet()->GetIsPredicatedSet();
@@ -2269,8 +2271,12 @@ void InstructionCodeGeneratorARM64::HandleFieldSet(HInstruction* instruction,
     }
   }
 
-  if (CodeGenerator::StoreNeedsWriteBarrier(field_type, instruction->InputAt(1))) {
-    codegen_->MarkGCCard(obj, Register(value), value_can_be_null);
+  if (CodeGenerator::StoreNeedsWriteBarrier(field_type, instruction->InputAt(1)) &&
+      write_barrier_kind != WriteBarrierKind::kDontEmit) {
+    codegen_->MarkGCCard(
+        obj,
+        Register(value),
+        value_can_be_null && write_barrier_kind == WriteBarrierKind::kEmitWithNullCheck);
   }
 
   if (is_predicated) {
@@ -2935,7 +2941,11 @@ void InstructionCodeGeneratorARM64::VisitArraySet(HArraySet* instruction) {
       }
     }
 
-    codegen_->MarkGCCard(array, value.W(), /* value_can_be_null= */ false);
+    if (instruction->GetWriteBarrierKind() != WriteBarrierKind::kDontEmit) {
+      DCHECK_EQ(instruction->GetWriteBarrierKind(), WriteBarrierKind::kEmitNoNullCheck)
+          << " Already null checked so we shouldn't do it again.";
+      codegen_->MarkGCCard(array, value.W(), /* emit_null_check= */ false);
+    }
 
     if (can_value_be_null) {
       DCHECK(do_store.IsLinked());
@@ -3957,7 +3967,10 @@ void LocationsBuilderARM64::VisitInstanceFieldSet(HInstanceFieldSet* instruction
 }
 
 void InstructionCodeGeneratorARM64::VisitInstanceFieldSet(HInstanceFieldSet* instruction) {
-  HandleFieldSet(instruction, instruction->GetFieldInfo(), instruction->GetValueCanBeNull());
+  HandleFieldSet(instruction,
+                 instruction->GetFieldInfo(),
+                 instruction->GetValueCanBeNull(),
+                 instruction->GetWriteBarrierKind());
 }
 
 // Temp is used for read barrier.
@@ -6220,7 +6233,10 @@ void LocationsBuilderARM64::VisitStaticFieldSet(HStaticFieldSet* instruction) {
 }
 
 void InstructionCodeGeneratorARM64::VisitStaticFieldSet(HStaticFieldSet* instruction) {
-  HandleFieldSet(instruction, instruction->GetFieldInfo(), instruction->GetValueCanBeNull());
+  HandleFieldSet(instruction,
+                 instruction->GetFieldInfo(),
+                 instruction->GetValueCanBeNull(),
+                 instruction->GetWriteBarrierKind());
 }
 
 void LocationsBuilderARM64::VisitStringBuilderAppend(HStringBuilderAppend* instruction) {
@@ -7067,6 +7083,7 @@ static void EmitGrayCheckAndFastPath(arm64::Arm64Assembler& assembler,
                                      vixl::aarch64::MemOperand& lock_word,
                                      vixl::aarch64::Label* slow_path,
                                      vixl::aarch64::Label* throw_npe = nullptr) {
+  vixl::aarch64::Label throw_npe_cont;
   // Load the lock word containing the rb_state.
   __ Ldr(ip0.W(), lock_word);
   // Given the numeric representation, it's enough to check the low bit of the rb_state.
@@ -7078,7 +7095,7 @@ static void EmitGrayCheckAndFastPath(arm64::Arm64Assembler& assembler,
       "Field and array LDR offsets must be the same to reuse the same code.");
   // To throw NPE, we return to the fast path; the artificial dependence below does not matter.
   if (throw_npe != nullptr) {
-    __ Bind(throw_npe);
+    __ Bind(&throw_npe_cont);
   }
   // Adjust the return address back to the LDR (1 instruction; 2 for heap poisoning).
   static_assert(BAKER_MARK_INTROSPECTION_FIELD_LDR_OFFSET == (kPoisonHeapReferences ? -8 : -4),
@@ -7090,6 +7107,12 @@ static void EmitGrayCheckAndFastPath(arm64::Arm64Assembler& assembler,
   // a memory barrier (which would be more expensive).
   __ Add(base_reg, base_reg, Operand(ip0, LSR, 32));
   __ Br(lr);          // And return back to the function.
+  if (throw_npe != nullptr) {
+    // Clear IP0 before returning to the fast path.
+    __ Bind(throw_npe);
+    __ Mov(ip0.X(), xzr);
+    __ B(&throw_npe_cont);
+  }
   // Note: The fake dependency is unnecessary for the slow path.
 }
 

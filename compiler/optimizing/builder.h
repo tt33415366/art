@@ -47,18 +47,13 @@ class HGraphBuilder : public ValueObject {
                 const CodeItemDebugInfoAccessor& accessor,
                 DataType::Type return_type = DataType::Type::kInt32);
 
-  GraphAnalysisResult BuildGraph(bool build_for_inline = false);
+  GraphAnalysisResult BuildGraph();
   void BuildIntrinsicGraph(ArtMethod* method);
 
   static constexpr const char* kBuilderPassName = "builder";
 
  private:
   bool SkipCompilation(size_t number_of_branches);
-
-  // When inlining, we sometimes want to add an extra Goto block before the Exit block. This is done
-  // in the building phase as we do not allow the inlining phase to add new instructions.
-  // Returns false if the graph we are adding the extra block has irreducible loops.
-  bool MaybeAddExtraGotoBlocks();
 
   HGraph* const graph_;
   const DexFile* const dex_file_;

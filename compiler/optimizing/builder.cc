@@ -96,63 +96,13 @@ bool HGraphBuilder::SkipCompilation(size_t number_of_branches) {
   return false;
 }
 
-static bool NeedsExtraGotoBlock(HBasicBlock* block) {
-  if (!block->IsSingleTryBoundary()) {
-    return false;
-  }
-
-  const HTryBoundary* boundary = block->GetLastInstruction()->AsTryBoundary();
-  DCHECK(boundary->GetNormalFlowSuccessor()->IsExitBlock());
-  DCHECK(!boundary->IsEntry());
-
-  const HInstruction* last_instruction = block->GetSinglePredecessor()->GetLastInstruction();
-  DCHECK(last_instruction->IsReturn() ||
-         last_instruction->IsReturnVoid() ||
-         last_instruction->IsThrow());
-
-  return !last_instruction->IsThrow();
-}
-
-bool HGraphBuilder::MaybeAddExtraGotoBlocks() {
-  if (graph_->GetExitBlock() == nullptr) {
-    return true;
-  }
-
-  bool added_block = false;
-  for (size_t pred = 0, size = graph_->GetExitBlock()->GetPredecessors().size(); pred < size;
-       ++pred) {
-    HBasicBlock* predecessor = graph_->GetExitBlock()->GetPredecessors()[pred];
-    if (NeedsExtraGotoBlock(predecessor)) {
-      added_block = true;
-      graph_->SplitEdge(predecessor, graph_->GetExitBlock())
-          ->AddInstruction(new (graph_->GetAllocator()) HGoto(predecessor->GetDexPc()));
-    }
-  }
-
-  // TODO(solanes): Avoid recomputing the full dominator tree by manually updating the relevant
-  // information (loop information, dominance, try catch information).
-  if (added_block) {
-    if (graph_->HasIrreducibleLoops()) {
-      // Recomputing loop information in graphs with irreducible loops is unsupported, as it could
-      // lead to loop header changes. In this case it is safe to abort since we don't inline graphs
-      // with irreducible loops anyway.
-      return false;
-    }
-    graph_->ClearLoopInformation();
-    graph_->ClearDominanceInformation();
-    graph_->BuildDominatorTree();
-  }
-  return true;
-}
-
-GraphAnalysisResult HGraphBuilder::BuildGraph(bool build_for_inline) {
+GraphAnalysisResult HGraphBuilder::BuildGraph() {
   DCHECK(code_item_accessor_.HasCodeItem());
   DCHECK(graph_->GetBlocks().empty());
 
   graph_->SetNumberOfVRegs(code_item_accessor_.RegistersSize());
   graph_->SetNumberOfInVRegs(code_item_accessor_.InsSize());
   graph_->SetMaximumNumberOfOutVRegs(code_item_accessor_.OutsSize());
-  graph_->SetHasTryCatch(code_item_accessor_.TriesSize() != 0);
 
   // Use ScopedArenaAllocator for all local allocations.
   ScopedArenaAllocator local_allocator(graph_->GetArenaStack());
@@ -196,15 +146,7 @@ GraphAnalysisResult HGraphBuilder::BuildGraph(bool build_for_inline) {
     return kAnalysisInvalidBytecode;
   }
 
-  // 5) When inlining, we want to add a Goto block if we have Return/ReturnVoid->TryBoundary->Exit
-  // since we will have Return/ReturnVoid->TryBoundary->`continue to normal execution` once inlined.
-  if (build_for_inline) {
-    if (!MaybeAddExtraGotoBlocks()) {
-      return kAnalysisFailInliningIrreducibleLoop;
-    }
-  }
-
-  // 6) Type the graph and eliminate dead/redundant phis.
+  // 5) Type the graph and eliminate dead/redundant phis.
   return ssa_builder.BuildSsa();
 }
 
@@ -225,7 +167,6 @@ void HGraphBuilder::BuildIntrinsicGraph(ArtMethod* method) {
   graph_->SetNumberOfVRegs(return_vregs + num_arg_vregs);
   graph_->SetNumberOfInVRegs(num_arg_vregs);
   graph_->SetMaximumNumberOfOutVRegs(num_arg_vregs);
-  graph_->SetHasTryCatch(false);
 
   // Use ScopedArenaAllocator for all local allocations.
   ScopedArenaAllocator local_allocator(graph_->GetArenaStack());

@@ -165,6 +165,7 @@
 #include "reflection.h"
 #include "runtime_callbacks.h"
 #include "runtime_common.h"
+#include "runtime_image.h"
 #include "runtime_intrinsics.h"
 #include "runtime_options.h"
 #include "scoped_thread_state_change-inl.h"
@@ -211,6 +212,7 @@ struct TraceConfig {
   Trace::TraceOutputMode trace_output_mode;
   std::string trace_file;
   size_t trace_file_size;
+  TraceClockSource clock_source;
 };
 
 namespace {
@@ -448,17 +450,19 @@ Runtime::~Runtime() {
     callbacks_->NextRuntimePhase(RuntimePhaseCallback::RuntimePhase::kDeath);
   }
 
-  if (attach_shutdown_thread) {
-    DetachCurrentThread(/* should_run_callbacks= */ false);
-    self = nullptr;
-  }
-
+  // Delete thread pools before detaching the current thread in case tasks
+  // getting deleted need to have access to Thread::Current.
   heap_->DeleteThreadPool();
   if (oat_file_manager_ != nullptr) {
     oat_file_manager_->DeleteThreadPool();
   }
   DeleteThreadPool();
   CHECK(thread_pool_ == nullptr);
+
+  if (attach_shutdown_thread) {
+    DetachCurrentThread(/* should_run_callbacks= */ false);
+    self = nullptr;
+  }
 
   // Make sure our internal threads are dead before we start tearing down things they're using.
   GetRuntimeCallbacks()->StopDebugger();
@@ -512,8 +516,8 @@ Runtime::~Runtime() {
   monitor_pool_ = nullptr;
   delete class_linker_;
   class_linker_ = nullptr;
-  delete small_irt_allocator_;
-  small_irt_allocator_ = nullptr;
+  delete small_lrt_allocator_;
+  small_lrt_allocator_ = nullptr;
   delete heap_;
   heap_ = nullptr;
   delete intern_table_;
@@ -725,7 +729,7 @@ class UpdateMethodsPreFirstForkVisitor : public ClassVisitor {
   bool operator()(ObjPtr<mirror::Class> klass) override REQUIRES_SHARED(Locks::mutator_lock_) {
     bool is_initialized = klass->IsVisiblyInitialized();
     for (ArtMethod& method : klass->GetDeclaredMethods(kRuntimePointerSize)) {
-      if (is_initialized || !NeedsClinitCheckBeforeCall(&method)) {
+      if (is_initialized || !method.NeedsClinitCheckBeforeCall()) {
         if (method.IsNative()) {
           const void* existing = method.GetEntryPointFromJni();
           if (method.IsCriticalNative()
@@ -841,6 +845,18 @@ bool Runtime::ParseOptions(const RuntimeOptions& raw_options,
 static bool IsSafeToCallAbort() NO_THREAD_SAFETY_ANALYSIS {
   Runtime* runtime = Runtime::Current();
   return runtime != nullptr && runtime->IsStarted() && !runtime->IsShuttingDownLocked();
+}
+
+void Runtime::AddGeneratedCodeRange(const void* start, size_t size) {
+  if (HandlesSignalsInCompiledCode()) {
+    fault_manager.AddGeneratedCodeRange(start, size);
+  }
+}
+
+void Runtime::RemoveGeneratedCodeRange(const void* start, size_t size) {
+  if (HandlesSignalsInCompiledCode()) {
+    fault_manager.RemoveGeneratedCodeRange(start, size);
+  }
 }
 
 bool Runtime::Create(RuntimeArgumentMap&& runtime_options) {
@@ -987,7 +1003,6 @@ bool Runtime::Start() {
     if (!jit::Jit::LoadCompilerLibrary(&error_msg)) {
       LOG(WARNING) << "Failed to load JIT compiler with error " << error_msg;
     }
-    CreateJitCodeCache(/*rwx_memory_allowed=*/true);
     CreateJit();
 #ifdef ADDRESS_SANITIZER
     // (b/238730394): In older implementations of sanitizer + glibc there is a race between
@@ -1046,9 +1061,20 @@ bool Runtime::Start() {
 
   if (trace_config_.get() != nullptr && trace_config_->trace_file != "") {
     ScopedThreadStateChange tsc(self, ThreadState::kWaitingForMethodTracingStart);
+    int flags = 0;
+    if (trace_config_->clock_source == TraceClockSource::kDual) {
+      flags = Trace::TraceFlag::kTraceClockSourceWallClock |
+              Trace::TraceFlag::kTraceClockSourceThreadCpu;
+    } else if (trace_config_->clock_source == TraceClockSource::kWall) {
+      flags = Trace::TraceFlag::kTraceClockSourceWallClock;
+    } else if (TraceClockSource::kThreadCpu == trace_config_->clock_source) {
+      flags = Trace::TraceFlag::kTraceClockSourceThreadCpu;
+    } else {
+      LOG(ERROR) << "Unexpected clock source";
+    }
     Trace::Start(trace_config_->trace_file.c_str(),
                  static_cast<int>(trace_config_->trace_file_size),
-                 0,
+                 flags,
                  trace_config_->trace_output_mode,
                  trace_config_->trace_mode,
                  0);
@@ -1265,7 +1291,6 @@ static size_t OpenBootDexFiles(ArrayRef<const std::string> dex_filenames,
                                std::vector<std::unique_ptr<const DexFile>>* dex_files) {
   DCHECK(dex_files != nullptr) << "OpenDexFiles: out-param is nullptr";
   size_t failure_count = 0;
-  const ArtDexFileLoader dex_file_loader;
   for (size_t i = 0; i < dex_filenames.size(); i++) {
     const char* dex_filename = dex_filenames[i].c_str();
     const char* dex_location = dex_locations[i].c_str();
@@ -1277,13 +1302,8 @@ static size_t OpenBootDexFiles(ArrayRef<const std::string> dex_filenames,
       continue;
     }
     bool verify = Runtime::Current()->IsVerificationEnabled();
-    if (!dex_file_loader.Open(dex_filename,
-                              dex_fd,
-                              dex_location,
-                              verify,
-                              kVerifyChecksum,
-                              &error_msg,
-                              dex_files)) {
+    ArtDexFileLoader dex_file_loader(dex_filename, dex_fd, dex_location);
+    if (!dex_file_loader.Open(verify, kVerifyChecksum, &error_msg, dex_files)) {
       LOG(WARNING) << "Failed to open .dex from file '" << dex_filename << "' / fd " << dex_fd
                    << ": " << error_msg;
       ++failure_count;
@@ -1561,6 +1581,8 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
         << (core_platform_api_policy_ == hiddenapi::EnforcementPolicy::kEnabled ? "true" : "false");
   }
 
+  // Dex2Oat's Runtime does not need the signal chain or the fault handler
+  // and it passes the `NoSigChain` option to `Runtime` to indicate this.
   no_sig_chain_ = runtime_options.Exists(Opt::NoSigChain);
   force_native_bridge_ = runtime_options.Exists(Opt::ForceNativeBridge);
 
@@ -1720,14 +1742,14 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   // when we have 64 bit ArtMethod pointers.
   const bool low_4gb = IsAotCompiler() && Is64BitInstructionSet(kRuntimeISA);
   if (gUseUserfaultfd) {
-    linear_alloc_arena_pool_.reset(new GcVisitedArenaPool(low_4gb));
+    linear_alloc_arena_pool_.reset(new GcVisitedArenaPool(low_4gb, IsZygote()));
   } else if (low_4gb) {
     linear_alloc_arena_pool_.reset(new MemMapArenaPool(low_4gb));
   }
   linear_alloc_.reset(CreateLinearAlloc());
   startup_linear_alloc_.reset(CreateLinearAlloc());
 
-  small_irt_allocator_ = new SmallIrtAllocator();
+  small_lrt_allocator_ = new jni::SmallLrtAllocator();
 
   BlockSignals();
   InitPlatformSignalHandlers();
@@ -1735,9 +1757,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   // Change the implicit checks flags based on runtime architecture.
   switch (kRuntimeISA) {
     case InstructionSet::kArm64:
-      // TODO: Implicit suspend checks are currently disabled to facilitate search
-      // for unrelated memory use regressions. Bug: 213757852.
-      implicit_suspend_checks_ = false;
+      implicit_suspend_checks_ = true;
       FALLTHROUGH_INTENDED;
     case InstructionSet::kArm:
     case InstructionSet::kThumb2:
@@ -1753,10 +1773,9 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   }
 
   if (!no_sig_chain_) {
-    // Dex2Oat's Runtime does not need the signal chain or the fault handler.
-    if (implicit_null_checks_ || implicit_so_checks_ || implicit_suspend_checks_) {
-      fault_manager.Init();
+    fault_manager.Init();
 
+    if (HandlesSignalsInCompiledCode()) {
       // These need to be in a specific order.  The null point check handler must be
       // after the suspend check and stack overflow check handlers.
       //
@@ -1776,6 +1795,12 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
 
       if (kEnableJavaStackTraceHandler) {
         new JavaStackTraceHandler(&fault_manager);
+      }
+
+      if (interpreter::CanRuntimeUseNterp()) {
+        // Nterp code can use signal handling just like the compiled managed code.
+        OatQuickMethodHeader* nterp_header = OatQuickMethodHeader::NterpMethodHeader;
+        fault_manager.AddGeneratedCodeRange(nterp_header->GetCode(), nterp_header->GetCodeSize());
       }
     }
   }
@@ -1909,9 +1934,10 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
     trace_config_->trace_output_mode = runtime_options.Exists(Opt::MethodTraceStreaming) ?
         Trace::TraceOutputMode::kStreaming :
         Trace::TraceOutputMode::kFile;
+    trace_config_->clock_source = runtime_options.GetOrDefault(Opt::MethodTraceClock);
   }
 
-  // TODO: move this to just be an Trace::Start argument
+  // TODO: Remove this in a follow up CL. This isn't used anywhere.
   Trace::SetDefaultClockSource(runtime_options.GetOrDefault(Opt::ProfileClock));
 
   if (GetHeap()->HasBootImageSpace()) {
@@ -2688,6 +2714,7 @@ void Runtime::SetInstructionSet(InstructionSet instruction_set) {
       break;
     case InstructionSet::kArm:
     case InstructionSet::kArm64:
+    case InstructionSet::kRiscv64:
     case InstructionSet::kX86:
     case InstructionSet::kX86_64:
       break;
@@ -2740,11 +2767,6 @@ void Runtime::RegisterAppInfo(const std::string& package_name,
 
   if (profile_output_filename.empty()) {
     LOG(WARNING) << "JIT profile information will not be recorded: profile filename is empty.";
-    return;
-  }
-  if (!OS::FileExists(profile_output_filename.c_str(), /*check_file_type=*/ false)) {
-    LOG(WARNING) << "JIT profile information will not be recorded: profile file does not exist: "
-                 << profile_output_filename;
     return;
   }
   if (code_paths.empty()) {
@@ -3002,7 +3024,9 @@ void Runtime::AddCurrentRuntimeFeaturesAsDex2OatArguments(std::vector<std::strin
   }
 }
 
-void Runtime::CreateJitCodeCache(bool rwx_memory_allowed) {
+void Runtime::CreateJit() {
+  DCHECK(jit_code_cache_ == nullptr);
+  DCHECK(jit_ == nullptr);
   if (kIsDebugBuild && GetInstrumentation()->IsForcedInterpretOnly()) {
     DCHECK(!jit_options_->UseJitCompilation());
   }
@@ -3011,28 +3035,19 @@ void Runtime::CreateJitCodeCache(bool rwx_memory_allowed) {
     return;
   }
 
+  if (IsSafeMode()) {
+    LOG(INFO) << "Not creating JIT because of SafeMode.";
+    return;
+  }
+
   std::string error_msg;
   bool profiling_only = !jit_options_->UseJitCompilation();
   jit_code_cache_.reset(jit::JitCodeCache::Create(profiling_only,
-                                                  rwx_memory_allowed,
+                                                  /*rwx_memory_allowed=*/ true,
                                                   IsZygote(),
                                                   &error_msg));
   if (jit_code_cache_.get() == nullptr) {
     LOG(WARNING) << "Failed to create JIT Code Cache: " << error_msg;
-  }
-}
-
-void Runtime::CreateJit() {
-  DCHECK(jit_ == nullptr);
-  if (jit_code_cache_.get() == nullptr) {
-    if (!IsSafeMode()) {
-      LOG(WARNING) << "Missing code cache, cannot create JIT.";
-    }
-    return;
-  }
-  if (IsSafeMode()) {
-    LOG(INFO) << "Not creating JIT because of SafeMode.";
-    jit_code_cache_.reset();
     return;
   }
 
@@ -3125,6 +3140,42 @@ LinearAlloc* Runtime::CreateLinearAlloc() {
   return pool != nullptr
       ? new LinearAlloc(pool, gUseUserfaultfd)
       : new LinearAlloc(arena_pool_.get(), /*track_allocs=*/ false);
+}
+
+class Runtime::SetupLinearAllocForZygoteFork : public AllocatorVisitor {
+ public:
+  explicit SetupLinearAllocForZygoteFork(Thread* self) : self_(self) {}
+
+  bool Visit(LinearAlloc* alloc) override {
+    alloc->SetupForPostZygoteFork(self_);
+    return true;
+  }
+
+ private:
+  Thread* self_;
+};
+
+void Runtime::SetupLinearAllocForPostZygoteFork(Thread* self) {
+  if (gUseUserfaultfd) {
+    // Setup all the linear-allocs out there for post-zygote fork. This will
+    // basically force the arena allocator to ask for a new arena for the next
+    // allocation. All arenas allocated from now on will be in the userfaultfd
+    // visited space.
+    if (GetLinearAlloc() != nullptr) {
+      GetLinearAlloc()->SetupForPostZygoteFork(self);
+    }
+    if (GetStartupLinearAlloc() != nullptr) {
+      GetStartupLinearAlloc()->SetupForPostZygoteFork(self);
+    }
+    {
+      Locks::mutator_lock_->AssertNotHeld(self);
+      ReaderMutexLock mu2(self, *Locks::mutator_lock_);
+      ReaderMutexLock mu3(self, *Locks::classlinker_classes_lock_);
+      SetupLinearAllocForZygoteFork visitor(self);
+      GetClassLinker()->VisitAllocators(&visitor);
+    }
+    static_cast<GcVisitedArenaPool*>(GetLinearAllocArenaPool())->SetupPostZygoteMode();
+  }
 }
 
 double Runtime::GetHashTableMinLoadFactor() const {
@@ -3301,123 +3352,22 @@ void Runtime::ResetStartupCompleted() {
   startup_completed_.store(false, std::memory_order_seq_cst);
 }
 
-class CollectStartupDexCacheVisitor : public DexCacheVisitor {
- public:
-  explicit CollectStartupDexCacheVisitor(VariableSizedHandleScope& handles) : handles_(handles) {}
-
-  void Visit(ObjPtr<mirror::DexCache> dex_cache)
-      REQUIRES_SHARED(Locks::dex_lock_, Locks::mutator_lock_) override {
-    handles_.NewHandle(dex_cache);
-  }
-
- private:
-  VariableSizedHandleScope& handles_;
-};
-
-class UnlinkVisitor {
- public:
-  UnlinkVisitor() {}
-
-  void VisitRootIfNonNull(StackReference<mirror::Object>* ref)
-      REQUIRES_SHARED(Locks::mutator_lock_) {
-    if (!ref->IsNull()) {
-      ref->AsMirrorPtr()->AsDexCache()->UnlinkStartupCaches();
-    }
-  }
-};
-
-class Runtime::NotifyStartupCompletedTask : public gc::HeapTask {
- public:
-  NotifyStartupCompletedTask() : gc::HeapTask(/*target_run_time=*/ NanoTime()) {}
-
-  void Run(Thread* self) override {
-    VLOG(startup) << "NotifyStartupCompletedTask running";
-    Runtime* const runtime = Runtime::Current();
-    // Fetch the startup linear alloc before the checkpoint to play nice with
-    // 1002-notify-startup test which resets the startup state.
-    std::unique_ptr<LinearAlloc> startup_linear_alloc(runtime->ReleaseStartupLinearAlloc());
-    {
-      ScopedTrace trace("Releasing dex caches and app image spaces metadata");
-      ScopedObjectAccess soa(Thread::Current());
-
-      // Collect dex caches that were allocated with the startup linear alloc.
-      VariableSizedHandleScope handles(soa.Self());
-      {
-        CollectStartupDexCacheVisitor visitor(handles);
-        ReaderMutexLock mu(self, *Locks::dex_lock_);
-        runtime->GetClassLinker()->VisitDexCaches(&visitor);
-      }
-
-      // Request empty checkpoints to make sure no threads are:
-      // - accessing the image space metadata section when we madvise it
-      // - accessing dex caches when we free them
-      //
-      // Use GC exclusion to prevent deadlocks that may happen if
-      // multiple threads are attempting to run empty checkpoints at the same time.
-      {
-        // Avoid using ScopedGCCriticalSection since that does not allow thread suspension. This is
-        // not allowed to prevent allocations, but it's still safe to suspend temporarily for the
-        // checkpoint.
-        gc::ScopedInterruptibleGCCriticalSection sigcs(self,
-                                                       gc::kGcCauseRunEmptyCheckpoint,
-                                                       gc::kCollectorTypeCriticalSection);
-        // Do the unlinking of dex cache arrays in the GC critical section to
-        // avoid GC not seeing these arrays. We do it before the checkpoint so
-        // we know after the checkpoint, no thread is holding onto the array.
-        UnlinkVisitor visitor;
-        handles.VisitRoots(visitor);
-
-        runtime->GetThreadList()->RunEmptyCheckpoint();
-      }
-
-      for (gc::space::ContinuousSpace* space : runtime->GetHeap()->GetContinuousSpaces()) {
-        if (space->IsImageSpace()) {
-          gc::space::ImageSpace* image_space = space->AsImageSpace();
-          if (image_space->GetImageHeader().IsAppImage()) {
-            image_space->ReleaseMetadata();
-          }
-        }
-      }
-    }
-
-    {
-      // Delete the thread pool used for app image loading since startup is assumed to be completed.
-      ScopedTrace trace2("Delete thread pool");
-      runtime->DeleteThreadPool();
-    }
-
-    {
-      // We know that after the checkpoint, there is no thread that can hold
-      // the startup linear alloc, so it's safe to delete it now.
-      ScopedTrace trace2("Delete startup linear alloc");
-      startup_linear_alloc.reset();
-    }
-  }
-};
-
-void Runtime::NotifyStartupCompleted() {
+bool Runtime::NotifyStartupCompleted() {
   bool expected = false;
   if (!startup_completed_.compare_exchange_strong(expected, true, std::memory_order_seq_cst)) {
     // Right now NotifyStartupCompleted will be called up to twice, once from profiler and up to
     // once externally. For this reason there are no asserts.
-    return;
+    return false;
   }
 
   VLOG(startup) << app_info_;
 
-  VLOG(startup) << "Adding NotifyStartupCompleted task";
-  // Use the heap task processor since we want to be exclusive with the GC and we don't want to
-  // block the caller if the GC is running.
-  if (!GetHeap()->AddHeapTask(new NotifyStartupCompletedTask)) {
-    VLOG(startup) << "Failed to add NotifyStartupCompletedTask";
-  }
-
-  // Notify the profiler saver that startup is now completed.
   ProfileSaver::NotifyStartupCompleted();
 
   if (metrics_reporter_ != nullptr) {
     metrics_reporter_->NotifyStartupCompleted();
   }
+  return true;
 }
 
 void Runtime::NotifyDexFileLoaded() {

@@ -106,6 +106,9 @@ class OatFileAssistant {
     // Dexopt should be performed if the current oat file was compiled without a primary image,
     // and the runtime is now running with a primary image loaded from disk.
     bool primaryBootImageBecomesUsable : 1;
+    // Dexopt should be performed if the APK is compressed and the current oat/vdex file doesn't
+    // contain dex code.
+    bool needExtraction : 1;
   };
 
   // Represents the location of the current oat file and/or vdex file.
@@ -474,11 +477,6 @@ class OatFileAssistant {
   // files are being read.
   bool UseFdToReadFiles();
 
-  // Returns true if the dex checksums in the given vdex file are up to date
-  // with respect to the dex location. If the dex checksums are not up to
-  // date, error_msg is updated with a message describing the problem.
-  bool DexChecksumUpToDate(const VdexFile& file, std::string* error_msg);
-
   // Returns true if the dex checksums in the given oat file are up to date
   // with respect to the dex location. If the dex checksums are not up to
   // date, error_msg is updated with a message describing the problem.
@@ -521,6 +519,9 @@ class OatFileAssistant {
     return GetOatFileAssistantContext()->GetRuntimeOptions();
   }
 
+  // Returns whether the zip file only contains uncompressed dex.
+  bool ZipFileOnlyContainsUncompressedDex();
+
   std::string dex_location_;
 
   // The class loader context to check against, or null representing that the check should be
@@ -539,8 +540,9 @@ class OatFileAssistant {
 
   // Whether only oat files from trusted locations are loaded executable.
   const bool only_load_trusted_executable_ = false;
-  // Whether the potential zip file only contains uncompressed dex.
-  // Will be set during GetRequiredDexChecksums.
+
+  // Cached value of whether the potential zip file only contains uncompressed dex.
+  // This should be accessed only by the ZipFileOnlyContainsUncompressedDex() method.
   bool zip_file_only_contains_uncompressed_dex_ = true;
 
   // Cached value of the required dex checksums.

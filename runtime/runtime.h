@@ -68,6 +68,10 @@ class JitCodeCache;
 class JitOptions;
 }  // namespace jit
 
+namespace jni {
+class SmallLrtAllocator;
+}  // namespace jni
+
 namespace mirror {
 class Array;
 class ClassLoader;
@@ -107,7 +111,6 @@ class Plugin;
 struct RuntimeArgumentMap;
 class RuntimeCallbacks;
 class SignalCatcher;
-class SmallIrtAllocator;
 class StackOverflowHandler;
 class SuspensionHandler;
 class ThreadList;
@@ -370,8 +373,8 @@ class Runtime {
     return class_linker_;
   }
 
-  SmallIrtAllocator* GetSmallIrtAllocator() const {
-    return small_irt_allocator_;
+  jni::SmallLrtAllocator* GetSmallLrtAllocator() const {
+    return small_lrt_allocator_;
   }
 
   jni::JniIdManager* GetJniIdManager() const {
@@ -911,6 +914,11 @@ class Runtime {
 
   // Create a normal LinearAlloc or low 4gb version if we are 64 bit AOT compiler.
   LinearAlloc* CreateLinearAlloc();
+  // Setup linear-alloc allocators to stop using the current arena so that the
+  // next allocations, which would be after zygote fork, happens in userfaultfd
+  // visited space.
+  void SetupLinearAllocForPostZygoteFork(Thread* self)
+      REQUIRES(!Locks::mutator_lock_, !Locks::classlinker_classes_lock_);
 
   OatFileManager& GetOatFileManager() const {
     DCHECK(oat_file_manager_ != nullptr);
@@ -1083,8 +1091,8 @@ class Runtime {
   void ResetStartupCompleted();
 
   // Notify the runtime that application startup is considered completed. Only has effect for the
-  // first call.
-  void NotifyStartupCompleted();
+  // first call. Returns whether this was the first call.
+  bool NotifyStartupCompleted();
 
   // Notify the runtime that the application finished loading some dex/odex files. This is
   // called everytime we load a set of dex files in a class loader.
@@ -1147,6 +1155,10 @@ class Runtime {
     return no_sig_chain_;
   }
 
+  void AddGeneratedCodeRange(const void* start, size_t size);
+  void RemoveGeneratedCodeRange(const void* start, size_t size)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
   // Trigger a flag reload from system properties or device congfigs.
   //
   // Should only be called from runtime init and zygote post fork as
@@ -1179,6 +1191,11 @@ class Runtime {
   static void InitPlatformSignalHandlers();
 
   Runtime();
+
+  bool HandlesSignalsInCompiledCode() const {
+    return !no_sig_chain_ &&
+           (implicit_null_checks_ || implicit_so_checks_ || implicit_suspend_checks_);
+  }
 
   void BlockSignals();
 
@@ -1314,7 +1331,7 @@ class Runtime {
 
   SignalCatcher* signal_catcher_;
 
-  SmallIrtAllocator* small_irt_allocator_;
+  jni::SmallLrtAllocator* small_lrt_allocator_;
 
   std::unique_ptr<jni::JniIdManager> jni_id_manager_;
 
@@ -1597,7 +1614,7 @@ class Runtime {
   friend class Dex2oatImageTest;
   friend class ScopedThreadPoolUsage;
   friend class OatFileAssistantTest;
-  class NotifyStartupCompletedTask;
+  class SetupLinearAllocForZygoteFork;
 
   DISALLOW_COPY_AND_ASSIGN(Runtime);
 };
