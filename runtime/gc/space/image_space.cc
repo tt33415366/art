@@ -391,6 +391,17 @@ class ImageSpace::PatchObjectVisitor final {
     }
   }
 
+  template <typename T> void VisitGcRootDexCacheArray(mirror::GcRootArray<T>* array)
+      REQUIRES_SHARED(Locks::mutator_lock_) {
+    if (array == nullptr) {
+      return;
+    }
+    uint32_t size = reinterpret_cast<uint32_t*>(array)[-1];
+    for (uint32_t i = 0; i < size; ++i) {
+      PatchGcRoot(&array->GetGcRoot(i));
+    }
+  }
+
   void VisitDexCacheArrays(ObjPtr<mirror::DexCache> dex_cache)
       REQUIRES_SHARED(Locks::mutator_lock_) {
     mirror::NativeArray<ArtMethod>* old_resolved_methods = dex_cache->GetResolvedMethodsArray();
@@ -405,6 +416,13 @@ class ImageSpace::PatchObjectVisitor final {
       mirror::NativeArray<ArtField>* resolved_fields = native_visitor_(old_resolved_fields);
       dex_cache->SetResolvedFieldsArray(resolved_fields);
       VisitNativeDexCacheArray(resolved_fields);
+    }
+
+    mirror::GcRootArray<mirror::String>* old_strings = dex_cache->GetStringsArray();
+    if (old_strings != nullptr) {
+      mirror::GcRootArray<mirror::String>* strings = native_visitor_(old_strings);
+      dex_cache->SetStringsArray(strings);
+      VisitGcRootDexCacheArray(strings);
     }
   }
 
@@ -3420,7 +3438,6 @@ bool ImageSpace::ValidateOatFile(const OatFile& oat_file,
     return false;
   }
 
-  const ArtDexFileLoader dex_file_loader;
   size_t dex_file_index = 0;
   for (const OatDexFile* oat_dex_file : oat_file.GetOatDexFiles()) {
     // Skip multidex locations - These will be checked when we visit their
@@ -3437,7 +3454,7 @@ bool ImageSpace::ValidateOatFile(const OatFile& oat_file,
 
     std::vector<uint32_t> checksums;
     std::vector<std::string> dex_locations_ignored;
-    if (!dex_file_loader.GetMultiDexChecksums(
+    if (!ArtDexFileLoader::GetMultiDexChecksums(
             dex_file_location.c_str(), &checksums, &dex_locations_ignored, error_msg, dex_fd)) {
       *error_msg = StringPrintf("ValidateOatFile failed to get checksums of dex file '%s' "
                                 "referenced by oat file %s: %s",
