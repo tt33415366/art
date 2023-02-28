@@ -45,6 +45,7 @@
 #include "mirror/object_array-inl.h"
 #include "mirror/object_array.h"
 #include "mirror/string-inl.h"
+#include "nterp_helpers.h"
 #include "oat.h"
 #include "profile/profile_compilation_info.h"
 #include "scoped_thread_state_change-inl.h"
@@ -147,8 +148,8 @@ class RuntimeImageHelper {
         boot_image_checksums,
         static_cast<uint32_t>(kRuntimePointerSize));
 
-    // Data size includes everything except the bitmap.
-    header_.data_size_ = sections_end;
+    // Data size includes everything except the bitmap and the header.
+    header_.data_size_ = sections_end - sizeof(ImageHeader);
 
     // Write image methods - needs to happen after creation of the header.
     WriteImageMethods();
@@ -808,8 +809,10 @@ class RuntimeImageHelper {
         stub = StubType::kQuickToInterpreterBridge;
       } else if (method->NeedsClinitCheckBeforeCall()) {
         stub = StubType::kQuickResolutionTrampoline;
-      } else {
+      } else if (interpreter::IsNterpSupported() && CanMethodUseNterp(method)) {
         stub = StubType::kNterpTrampoline;
+      } else {
+        stub = StubType::kQuickToInterpreterBridge;
       }
       const std::vector<gc::space::ImageSpace*>& image_spaces =
           Runtime::Current()->GetHeap()->GetBootImageSpaces();
