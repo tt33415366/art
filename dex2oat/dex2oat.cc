@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <forward_list>
 #include <fstream>
 #include <iostream>
@@ -724,8 +725,15 @@ class Dex2Oat final {
 
     if (!IsBootImage() && boot_image_filename_.empty()) {
       DCHECK(!IsBootImageExtension());
-      boot_image_filename_ =
-          GetDefaultBootImageLocation(android_root_, /*deny_art_apex_data_files=*/false);
+      if (std::any_of(runtime_args_.begin(), runtime_args_.end(), [](const char* arg) {
+            return android::base::StartsWith(arg, "-Xbootclasspath:");
+          })) {
+        LOG(WARNING) << "--boot-image is not specified while -Xbootclasspath is specified. Running "
+                        "dex2oat in imageless mode";
+      } else {
+        boot_image_filename_ =
+            GetDefaultBootImageLocation(android_root_, /*deny_art_apex_data_files=*/false);
+      }
     }
 
     if (dex_filenames_.empty() && zip_fd_ == -1) {
@@ -1492,16 +1500,12 @@ class Dex2Oat final {
           return dex2oat::ReturnCode::kOther;
         }
         dex_files_per_oat_file_.push_back(MakeNonOwningPointerVector(opened_dex_files));
-        if (opened_dex_files_map.empty()) {
-          DCHECK(opened_dex_files.empty());
-        } else {
-          for (MemMap& map : opened_dex_files_map) {
-            opened_dex_files_maps_.push_back(std::move(map));
-          }
-          for (std::unique_ptr<const DexFile>& dex_file : opened_dex_files) {
-            dex_file_oat_index_map_.insert(std::make_pair(dex_file.get(), i));
-            opened_dex_files_.push_back(std::move(dex_file));
-          }
+        for (MemMap& map : opened_dex_files_map) {
+          opened_dex_files_maps_.push_back(std::move(map));
+        }
+        for (std::unique_ptr<const DexFile>& dex_file : opened_dex_files) {
+          dex_file_oat_index_map_.insert(std::make_pair(dex_file.get(), i));
+          opened_dex_files_.push_back(std::move(dex_file));
         }
       }
     }
