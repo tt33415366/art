@@ -3124,6 +3124,7 @@ ObjPtr<mirror::Class> ClassLinker::DefineClass(Thread* self,
   ScopedDefiningClass sdc(self);
   StackHandleScope<3> hs(self);
   metrics::AutoTimer timer{GetMetrics()->ClassLoadingTotalTime()};
+  metrics::AutoTimer timeDelta{GetMetrics()->ClassLoadingTotalTimeDelta()};
   auto klass = hs.NewHandle<mirror::Class>(nullptr);
 
   // Load the class from the dex file.
@@ -3434,7 +3435,7 @@ static void LinkCode(ClassLinker* class_linker,
   }
 
   // Method shouldn't have already been linked.
-  DCHECK(method->GetEntryPointFromQuickCompiledCode() == nullptr);
+  DCHECK_EQ(method->GetEntryPointFromQuickCompiledCode(), nullptr);
   DCHECK(!method->GetDeclaringClass()->IsVisiblyInitialized());  // Actually ClassStatus::Idx.
 
   if (!method->IsInvokable()) {
