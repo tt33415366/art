@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <forward_list>
 #include <fstream>
 #include <iostream>
@@ -724,8 +725,15 @@ class Dex2Oat final {
 
     if (!IsBootImage() && boot_image_filename_.empty()) {
       DCHECK(!IsBootImageExtension());
-      boot_image_filename_ =
-          GetDefaultBootImageLocation(android_root_, /*deny_art_apex_data_files=*/false);
+      if (std::any_of(runtime_args_.begin(), runtime_args_.end(), [](const char* arg) {
+            return android::base::StartsWith(arg, "-Xbootclasspath:");
+          })) {
+        LOG(WARNING) << "--boot-image is not specified while -Xbootclasspath is specified. Running "
+                        "dex2oat in imageless mode";
+      } else {
+        boot_image_filename_ =
+            GetDefaultBootImageLocation(android_root_, /*deny_art_apex_data_files=*/false);
+      }
     }
 
     if (dex_filenames_.empty() && zip_fd_ == -1) {
@@ -1033,7 +1041,13 @@ class Dex2Oat final {
     original_argv = argv;
 
     Locks::Init();
-    InitLogging(argv, Runtime::Abort);
+
+    // Microdroid doesn't support logd logging, so don't override there.
+    if (android::base::GetProperty("ro.hardware", "") == "microdroid") {
+      android::base::SetAborter(Runtime::Abort);
+    } else {
+      InitLogging(argv, Runtime::Abort);
+    }
 
     compiler_options_.reset(new CompilerOptions());
 
@@ -1417,24 +1431,36 @@ class Dex2Oat final {
     }
   }
 
-  void LoadClassProfileDescriptors() {
+  void LoadImageClassDescriptors() {
     if (!IsImage()) {
       return;
     }
+    HashSet<std::string> image_classes;
     if (DoProfileGuidedOptimizations()) {
       // TODO: The following comment looks outdated or misplaced.
       // Filter out class path classes since we don't want to include these in the image.
-      HashSet<std::string> image_classes = profile_compilation_info_->GetClassDescriptors(
+      image_classes = profile_compilation_info_->GetClassDescriptors(
           compiler_options_->dex_files_for_oat_file_);
       VLOG(compiler) << "Loaded " << image_classes.size()
                      << " image class descriptors from profile";
-      if (VLOG_IS_ON(compiler)) {
-        for (const std::string& s : image_classes) {
-          LOG(INFO) << "Image class " << s;
+    } else if (compiler_options_->IsBootImage() || compiler_options_->IsBootImageExtension()) {
+      // If we are compiling a boot image but no profile is provided, include all classes in the
+      // image. This is to match pre-boot image extension work where we would load all boot image
+      // extension classes at startup.
+      for (const DexFile* dex_file : compiler_options_->dex_files_for_oat_file_) {
+        for (uint32_t i = 0; i < dex_file->NumClassDefs(); i++) {
+          const dex::ClassDef& class_def = dex_file->GetClassDef(i);
+          const char* descriptor = dex_file->GetClassDescriptor(class_def);
+          image_classes.insert(descriptor);
         }
       }
-      compiler_options_->image_classes_.swap(image_classes);
     }
+    if (VLOG_IS_ON(compiler)) {
+      for (const std::string& s : image_classes) {
+        LOG(INFO) << "Image class " << s;
+      }
+    }
+    compiler_options_->image_classes_ = std::move(image_classes);
   }
 
   // Set up the environment for compilation. Includes starting the runtime and loading/opening the
@@ -1486,16 +1512,12 @@ class Dex2Oat final {
           return dex2oat::ReturnCode::kOther;
         }
         dex_files_per_oat_file_.push_back(MakeNonOwningPointerVector(opened_dex_files));
-        if (opened_dex_files_map.empty()) {
-          DCHECK(opened_dex_files.empty());
-        } else {
-          for (MemMap& map : opened_dex_files_map) {
-            opened_dex_files_maps_.push_back(std::move(map));
-          }
-          for (std::unique_ptr<const DexFile>& dex_file : opened_dex_files) {
-            dex_file_oat_index_map_.insert(std::make_pair(dex_file.get(), i));
-            opened_dex_files_.push_back(std::move(dex_file));
-          }
+        for (MemMap& map : opened_dex_files_map) {
+          opened_dex_files_maps_.push_back(std::move(map));
+        }
+        for (std::unique_ptr<const DexFile>& dex_file : opened_dex_files) {
+          dex_file_oat_index_map_.insert(std::make_pair(dex_file.get(), i));
+          opened_dex_files_.push_back(std::move(dex_file));
         }
       }
     }
@@ -2799,7 +2821,7 @@ class Dex2Oat final {
   template <typename T>
   static bool ReadCommentedInputFromFile(
       const char* input_filename, std::function<std::string(const char*)>* process, T* output) {
-    auto input_file = std::unique_ptr<FILE, decltype(&fclose)>{fopen(input_filename, "r"), fclose};
+    auto input_file = std::unique_ptr<FILE, decltype(&fclose)>{fopen(input_filename, "re"), fclose};
     if (!input_file) {
       LOG(ERROR) << "Failed to open input file " << input_filename;
       return false;
@@ -3068,7 +3090,7 @@ class ScopedGlobalRef {
 
 static dex2oat::ReturnCode DoCompilation(Dex2Oat& dex2oat) REQUIRES(!Locks::mutator_lock_) {
   Locks::mutator_lock_->AssertNotHeld(Thread::Current());
-  dex2oat.LoadClassProfileDescriptors();
+  dex2oat.LoadImageClassDescriptors();
   jobject class_loader = dex2oat.Compile();
   // Keep the class loader that was used for compilation live for the rest of the compilation
   // process.

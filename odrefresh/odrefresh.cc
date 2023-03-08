@@ -79,6 +79,7 @@
 #include "dexoptanalyzer.h"
 #include "exec_utils.h"
 #include "fmt/format.h"
+#include "gc/collector/mark_compact.h"
 #include "log/log.h"
 #include "odr_artifacts.h"
 #include "odr_common.h"
@@ -290,7 +291,6 @@ std::vector<T> GenerateComponents(
         custom_generator) {
   std::vector<T> components;
 
-  ArtDexFileLoader loader;
   for (const std::string& path : jars) {
     std::string actual_path = RewriteParentDirectoryIfNeeded(path);
     struct stat sb;
@@ -302,7 +302,8 @@ std::vector<T> GenerateComponents(
     std::vector<uint32_t> checksums;
     std::vector<std::string> dex_locations;
     std::string error_msg;
-    if (!loader.GetMultiDexChecksums(actual_path.c_str(), &checksums, &dex_locations, &error_msg)) {
+    if (!ArtDexFileLoader::GetMultiDexChecksums(
+            actual_path.c_str(), &checksums, &dex_locations, &error_msg)) {
       LOG(ERROR) << "Failed to get multi-dex checksums: " << error_msg;
       return {};
     }
@@ -390,21 +391,38 @@ bool IsCpuSetSpecValid(const std::string& cpu_set) {
   return true;
 }
 
-bool AddDex2OatConcurrencyArguments(/*inout*/ std::vector<std::string>& args) {
-  std::string threads = android::base::GetProperty("dalvik.vm.boot-dex2oat-threads", "");
+bool AddDex2OatConcurrencyArguments(/*inout*/ std::vector<std::string>& args,
+                                    bool is_compilation_os) {
+  std::string threads;
+  if (is_compilation_os) {
+    threads = android::base::GetProperty("dalvik.vm.background-dex2oat-threads", "");
+    if (threads.empty()) {
+      threads = android::base::GetProperty("dalvik.vm.dex2oat-threads", "");
+    }
+  } else {
+    threads = android::base::GetProperty("dalvik.vm.boot-dex2oat-threads", "");
+  }
   if (!threads.empty()) {
     args.push_back("-j" + threads);
   }
 
-  std::string cpu_set = android::base::GetProperty("dalvik.vm.boot-dex2oat-cpu-set", "");
-  if (cpu_set.empty()) {
-    return true;
+  std::string cpu_set;
+  if (is_compilation_os) {
+    cpu_set = android::base::GetProperty("dalvik.vm.background-dex2oat-cpu-set", "");
+    if (cpu_set.empty()) {
+      cpu_set = android::base::GetProperty("dalvik.vm.dex2oat-cpu-set", "");
+    }
+  } else {
+    cpu_set = android::base::GetProperty("dalvik.vm.boot-dex2oat-cpu-set", "");
   }
-  if (!IsCpuSetSpecValid(cpu_set)) {
-    LOG(ERROR) << "Invalid CPU set spec: " << cpu_set;
-    return false;
+  if (!cpu_set.empty()) {
+    if (!IsCpuSetSpecValid(cpu_set)) {
+      LOG(ERROR) << "Invalid CPU set spec: " << cpu_set;
+      return false;
+    }
+    args.push_back("--cpu-set=" + cpu_set);
   }
-  args.push_back("--cpu-set=" + cpu_set);
+
   return true;
 }
 
@@ -926,11 +944,12 @@ WARN_UNUSED bool OnDeviceRefresh::CheckBuildUserfaultFdGc() const {
   bool build_enable_uffd_gc = it != config_.GetSystemProperties().end() ?
                                   ParseBool(it->second) == ParseBoolResult::kTrue :
                                   false;
-  if (build_enable_uffd_gc != gUseUserfaultfd) {
+  bool kernel_supports_uffd = KernelSupportsUffd();
+  if (build_enable_uffd_gc && !kernel_supports_uffd) {
     // Normally, this should not happen. If this happens, the system image was probably built with a
     // wrong PRODUCT_ENABLE_UFFD_GC flag.
     LOG(WARNING) << "Userfaultfd GC check failed (build-time: {}, runtime: {})."_format(
-        build_enable_uffd_gc, gUseUserfaultfd);
+        build_enable_uffd_gc, kernel_supports_uffd);
     return false;
   }
   return true;
@@ -1443,8 +1462,10 @@ OnDeviceRefresh::CheckArtifactsAreUpToDate(OdrMetrics& metrics,
                                           &checked_artifacts);
   }
 
-  bool compilation_required = (!compilation_options->compile_boot_classpath_for_isas.empty() ||
-                               !compilation_options->system_server_jars_to_compile.empty());
+  // Return kCompilationRequired to generate the cache info even if there's nothing to compile.
+  bool compilation_required = !compilation_options->compile_boot_classpath_for_isas.empty() ||
+                              !compilation_options->system_server_jars_to_compile.empty() ||
+                              !cache_info.has_value();
 
   // If partial compilation is disabled, we should compile everything regardless of what's in
   // `compilation_options`.
@@ -1452,10 +1473,8 @@ OnDeviceRefresh::CheckArtifactsAreUpToDate(OdrMetrics& metrics,
     return cleanup_and_compile_all();
   }
 
-  // We should only keep the cache info if we have artifacts on /data.
-  if (!checked_artifacts.empty()) {
-    checked_artifacts.push_back(cache_info_filename_);
-  }
+  // Always keep the cache info.
+  checked_artifacts.push_back(cache_info_filename_);
 
   Result<void> result = CleanupArtifactDirectory(metrics, checked_artifacts);
   if (!result.ok()) {
@@ -1480,7 +1499,7 @@ WARN_UNUSED bool OnDeviceRefresh::CompileBootClasspathArtifacts(
   AddDex2OatCommonOptions(args);
   AddDex2OatDebugInfo(args);
   AddDex2OatInstructionSet(args, isa);
-  if (!AddDex2OatConcurrencyArguments(args)) {
+  if (!AddDex2OatConcurrencyArguments(args, config_.GetCompilationOsMode())) {
     return false;
   }
 
@@ -1650,7 +1669,7 @@ WARN_UNUSED bool OnDeviceRefresh::CompileSystemServerArtifacts(
     AddDex2OatCommonOptions(args);
     AddDex2OatDebugInfo(args);
     AddDex2OatInstructionSet(args, isa);
-    if (!AddDex2OatConcurrencyArguments(args)) {
+    if (!AddDex2OatConcurrencyArguments(args, config_.GetCompilationOsMode())) {
       return false;
     }
 

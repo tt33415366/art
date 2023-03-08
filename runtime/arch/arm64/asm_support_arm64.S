@@ -84,7 +84,7 @@
     // Prefix the assembly code with 0xFFs, which means there is no method header.
     .byte 0xFF, 0xFF, 0xFF, 0xFF
     // Cache alignment for function entry.
-    // NB: 0xFF because there is a bug in balign where 0x00 creates nop instructions.
+    // Use 0xFF as the last 4 bytes of alignment stand for OatQuickMethodHeader.
     .balign \alignment, 0xFF
 \name:
     .cfi_startproc
@@ -164,7 +164,7 @@
 .endm
 
 .macro LOAD_RUNTIME_INSTANCE reg
-#if __has_feature(hwaddress_sanitizer) && __clang_major__ >= 10
+#if __has_feature(hwaddress_sanitizer)
     adrp \reg, :pg_hi21_nc:_ZN3art7Runtime9instance_E
 #else
     adrp \reg, _ZN3art7Runtime9instance_E
