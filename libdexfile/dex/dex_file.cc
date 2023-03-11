@@ -94,7 +94,7 @@ DexFile::DexFile(const uint8_t* base,
                  const std::string& location,
                  uint32_t location_checksum,
                  const OatDexFile* oat_dex_file,
-                 std::unique_ptr<DexFileContainer> container,
+                 std::shared_ptr<DexFileContainer> container,
                  bool is_compact_dex)
     : begin_(base),
       size_(size),
@@ -140,7 +140,21 @@ DexFile::~DexFile() {
 }
 
 bool DexFile::Init(std::string* error_msg) {
+  CHECK_GE(container_->End(), reinterpret_cast<const uint8_t*>(header_));
+  size_t container_size = container_->End() - reinterpret_cast<const uint8_t*>(header_);
+  if (container_size < sizeof(Header)) {
+    *error_msg = StringPrintf("Unable to open '%s' : File size is too small to fit dex header",
+                              location_.c_str());
+    return false;
+  }
   if (!CheckMagicAndVersion(error_msg)) {
+    return false;
+  }
+  if (container_size < header_->file_size_) {
+    *error_msg = StringPrintf("Unable to open '%s' : File size is %zu but the header expects %u",
+                              location_.c_str(),
+                              container_size,
+                              header_->file_size_);
     return false;
   }
   return true;
@@ -173,6 +187,7 @@ bool DexFile::CheckMagicAndVersion(std::string* error_msg) const {
 ArrayRef<const uint8_t> DexFile::GetDataRange(const uint8_t* data,
                                               size_t size,
                                               DexFileContainer* container) {
+  CHECK(container != nullptr);
   if (size >= sizeof(CompactDexFile::Header) && CompactDexFile::IsMagicValid(data)) {
     auto header = reinterpret_cast<const CompactDexFile::Header*>(data);
     // TODO: Remove. This is a hack. See comment of the Data method.
