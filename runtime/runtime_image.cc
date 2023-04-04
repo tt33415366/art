@@ -229,6 +229,21 @@ class RuntimeImageHelper {
     return reinterpret_cast<uintptr_t>(obj) - boot_image_begin_ < boot_image_size_;
   }
 
+  // Returns the image contents for `cls`. If `cls` is in the boot image, the
+  // method just returns it.
+  mirror::Class* GetClassContent(ObjPtr<mirror::Class> cls) REQUIRES_SHARED(Locks::mutator_lock_) {
+    if (cls == nullptr || IsInBootImage(cls.Ptr())) {
+      return cls.Ptr();
+    }
+    const dex::ClassDef* class_def = cls->GetClassDef();
+    DCHECK(class_def != nullptr) << cls->PrettyClass();
+    auto it = classes_.find(class_def);
+    DCHECK(it != classes_.end()) << cls->PrettyClass();
+    mirror::Class* result = reinterpret_cast<mirror::Class*>(objects_.data() + it->second);
+    DCHECK(result->GetClass()->IsClass());
+    return result;
+  }
+
   // Returns a pointer that can be stored in `objects_`:
   // - The pointer itself for boot image objects,
   // - The offset in the image for all other objects.
@@ -1183,8 +1198,8 @@ class RuntimeImageHelper {
                     MemberOffset offset,
                     bool is_static) const
         REQUIRES_SHARED(Locks::mutator_lock_) {
-      // We don't copy static fields, instead classes will be marked as resolved
-      // and initialized at runtime.
+      // We don't copy static fields, they are being handled when we try to
+      // initialize the class.
       ObjPtr<mirror::Object> ref =
           is_static ? nullptr : obj->GetFieldObject<mirror::Object>(offset);
       mirror::Object* address = image_->GetOrComputeImageAddress(ref);
@@ -1348,6 +1363,17 @@ class RuntimeImageHelper {
     return offset;
   }
 
+  bool IsInitialized(mirror::Class* cls) REQUIRES_SHARED(Locks::mutator_lock_) {
+    if (IsInBootImage(cls)) {
+      const OatDexFile* oat_dex_file = cls->GetDexFile().GetOatDexFile();
+      DCHECK(oat_dex_file != nullptr) << "We should always have an .oat file for a boot image";
+      uint16_t class_def_index = cls->GetDexClassDefIndex();
+      ClassStatus oat_file_class_status = oat_dex_file->GetOatClass(class_def_index).GetStatus();
+      return oat_file_class_status == ClassStatus::kVisiblyInitialized;
+    } else {
+      return cls->IsVisiblyInitialized<kVerifyNone>();
+    }
+  }
   // Try to initialize `copy`. Note that `cls` may not be initialized.
   // This is called after the image generation logic has visited super classes
   // and super interfaces, so we can just check those directly.
@@ -1361,8 +1387,10 @@ class RuntimeImageHelper {
     }
 
     // Check if we have been able to initialize the super class.
-    mirror::Class* super = GetOrComputeImageAddress(cls->GetSuperClass());
-    if (!super->IsInitialized()) {
+    mirror::Class* super = GetClassContent(cls->GetSuperClass());
+    DCHECK(super != nullptr)
+        << "App image classes should always have a super class: " << cls->PrettyClass();
+    if (!IsInitialized(super)) {
       return false;
     }
 
@@ -1375,8 +1403,8 @@ class RuntimeImageHelper {
     // initialized.
     if (!cls->IsInterface()) {
       for (size_t i = 0; i < cls->NumDirectInterfaces(); i++) {
-        mirror::Class* itf = GetOrComputeImageAddress(cls->GetDirectInterface(i));
-        if (!itf->IsInitialized()) {
+        mirror::Class* itf = GetClassContent(cls->GetDirectInterface(i));
+        if (!IsInitialized(itf)) {
           return false;
         }
       }
@@ -1453,18 +1481,20 @@ class RuntimeImageHelper {
             if (string_it == intern_table_.end()) {
               // The string must be interned.
               uint32_t string_offset = CopyObject(str);
+              // Reload the class copy after having copied the string.
+              copy = reinterpret_cast<mirror::Class*>(objects_.data() + class_offset);
               uint32_t address = image_begin_ + string_offset + sizeof(ImageHeader);
               intern_table_.InsertWithHash(address, hash);
               str_copy = reinterpret_cast<mirror::String*>(address);
             } else {
               str_copy = reinterpret_cast<mirror::String*>(*string_it);
             }
+            string_offsets.emplace_back(sizeof(ImageHeader) + class_offset, offset.Int32Value());
           }
           uint8_t* raw_addr = reinterpret_cast<uint8_t*>(copy) + offset.Int32Value();
           mirror::HeapReference<mirror::Object>* objref_addr =
               reinterpret_cast<mirror::HeapReference<mirror::Object>*>(raw_addr);
           objref_addr->Assign</* kIsVolatile= */ false>(str_copy);
-          string_offsets.emplace_back(sizeof(ImageHeader) + class_offset, offset.Int32Value());
           break;
         }
         case EncodedArrayValueIterator::ValueType::kType: {
@@ -1558,8 +1588,6 @@ class RuntimeImageHelper {
     } else {
       copy->SetStatusInternal(cls->IsVerified() ? ClassStatus::kVerified : ClassStatus::kResolved);
     }
-    copy->SetObjectSizeAllocFastPath(std::numeric_limits<uint32_t>::max());
-    copy->SetAccessFlags(copy->GetAccessFlags() & ~kAccRecursivelyInitialized);
 
     // Clear static field values.
     auto clear_class = [&] () REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -1571,10 +1599,21 @@ class RuntimeImageHelper {
     clear_class();
 
     bool is_class_initialized = TryInitializeClass(copy, cls, offset);
+    // Reload the copy, it may have moved after `TryInitializeClass`.
+    copy = reinterpret_cast<mirror::Class*>(objects_.data() + offset);
     if (is_class_initialized) {
       copy->SetStatusInternal(ClassStatus::kVisiblyInitialized);
+      if (!cls->IsArrayClass() && !cls->IsFinalizable()) {
+        copy->SetObjectSizeAllocFastPath(RoundUp(cls->GetObjectSize(), kObjectAlignment));
+      }
+      if (cls->IsInterface()) {
+        copy->SetAccessFlags(copy->GetAccessFlags() | kAccRecursivelyInitialized);
+      }
     } else {
-      // If we fail to initialize clear again.
+      // If we fail to initialize, remove initialization related flags and
+      // clear again.
+      copy->SetObjectSizeAllocFastPath(std::numeric_limits<uint32_t>::max());
+      copy->SetAccessFlags(copy->GetAccessFlags() & ~kAccRecursivelyInitialized);
       clear_class();
     }
 

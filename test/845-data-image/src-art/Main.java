@@ -21,9 +21,20 @@ import java.io.IOException;
 import java.lang.reflect.Array;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
+import java.math.BigInteger;
 import java.util.concurrent.CyclicBarrier;
 
-class ClassWithStatics {
+// This class helps testing that we don't mark `InheritsBigInteger` as initialized,
+// given we do not expect `BigInteger` to be initialized in the boot image.
+class InheritsBigInteger extends BigInteger {
+  InheritsBigInteger(String value) {
+    super(value);
+  }
+}
+
+class SuperClass {}
+
+class ClassWithStatics extends SuperClass {
   public static final String STATIC_STRING = "foo";
   public static final int STATIC_INT = 42;
 }
@@ -297,6 +308,9 @@ public class Main implements Itf {
     itf2.defaultMethod49();
     itf2.defaultMethod50();
     itf2.defaultMethod51();
+
+    InheritsBigInteger bigInteger = new InheritsBigInteger("42");
+    assertEquals("42", bigInteger.toString());
   }
 
   private static void assertEquals(int expected, int actual) {
