@@ -23,7 +23,6 @@
 #include <unistd.h>
 
 #include "android-base/strings.h"
-
 #include "art_method-inl.h"
 #include "base/compiler_filter.h"
 #include "base/enums.h"
@@ -32,6 +31,7 @@
 #include "base/stl_util.h"
 #include "base/systrace.h"
 #include "base/time_utils.h"
+#include "base/unix_file/fd_file.h"
 #include "class_table-inl.h"
 #include "dex/dex_file_loader.h"
 #include "dex_reference_collection.h"
@@ -139,7 +139,8 @@ void ProfileSaver::Run() {
     const uint64_t sleep_time = MsToNs(force_early_first_save
       ? options_.GetMinFirstSaveMs()
       : options_.GetSaveResolvedClassesDelayMs());
-    const uint64_t end_time = NanoTime() + sleep_time;
+    const uint64_t start_time = NanoTime();
+    const uint64_t end_time = start_time + sleep_time;
     while (!Runtime::Current()->GetStartupCompleted()) {
       const uint64_t current_time = NanoTime();
       if (current_time >= end_time) {
@@ -147,7 +148,7 @@ void ProfileSaver::Run() {
       }
       period_condition_.TimedWait(self, NsToMs(end_time - current_time), 0);
     }
-    total_ms_of_sleep_ += sleep_time;
+    total_ms_of_sleep_ += NsToMs(NanoTime() - start_time);
   }
 
   FetchAndCacheResolvedClassesAndMethods(/*startup=*/ true);
@@ -868,10 +869,23 @@ bool ProfileSaver::ProcessProfilingInfo(
     {
       ProfileCompilationInfo info(Runtime::Current()->GetArenaPool(),
                                   /*for_boot_image=*/ options_.GetProfileBootClassPath());
-      if (!info.Load(filename, /*clear_if_invalid=*/ true)) {
-        LOG(WARNING) << "Could not forcefully load profile " << filename;
-        continue;
+      if (OS::FileExists(filename.c_str())) {
+        if (!info.Load(filename, /*clear_if_invalid=*/true)) {
+          LOG(WARNING) << "Could not forcefully load profile " << filename;
+          continue;
+        }
+      } else {
+        // Create a file if it doesn't exist.
+        unix_file::FdFile file(filename,
+                               O_WRONLY | O_TRUNC | O_CREAT,
+                               S_IRUSR | S_IWUSR,
+                               /*check_usage=*/false);
+        if (!file.IsValid()) {
+          LOG(WARNING) << "Could not create profile " << filename;
+          continue;
+        }
       }
+
       uint64_t last_save_number_of_methods = info.GetNumberOfMethods();
       uint64_t last_save_number_of_classes = info.GetNumberOfResolvedClasses();
       VLOG(profiler) << "last_save_number_of_methods=" << last_save_number_of_methods

@@ -2,9 +2,6 @@
 {
   "mainline-presubmit": [
     {
-      "name": "ComposHostTestCases[com.google.android.art.apex]"
-    },
-    {
       "name": "art-run-test-001-HelloWorld[com.google.android.art.apex]"
     },
     {
@@ -428,6 +425,12 @@
       "name": "art-run-test-2044-get-stack-traces[com.google.android.art.apex]"
     },
     {
+      "name": "art-run-test-2046-checker-comparison[com.google.android.art.apex]"
+    },
+    {
+      "name": "art-run-test-2047-checker-const-string-length[com.google.android.art.apex]"
+    },
+    {
       "name": "art-run-test-2231-checker-heap-poisoning[com.google.android.art.apex]"
     },
     {
@@ -480,6 +483,15 @@
     },
     {
       "name": "art-run-test-2257-checker-constant-folding-before-codegen[com.google.android.art.apex]"
+    },
+    {
+      "name": "art-run-test-2258-checker-valid-rti[com.google.android.art.apex]"
+    },
+    {
+      "name": "art-run-test-2259-checker-code-sinking-infinite-try-catch[com.google.android.art.apex]"
+    },
+    {
+      "name": "art-run-test-2260-checker-inline-unimplemented-intrinsics[com.google.android.art.apex]"
     },
     {
       "name": "art-run-test-300-package-override[com.google.android.art.apex]"
@@ -1339,9 +1351,6 @@
       ]
     },
     {
-      "name": "art_standalone_dex2oat_tests[com.google.android.art.apex]"
-    },
-    {
       "name": "art_standalone_dexdump_tests[com.google.android.art.apex]"
     },
     {
@@ -1349,9 +1358,6 @@
     },
     {
       "name": "art_standalone_dexoptanalyzer_tests[com.google.android.art.apex]"
-    },
-    {
-      "name": "art_standalone_libartbase_tests[com.google.android.art.apex]"
     },
     {
       "name": "art_standalone_libartpalette_tests[com.google.android.art.apex]",
@@ -1404,9 +1410,6 @@
     },
     {
       "name": "BootImageProfileTest"
-    },
-    {
-      "name": "ComposHostTestCases"
     },
     {
       "name": "CtsJdwpTestCases"
@@ -1841,6 +1844,12 @@
       "name": "art-run-test-2044-get-stack-traces"
     },
     {
+      "name": "art-run-test-2046-checker-comparison"
+    },
+    {
+      "name": "art-run-test-2047-checker-const-string-length"
+    },
+    {
       "name": "art-run-test-2231-checker-heap-poisoning"
     },
     {
@@ -1893,6 +1902,15 @@
     },
     {
       "name": "art-run-test-2257-checker-constant-folding-before-codegen"
+    },
+    {
+      "name": "art-run-test-2258-checker-valid-rti"
+    },
+    {
+      "name": "art-run-test-2259-checker-code-sinking-infinite-try-catch"
+    },
+    {
+      "name": "art-run-test-2260-checker-inline-unimplemented-intrinsics"
     },
     {
       "name": "art-run-test-300-package-override"
@@ -2747,9 +2765,6 @@
       "name": "art_standalone_compiler_tests"
     },
     {
-      "name": "art_standalone_dex2oat_tests"
-    },
-    {
       "name": "art_standalone_dexdump_tests"
     },
     {
@@ -2757,9 +2772,6 @@
     },
     {
       "name": "art_standalone_dexoptanalyzer_tests"
-    },
-    {
-      "name": "art_standalone_libartbase_tests"
     },
     {
       "name": "art_standalone_libartpalette_tests"
@@ -2804,9 +2816,6 @@
   "hwasan-presubmit": [
     {
       "name": "ArtServiceTests"
-    },
-    {
-      "name": "ComposHostTestCases"
     },
     {
       "name": "art-apex-update-rollback"
@@ -3238,6 +3247,12 @@
       "name": "art-run-test-2044-get-stack-traces"
     },
     {
+      "name": "art-run-test-2046-checker-comparison"
+    },
+    {
+      "name": "art-run-test-2047-checker-const-string-length"
+    },
+    {
       "name": "art-run-test-2231-checker-heap-poisoning"
     },
     {
@@ -3290,6 +3305,15 @@
     },
     {
       "name": "art-run-test-2257-checker-constant-folding-before-codegen"
+    },
+    {
+      "name": "art-run-test-2258-checker-valid-rti"
+    },
+    {
+      "name": "art-run-test-2259-checker-code-sinking-infinite-try-catch"
+    },
+    {
+      "name": "art-run-test-2260-checker-inline-unimplemented-intrinsics"
     },
     {
       "name": "art-run-test-300-package-override"
@@ -4144,9 +4168,6 @@
       "name": "art_standalone_compiler_tests"
     },
     {
-      "name": "art_standalone_dex2oat_tests"
-    },
-    {
       "name": "art_standalone_dexdump_tests"
     },
     {
@@ -4154,9 +4175,6 @@
     },
     {
       "name": "art_standalone_dexoptanalyzer_tests"
-    },
-    {
-      "name": "art_standalone_libartbase_tests"
     },
     {
       "name": "art_standalone_libartpalette_tests"
@@ -4196,6 +4214,11 @@
     },
     {
       "name": "libnativeloader_test"
+    }
+  ],
+  "avf-presubmit": [
+    {
+      "name": "ComposHostTestCases"
     }
   ]
 }

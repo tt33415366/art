@@ -3767,7 +3767,7 @@ class HClassTableGet final : public HExpression<1> {
   static constexpr size_t kNumberOfClassTableGetPackedBits = kFieldTableKind + kFieldTableKindSize;
   static_assert(kNumberOfClassTableGetPackedBits <= kMaxNumberOfPackedBits,
                 "Too many packed fields.");
-  using TableKindField = BitField<TableKind, kFieldTableKind, kFieldTableKind>;
+  using TableKindField = BitField<TableKind, kFieldTableKind, kFieldTableKindSize>;
 
   // The index of the ArtMethod in the table.
   const size_t index_;
@@ -5358,7 +5358,7 @@ class HNewArray final : public HExpression<2> {
       kFieldComponentSizeShift + kFieldComponentSizeShiftSize;
   static_assert(kNumberOfNewArrayPackedBits <= kMaxNumberOfPackedBits, "Too many packed fields.");
   using ComponentSizeShiftField =
-      BitField<size_t, kFieldComponentSizeShift, kFieldComponentSizeShift>;
+      BitField<size_t, kFieldComponentSizeShift, kFieldComponentSizeShiftSize>;
 };
 
 class HAdd final : public HBinaryOperation {
@@ -8591,7 +8591,7 @@ HInstruction* ReplaceInstrOrPhiByClone(HInstruction* instr);
 // Create a clone for each clonable instructions/phis and replace the original with the clone.
 //
 // Used for testing individual instruction cloner.
-class CloneAndReplaceInstructionVisitor : public HGraphDelegateVisitor {
+class CloneAndReplaceInstructionVisitor final : public HGraphDelegateVisitor {
  public:
   explicit CloneAndReplaceInstructionVisitor(HGraph* graph)
       : HGraphDelegateVisitor(graph), instr_replaced_by_clones_count_(0) {}

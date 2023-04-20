@@ -301,7 +301,7 @@ std::string GetPrebuiltPrimaryBootImageDir() {
   return GetPrebuiltPrimaryBootImageDir(android_root);
 }
 
-static std::string GetFirstMainlineFrameworkLibraryName(std::string* error_msg) {
+std::string GetFirstMainlineFrameworkLibraryFilename(std::string* error_msg) {
   const char* env_bcp = getenv("BOOTCLASSPATH");
   const char* env_dex2oat_bcp = getenv("DEX2OATBOOTCLASSPATH");
   if (env_bcp == nullptr || env_dex2oat_bcp == nullptr) {
@@ -326,7 +326,16 @@ static std::string GetFirstMainlineFrameworkLibraryName(std::string* error_msg) 
     return "";
   }
 
-  std::string jar_name = android::base::Basename(mainline_bcp_jars[0]);
+  return std::string(mainline_bcp_jars[0]);
+}
+
+static std::string GetFirstMainlineFrameworkLibraryName(std::string* error_msg) {
+  std::string filename = GetFirstMainlineFrameworkLibraryFilename(error_msg);
+  if (filename.empty()) {
+    return "";
+  }
+
+  std::string jar_name = android::base::Basename(filename);
 
   std::string_view library_name(jar_name);
   if (!android::base::ConsumeSuffix(&library_name, ".jar")) {
@@ -762,7 +771,7 @@ bool LocationIsOnSystem(const std::string& location) {
   LOG(FATAL) << "LocationIsOnSystem is unsupported on Windows.";
   return false;
 #else
-  return android::base::StartsWith(location, GetAndroidRoot().c_str());
+  return android::base::StartsWith(location, GetAndroidRoot());
 #endif
 }
 
