@@ -70,6 +70,7 @@
 #include "dex/class_accessor-inl.h"
 #include "dex/descriptors_names.h"
 #include "dex/dex_file-inl.h"
+#include "dex/dex_file_annotations.h"
 #include "dex/dex_file_exception_helpers.h"
 #include "dex/dex_file_loader.h"
 #include "dex/signature-inl.h"
@@ -6121,6 +6122,7 @@ bool ClassLinker::LinkClass(Thread* self,
   if (!LinkStaticFields(self, klass, &class_size)) {
     return false;
   }
+  SetRecordClassFlagIfNeeded(klass);
   CreateReferenceInstanceOffsets(klass);
   CHECK_EQ(ClassStatus::kLoaded, klass->GetStatus());
 
@@ -9348,6 +9350,40 @@ bool ClassLinker::LinkInstanceFields(Thread* self, Handle<mirror::Class> klass) 
 bool ClassLinker::LinkStaticFields(Thread* self, Handle<mirror::Class> klass, size_t* class_size) {
   CHECK(klass != nullptr);
   return LinkFieldsHelper::LinkFields(this, self, klass, true, class_size);
+}
+
+// Set kClassFlagRecord if all conditions are fulfilled.
+void ClassLinker::SetRecordClassFlagIfNeeded(Handle<mirror::Class> klass) {
+  CHECK(klass != nullptr);
+  // First, we check the conditions specified in java.lang.Class#isRecord().
+  // If any of the following check fails, ART will treat it as a normal class,
+  // but still inherited from java.lang.Record.
+  if (!klass->IsFinal()) {
+    return;
+  }
+
+  ObjPtr<mirror::Class> super = klass->GetSuperClass();
+  if (super == nullptr) {
+    return;
+  }
+
+  // Compare the string directly when this ClassLinker is initializing before
+  // WellKnownClasses initializes
+  if (WellKnownClasses::java_lang_Record == nullptr) {
+    if (!super->DescriptorEquals("Ljava/lang/Record;")) {
+      return;
+    }
+  } else {
+    ObjPtr<mirror::Class> java_lang_Record =
+        WellKnownClasses::ToClass(WellKnownClasses::java_lang_Record);
+    if (super.Ptr() != java_lang_Record.Ptr()) {
+      return;
+    }
+  }
+
+  if (annotations::IsRecordClassAnnotationPresent(klass)) {
+    klass->SetRecordClass();
+  }
 }
 
 //  Set the bitmap of reference instance field offsets.

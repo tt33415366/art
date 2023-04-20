@@ -183,9 +183,10 @@
                   "138-duplicate-classes-check",
                   "018-stack-overflow",
                   "961-default-iface-resolution-gen",
-                  "964-default-iface-init-gen"],
+                  "964-default-iface-init-gen",
+                  "2047-checker-const-string-length"],
         "variant": "no-image",
-        "description": ["This test fails without an image. 018, 961, 964 often",
+        "description": ["137, 138, 2047 fail without an image. 018, 961, 964 often ",
                         "time out."],
         "bug": "http://b/34369284"
     },
@@ -1558,5 +1559,10 @@
         "env_vars": {"ART_TEST_DEBUG_GC": "true"},
         "bug": "b/264844668",
         "description": ["Test timing out on debug gc."]
+    },
+    {
+        "tests": ["845-data-image", "846-multidex-data-image"],
+        "variant": "debuggable",
+        "description": ["Runtime app images are not supported with debuggable."]
     }
 ]

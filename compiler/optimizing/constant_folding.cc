@@ -18,6 +18,7 @@
 
 #include <algorithm>
 
+#include "dex/dex_file-inl.h"
 #include "optimizing/data_type.h"
 #include "optimizing/nodes.h"
 
@@ -25,10 +26,10 @@ namespace art HIDDEN {
 
 // This visitor tries to simplify instructions that can be evaluated
 // as constants.
-class HConstantFoldingVisitor : public HGraphDelegateVisitor {
+class HConstantFoldingVisitor final : public HGraphDelegateVisitor {
  public:
-  explicit HConstantFoldingVisitor(HGraph* graph, OptimizingCompilerStats* stats)
-      : HGraphDelegateVisitor(graph, stats) {}
+  HConstantFoldingVisitor(HGraph* graph, OptimizingCompilerStats* stats, bool use_all_optimizations)
+      : HGraphDelegateVisitor(graph, stats), use_all_optimizations_(use_all_optimizations) {}
 
  private:
   void VisitBasicBlock(HBasicBlock* block) override;
@@ -36,11 +37,15 @@ class HConstantFoldingVisitor : public HGraphDelegateVisitor {
   void VisitUnaryOperation(HUnaryOperation* inst) override;
   void VisitBinaryOperation(HBinaryOperation* inst) override;
 
-  void VisitTypeConversion(HTypeConversion* inst) override;
+  void VisitArrayLength(HArrayLength* inst) override;
   void VisitDivZeroCheck(HDivZeroCheck* inst) override;
   void VisitIf(HIf* inst) override;
+  void VisitTypeConversion(HTypeConversion* inst) override;
 
   void PropagateValue(HBasicBlock* starting_block, HInstruction* variable, HConstant* constant);
+
+  // Use all optimizations without restrictions.
+  bool use_all_optimizations_;
 
   DISALLOW_COPY_AND_ASSIGN(HConstantFoldingVisitor);
 };
@@ -82,7 +87,7 @@ class InstructionWithAbsorbingInputSimplifier : public HGraphVisitor {
 
 
 bool HConstantFolding::Run() {
-  HConstantFoldingVisitor visitor(graph_, stats_);
+  HConstantFoldingVisitor visitor(graph_, stats_, use_all_optimizations_);
   // Process basic blocks in reverse post-order in the dominator tree,
   // so that an instruction turned into a constant, used as input of
   // another instruction, may possibly be used to turn that second
@@ -124,16 +129,6 @@ void HConstantFoldingVisitor::VisitBinaryOperation(HBinaryOperation* inst) {
   }
 }
 
-void HConstantFoldingVisitor::VisitTypeConversion(HTypeConversion* inst) {
-  // Constant folding: replace `TypeConversion(a)' with a constant at
-  // compile time if `a' is a constant.
-  HConstant* constant = inst->TryStaticEvaluation();
-  if (constant != nullptr) {
-    inst->ReplaceWith(constant);
-    inst->GetBlock()->RemoveInstruction(inst);
-  }
-}
-
 void HConstantFoldingVisitor::VisitDivZeroCheck(HDivZeroCheck* inst) {
   // We can safely remove the check if the input is a non-null constant.
   HInstruction* check_input = inst->InputAt(0);
@@ -153,6 +148,11 @@ void HConstantFoldingVisitor::PropagateValue(HBasicBlock* starting_block,
     uses_before = variable->GetUses().SizeSlow();
   }
 
+  if (variable->GetUses().HasExactlyOneElement()) {
+    // Nothing to do, since we only have the `if (variable)` use or the `condition` use.
+    return;
+  }
+
   variable->ReplaceUsesDominatedBy(
       starting_block->GetFirstInstruction(), constant, /* strictly_dominated= */ false);
 
@@ -165,6 +165,12 @@ void HConstantFoldingVisitor::PropagateValue(HBasicBlock* starting_block,
 }
 
 void HConstantFoldingVisitor::VisitIf(HIf* inst) {
+  // This optimization can take a lot of compile time since we have a lot of If instructions in
+  // graphs.
+  if (!use_all_optimizations_) {
+    return;
+  }
+
   // Consistency check: the true and false successors do not dominate each other.
   DCHECK(!inst->IfTrueSuccessor()->Dominates(inst->IfFalseSuccessor()) &&
          !inst->IfFalseSuccessor()->Dominates(inst->IfTrueSuccessor()));
@@ -272,6 +278,27 @@ void HConstantFoldingVisitor::VisitIf(HIf* inst) {
                                     GetGraph()->GetIntConstant(1);
     DCHECK_NE(other_constant, constant);
     PropagateValue(other_starting_block, variable, other_constant);
+  }
+}
+
+void HConstantFoldingVisitor::VisitArrayLength(HArrayLength* inst) {
+  HInstruction* input = inst->InputAt(0);
+  if (input->IsLoadString()) {
+    DCHECK(inst->IsStringLength());
+    HLoadString* load_string = input->AsLoadString();
+    const DexFile& dex_file = load_string->GetDexFile();
+    const dex::StringId& string_id = dex_file.GetStringId(load_string->GetStringIndex());
+    inst->ReplaceWith(GetGraph()->GetIntConstant(dex_file.GetStringLength(string_id)));
+  }
+}
+
+void HConstantFoldingVisitor::VisitTypeConversion(HTypeConversion* inst) {
+  // Constant folding: replace `TypeConversion(a)' with a constant at
+  // compile time if `a' is a constant.
+  HConstant* constant = inst->TryStaticEvaluation();
+  if (constant != nullptr) {
+    inst->ReplaceWith(constant);
+    inst->GetBlock()->RemoveInstruction(inst);
   }
 }
 

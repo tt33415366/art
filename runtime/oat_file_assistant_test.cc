@@ -428,6 +428,9 @@ TEST_P(OatFileAssistantTest, NoDexNoOat) {
   // Trying to get the best oat file should fail, but not crash.
   std::unique_ptr<OatFile> oat_file = oat_file_assistant.GetBestOatFile();
   EXPECT_EQ(nullptr, oat_file.get());
+
+  VerifyOptimizationStatusWithInstance(
+      &oat_file_assistant, "unknown", "unknown", "io-error-no-apk");
 }
 
 // Case: We have a DEX file and an ODEX file, but no OAT file.
@@ -618,8 +621,8 @@ TEST_P(OatFileAssistantTest, GetDexOptNeededWithFd) {
   std::string vdex_location = GetScratchDir() + "/OatUpToDate.vdex";
 
   Copy(GetDexSrc1(), dex_location);
-  GenerateOatForTest(dex_location.c_str(),
-                     odex_location.c_str(),
+  GenerateOatForTest(dex_location,
+                     odex_location,
                      CompilerFilter::kSpeed,
                      /* with_alternate_image= */ false);
 
@@ -668,8 +671,8 @@ TEST_P(OatFileAssistantTest, GetDexOptNeededWithInvalidOdexFd) {
   std::string vdex_location = GetScratchDir() + "/OatUpToDate.vdex";
 
   Copy(GetDexSrc1(), dex_location);
-  GenerateOatForTest(dex_location.c_str(),
-                     odex_location.c_str(),
+  GenerateOatForTest(dex_location,
+                     odex_location,
                      CompilerFilter::kSpeed,
                      /* with_alternate_image= */ false);
 
@@ -716,8 +719,8 @@ TEST_P(OatFileAssistantTest, GetDexOptNeededWithInvalidVdexFd) {
   std::string odex_location = GetScratchDir() + "/OatUpToDate.odex";
 
   Copy(GetDexSrc1(), dex_location);
-  GenerateOatForTest(dex_location.c_str(),
-                     odex_location.c_str(),
+  GenerateOatForTest(dex_location,
+                     odex_location,
                      CompilerFilter::kSpeed,
                      /* with_alternate_image= */ false);
 
@@ -816,8 +819,8 @@ TEST_P(OatFileAssistantTest, EmptyVdexOdex) {
   std::string vdex_location = GetOdexDir() + "/EmptyVdexOdex.vdex";
 
   Copy(GetDexSrc1(), dex_location);
-  ScratchFile vdex_file(vdex_location.c_str());
-  ScratchFile odex_file(odex_location.c_str());
+  ScratchFile vdex_file(vdex_location);
+  ScratchFile odex_file(odex_location);
 
   auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
 
@@ -1163,7 +1166,7 @@ TEST_P(OatFileAssistantTest, OatContextOutOfDate) {
   auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
 
   VerifyOptimizationStatus(
-      dex_location.c_str(), context.get(), "verify", "vdex", "up-to-date", /*check_context=*/true);
+      dex_location, context.get(), "verify", "vdex", "up-to-date", /*check_context=*/true);
 }
 
 // Case: We have a DEX file and an ODEX file, but no OAT file.
@@ -1238,6 +1241,8 @@ TEST_P(OatFileAssistantTest, ResourceOnlyDex) {
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OdexFileStatus());
   EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OatFileStatus());
   ExpectHasDexFiles(&oat_file_assistant, false);
+
+  VerifyOptimizationStatusWithInstance(&oat_file_assistant, "unknown", "unknown", "no-dex-code");
 }
 
 // Case: We have a DEX file, an ODEX file and an OAT file.
@@ -2070,6 +2075,9 @@ TEST_P(OatFileAssistantTest, OdexNoDex) {
                                /*expected_is_vdex_usable=*/false,
                                /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
                                /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+
+  VerifyOptimizationStatusWithInstance(
+      &oat_file_assistant, "unknown", "unknown", "io-error-no-apk");
 }
 
 // Case: We have a VDEX file, but the DEX file is gone.
@@ -2093,6 +2101,9 @@ TEST_P(OatFileAssistantTest, VdexNoDex) {
                                /*expected_is_vdex_usable=*/false,
                                /*expected_location=*/OatFileAssistant::kLocationNoneOrError,
                                /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
+
+  VerifyOptimizationStatusWithInstance(
+      &oat_file_assistant, "unknown", "unknown", "io-error-no-apk");
 }
 
 // Test that GetLocation of a dex file is the same whether the dex
