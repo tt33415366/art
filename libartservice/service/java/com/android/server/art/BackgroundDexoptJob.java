@@ -27,10 +27,13 @@ import android.app.job.JobParameters;
 import android.app.job.JobScheduler;
 import android.content.ComponentName;
 import android.content.Context;
+import android.os.Build;
 import android.os.CancellationSignal;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.util.Log;
+
+import androidx.annotation.RequiresApi;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
@@ -48,8 +51,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 /** @hide */
+@RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
 public class BackgroundDexoptJob {
-    private static final String TAG = "BackgroundDexoptJob";
+    private static final String TAG = ArtManagerLocal.TAG;
 
     /**
      * "android" is the package name for a <service> declared in
@@ -198,7 +202,6 @@ public class BackgroundDexoptJob {
 
     @NonNull
     private CompletedResult run(@NonNull CancellationSignal cancellationSignal) {
-        // TODO(b/254013427): Cleanup dex use info.
         long startTimeMs = SystemClock.uptimeMillis();
         DexoptResult dexoptResult;
         try (var snapshot = mInjector.getPackageManagerLocal().withFilteredSnapshot()) {

@@ -26,10 +26,13 @@ import android.annotation.Nullable;
 import android.apphibernation.AppHibernationManager;
 import android.content.Context;
 import android.os.Binder;
+import android.os.Build;
 import android.os.CancellationSignal;
 import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.WorkSource;
+
+import androidx.annotation.RequiresApi;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.art.model.ArtFlags;
@@ -65,8 +68,9 @@ import java.util.stream.Collectors;
  *
  * @hide
  */
+@RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
 public class DexoptHelper {
-    private static final String TAG = "DexoptHelper";
+    private static final String TAG = ArtManagerLocal.TAG;
 
     /**
      * Timeout of the wake lock. This is required by AndroidLint, but we set it to a very large
@@ -76,16 +80,8 @@ public class DexoptHelper {
 
     @NonNull private final Injector mInjector;
 
-    /**
-     * Constructs a new instance.
-     *
-     * The {@link AppHibernationManager} reference may be null for boot time compilation runs, when
-     * the app hibernation manager hasn't yet been initialized. It should not be null otherwise. See
-     * comment in {@link ArtManagerLocal.dexoptPackages} for more details.
-     */
-    public DexoptHelper(@NonNull Context context, @NonNull Config config,
-            @Nullable AppHibernationManager appHibernationManager) {
-        this(new Injector(context, config, appHibernationManager));
+    public DexoptHelper(@NonNull Context context, @NonNull Config config) {
+        this(new Injector(context, config));
     }
 
     @VisibleForTesting
@@ -335,16 +331,14 @@ public class DexoptHelper {
     public static class Injector {
         @NonNull private final Context mContext;
         @NonNull private final Config mConfig;
-        @Nullable private final AppHibernationManager mAppHibernationManager;
 
-        Injector(@NonNull Context context, @NonNull Config config,
-                @Nullable AppHibernationManager appHibernationManager) {
+        Injector(@NonNull Context context, @NonNull Config config) {
             mContext = context;
             mConfig = config;
-            mAppHibernationManager = appHibernationManager;
 
             // Call the getters for the dependencies that aren't optional, to ensure correct
             // initialization order.
+            getAppHibernationManager();
             getPowerManager();
         }
 
@@ -362,9 +356,9 @@ public class DexoptHelper {
             return new SecondaryDexopter(mContext, pkgState, pkg, params, cancellationSignal);
         }
 
-        @Nullable
+        @NonNull
         public AppHibernationManager getAppHibernationManager() {
-            return mAppHibernationManager;
+            return Objects.requireNonNull(mContext.getSystemService(AppHibernationManager.class));
         }
 
         @NonNull
