@@ -1552,7 +1552,24 @@ void MarkCompact::CompactPage(mirror::Object* obj,
                                                                      + kPageSize));
     }
     obj_size = RoundUp(obj_size, kAlignment);
-    DCHECK_GT(obj_size, offset_within_obj);
+    DCHECK_GT(obj_size, offset_within_obj)
+        << "obj:" << obj
+        << " class:"
+        << obj->GetClass<kDefaultVerifyFlags, kWithFromSpaceBarrier>()
+        << " to_addr:" << to_ref
+        << " black-allocation-begin:" << reinterpret_cast<void*>(black_allocations_begin_)
+        << " post-compact-end:" << reinterpret_cast<void*>(post_compact_end_)
+        << " offset:" << offset * kAlignment
+        << " class-after-obj-iter:"
+        << (class_after_obj_iter_ != class_after_obj_ordered_map_.rend() ?
+            class_after_obj_iter_->first.AsMirrorPtr() : nullptr)
+        << " last-reclaimed-page:" << reinterpret_cast<void*>(last_reclaimed_page_)
+        << " last-checked-reclaim-page-idx:" << last_checked_reclaim_page_idx_
+        << " offset-of-last-idx:"
+        << pre_compact_offset_moving_space_[last_checked_reclaim_page_idx_] * kAlignment
+        << " first-obj-of-last-idx:"
+        << first_objs_moving_space_[last_checked_reclaim_page_idx_].AsMirrorPtr();
+
     obj_size -= offset_within_obj;
     // If there is only one stride, then adjust last_stride_begin to the
     // end of the first object.
@@ -1598,6 +1615,25 @@ void MarkCompact::CompactPage(mirror::Object* obj,
                                            MemberOffset(0),
                                            MemberOffset(end_addr - (addr + bytes_done)));
     obj_size = RoundUp(obj_size, kAlignment);
+    DCHECK_GT(obj_size, 0u)
+        << "from_addr:" << obj
+        << " from-space-class:"
+        << obj->GetClass<kDefaultVerifyFlags, kWithFromSpaceBarrier>()
+        << " to_addr:" << ref
+        << " black-allocation-begin:" << reinterpret_cast<void*>(black_allocations_begin_)
+        << " post-compact-end:" << reinterpret_cast<void*>(post_compact_end_)
+        << " offset:" << offset * kAlignment
+        << " bytes_done:" << bytes_done
+        << " class-after-obj-iter:"
+        << (class_after_obj_iter_ != class_after_obj_ordered_map_.rend() ?
+            class_after_obj_iter_->first.AsMirrorPtr() : nullptr)
+        << " last-reclaimed-page:" << reinterpret_cast<void*>(last_reclaimed_page_)
+        << " last-checked-reclaim-page-idx:" << last_checked_reclaim_page_idx_
+        << " offset-of-last-idx:"
+        << pre_compact_offset_moving_space_[last_checked_reclaim_page_idx_] * kAlignment
+        << " first-obj-of-last-idx:"
+        << first_objs_moving_space_[last_checked_reclaim_page_idx_].AsMirrorPtr();
+
     from_addr += obj_size;
     bytes_done += obj_size;
   }
@@ -1985,6 +2021,11 @@ void MarkCompact::FreeFromSpacePages(size_t cur_page_idx, int mode) {
     DCHECK(state >= PageState::kProcessed ||
            (state == PageState::kUnprocessed &&
             (mode == kFallbackMode || idx > moving_first_objs_count_)));
+  }
+  DCHECK_LE(idx, last_checked_reclaim_page_idx_);
+  if (idx == last_checked_reclaim_page_idx_) {
+    // Nothing to do.
+    return;
   }
 
   uint8_t* reclaim_begin;
