@@ -24,7 +24,9 @@ import java.util.HashMap;
 abstract class BaseTraceParser {
     public static final int MAGIC_NUMBER = 0x574f4c53;
     public static final int DUAL_CLOCK_VERSION = 3;
+    public static final int WALL_CLOCK_VERSION = 2;
     public static final int STREAMING_DUAL_CLOCK_VERSION = 0xF3;
+    public static final int STREAMING_WALL_CLOCK_VERSION = 0xF2;
     public static final String START_SECTION_ID = "*";
     public static final String METHODS_SECTION_ID = "*methods";
     public static final String THREADS_SECTION_ID = "*threads";
@@ -101,12 +103,14 @@ abstract class BaseTraceParser {
         }
     }
 
-    public int GetEntryHeader() throws IOException {
-        // Read 2-byte thread-id. On host thread-ids can be greater than 16-bit.
+    public int GetThreadID() throws IOException {
+        // Read 2-byte thread-id. On host thread-ids can be greater than 16-bit but it is truncated
+        // to 16-bits in the trace.
         int threadId = readNumber(2);
-        if (threadId != 0) {
-            return threadId;
-        }
+        return threadId;
+    }
+
+    public int GetEntryHeader() throws IOException {
         // Read 1-byte header type
         return readNumber(1);
     }
@@ -134,11 +138,16 @@ abstract class BaseTraceParser {
         threadIdMap.put(threadId, threadInfo);
     }
 
-    public boolean ShouldIgnoreThread(int threadId) throws Exception {
-        if (threadIdMap.get(threadId).contains("Daemon")) {
-            return true;
+    public boolean ShouldCheckThread(int threadId, String threadName) throws Exception {
+        if (!threadIdMap.containsKey(threadId)) {
+          System.out.println("no threadId -> name  mapping for thread " + threadId);
+          // TODO(b/279547877): Ideally we should throw here, since it isn't expected. Just
+          // continuing to get more logs from the bots to see what's happening here. The
+          // test will fail anyway because the expected output will be different.
+          return true;
         }
-        return false;
+
+        return threadIdMap.get(threadId).equals(threadName);
     }
 
     public String eventTypeToString(int eventType, int threadId) {
@@ -196,8 +205,8 @@ abstract class BaseTraceParser {
         threadEventsMap.put(threadName, threadEventsMap.get(threadName) + "\n" + entry);
     }
 
-    public abstract void CheckTraceFileFormat(File traceFile, int expectedVersion)
-            throws Exception;
+    public abstract void CheckTraceFileFormat(File traceFile,
+        int expectedVersion, String threadName) throws Exception;
 
     DataInputStream dataStream;
     HashMap<Integer, String> methodIdMap;

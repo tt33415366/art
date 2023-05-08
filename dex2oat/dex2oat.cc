@@ -1752,9 +1752,7 @@ class Dex2Oat final {
     }
 
     // Setup VerifierDeps for compilation and report if we fail to parse the data.
-    // When we do profile guided optimizations, the compiler currently needs to run
-    // full verification.
-    if (!DoProfileGuidedOptimizations() && input_vdex_file_ != nullptr) {
+    if (input_vdex_file_ != nullptr) {
       std::unique_ptr<verifier::VerifierDeps> verifier_deps(
           new verifier::VerifierDeps(dex_files, /*output_only=*/ false));
       if (!verifier_deps->ParseStoredData(dex_files, input_vdex_file_->GetVerifierDepsData())) {
@@ -2616,7 +2614,12 @@ class Dex2Oat final {
 
   bool AddDexFileSources() {
     TimingLogger::ScopedTiming t2("AddDexFileSources", timings_);
-    if (input_vdex_file_ != nullptr && input_vdex_file_->HasDexSection()) {
+    if (input_vdex_file_ != nullptr && input_vdex_file_->HasDexSection() &&
+        // If we don't want compact dex in the vdex then we have to make sure
+        // the input vdex only has standard dex files, because we can convert
+        // dex to cdex but not the other way around.
+        (compact_dex_level_ == CompactDexLevel::kCompactDexLevelFast ||
+         input_vdex_file_->HasOnlyStandardDexFiles())) {
       DCHECK_EQ(oat_writers_.size(), 1u);
       const std::string& name = zip_location_.empty() ? dex_locations_[0] : zip_location_;
       DCHECK(!name.empty());

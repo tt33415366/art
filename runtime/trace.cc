@@ -223,6 +223,19 @@ uint32_t Trace::EncodeTraceMethod(ArtMethod* method) {
   return idx;
 }
 
+uint16_t Trace::GetThreadEncoding(pid_t thread_id) {
+  auto it = thread_id_map_.find(thread_id);
+  if (it != thread_id_map_.end()) {
+    return it->second;
+  }
+
+  uint16_t idx = current_thread_index_;
+  thread_id_map_.emplace(thread_id, current_thread_index_);
+  DCHECK_LT(current_thread_index_, (1 << 16) - 2);
+  current_thread_index_++;
+  return idx;
+}
+
 std::vector<ArtMethod*>* Trace::AllocStackTrace() {
   return (temp_stack_trace_.get() != nullptr)  ? temp_stack_trace_.release() :
       new std::vector<ArtMethod*>();
@@ -565,6 +578,29 @@ void Trace::Start(std::unique_ptr<File>&& trace_file_in,
   }
 }
 
+void Trace::UpdateThreadsList(Thread* thread) {
+  // TODO(mythria): Clean this up and update threads_list_ when recording the trace event similar
+  // to what we do for streaming case.
+  std::string name;
+  thread->GetThreadName(name);
+  // In tests, we destroy VM after already detaching the current thread. When a thread is
+  // detached we record the information about the threads_list_. We re-attach the current
+  // thread again as a "Shutdown thread" in the process of shutting down. So don't record
+  // information about shutdown threads.
+  if (name.compare("Shutdown thread") == 0) {
+    return;
+  }
+
+  // There can be races when unregistering a thread and stopping the trace and it is possible to
+  // update the list twice. For example, This information is updated here when stopping tracing and
+  // also when a thread is detaching. In thread detach, we first update this information and then
+  // remove the thread from the list of active threads. If the tracing was stopped in between these
+  // events, we can see two updates for the same thread. Since we need a trace_lock_ it isn't easy
+  // to prevent this race (for ex: update this information when holding thread_list_lock_). It is
+  // harmless to do two updates so just use overwrite here.
+  threads_list_.Overwrite(thread->GetTid(), name);
+}
+
 void Trace::StopTracing(bool finish_tracing, bool flush_file) {
   Runtime* const runtime = Runtime::Current();
   Thread* const self = Thread::Current();
@@ -618,26 +654,12 @@ void Trace::StopTracing(bool finish_tracing, bool flush_file) {
       MutexLock tl_lock(Thread::Current(), *Locks::thread_list_lock_);
       for (Thread* thread : Runtime::Current()->GetThreadList()->GetList()) {
         if (thread->GetMethodTraceBuffer() != nullptr) {
-          the_trace_->FlushStreamingBuffer(thread);
+          the_trace->FlushStreamingBuffer(thread);
           thread->ResetMethodTraceBuffer();
         }
         // Record threads here before resetting the_trace_ to prevent any races between
         // unregistering the thread and resetting the_trace_.
-        std::string name;
-        thread->GetThreadName(name);
-        // In tests, we destroy VM after already detaching the current thread. When a thread is
-        // detached we record the information about the threads_list_. We re-attach the current
-        // thread again as a "Shutdown thread" in the process of shutting down. So don't record
-        // information about shutdown threads.
-        if (name.compare("Shutdown thread") != 0) {
-          // This information is updated here when stopping tracing and also when a thread is
-          // detaching. In thread detach, we first update this information and then remove the
-          // thread from the list of active threads. If the tracing was stopped in between these
-          // events, we can see two updates for the same thread. Since we need a trace_lock_ it
-          // isn't easy to prevent this race (for ex: update this information when holding
-          // thread_list_lock_). It is harmless to do two updates so just use overwrite here.
-          the_trace->threads_list_.Overwrite(thread->GetTid(), name);
-        }
+        the_trace->UpdateThreadsList(thread);
       }
     }
 
@@ -781,6 +803,10 @@ Trace::Trace(File* trace_file,
     }
     cur_offset_.store(0, std::memory_order_relaxed);
   }
+
+  // Thread index of 0 is a special identifier used to distinguish between trace
+  // event entries and thread / method info entries.
+  current_thread_index_ = 1;
 }
 
 static uint64_t ReadBytes(uint8_t* buf, size_t bytes) {
@@ -1012,20 +1038,15 @@ void Trace::RecordStreamingMethodEvent(Thread* thread,
     thread->GetThreadName(thread_name);
     static constexpr size_t kThreadNameHeaderSize = 7;
     uint8_t header[kThreadNameHeaderSize];
-    Append2LE(header, 0);
-    header[2] = kOpNewThread;
-    // We use only 16 bits to encode thread id. On Android, we don't expect to use more than
-    // 16-bits for a Tid. For 32-bit platforms it is always ensured we use less than 16 bits.
-    // See  __check_max_thread_id in bionic for more details. Even on 64-bit the max threads
-    // is currently less than 65536.
-    // TODO(mythria): On host, we know thread ids can be greater than 16 bits. Consider adding
-    // a map similar to method ids.
-    DCHECK(!kIsTargetBuild || thread->GetTid() < (1 << 16));
-    Append2LE(header + 3, static_cast<uint16_t>(thread->GetTid()));
-    Append2LE(header + 5, static_cast<uint16_t>(thread_name.length()));
 
     {
       MutexLock mu(Thread::Current(), tracing_lock_);
+      Append2LE(header, 0);
+      header[2] = kOpNewThread;
+      Append2LE(header + 3, GetThreadEncoding(thread->GetTid()));
+      DCHECK(thread_name.length() < (1 << 16));
+      Append2LE(header + 5, static_cast<uint16_t>(thread_name.length()));
+
       if (!trace_file_->WriteFully(header, kThreadNameHeaderSize) ||
           !trace_file_->WriteFully(reinterpret_cast<const uint8_t*>(thread_name.c_str()),
                                    thread_name.length())) {
@@ -1099,6 +1120,7 @@ void Trace::FlushStreamingBuffer(Thread* thread) {
   std::unique_ptr<uint8_t[]> buffer(new uint8_t[std::max(kMinBufSize, buffer_size)]);
 
   size_t num_entries = *(thread->GetMethodTraceIndexPtr());
+  uint16_t thread_id = GetThreadEncoding(thread->GetTid());
   for (size_t entry_index = 0; entry_index < num_entries;) {
     ArtMethod* method = reinterpret_cast<ArtMethod*>(method_trace_buffer[entry_index++]);
     TraceAction action = DecodeTraceAction(method_trace_buffer[entry_index++]);
@@ -1130,6 +1152,7 @@ void Trace::FlushStreamingBuffer(Thread* thread) {
       DCHECK_LT(kMethodNameHeaderSize, kPerThreadBufSize);
       Append2LE(method_header, 0);
       method_header[2] = kOpNewMethod;
+      DCHECK(method_line.length() < (1 << 16));
       Append2LE(method_header + 3, static_cast<uint16_t>(method_line.length()));
       WriteToBuf(method_header,
                  kMethodNameHeaderSize,
@@ -1145,7 +1168,7 @@ void Trace::FlushStreamingBuffer(Thread* thread) {
     DCHECK_LT(record_size, kPerThreadBufSize);
     EnsureSpace(buffer.get(), &current_index, buffer_size, record_size);
     EncodeEventEntry(
-        buffer.get() + current_index, thread, method_index, action, thread_time, wall_time);
+        buffer.get() + current_index, thread_id, method_index, action, thread_time, wall_time);
     current_index += record_size;
   }
 
@@ -1192,8 +1215,12 @@ void Trace::RecordMethodEvent(Thread* thread,
   ptr = buf_.get() + old_offset;
   uint32_t wall_clock_diff = GetMicroTime(timestamp_counter) - start_time_;
   MutexLock mu(Thread::Current(), tracing_lock_);
-  EncodeEventEntry(
-      ptr, thread, EncodeTraceMethod(method), action, thread_clock_diff, wall_clock_diff);
+  EncodeEventEntry(ptr,
+                   GetThreadEncoding(thread->GetTid()),
+                   EncodeTraceMethod(method),
+                   action,
+                   thread_clock_diff,
+                   wall_clock_diff);
 }
 
 void Trace::LogMethodTraceEvent(Thread* thread,
@@ -1217,14 +1244,15 @@ void Trace::LogMethodTraceEvent(Thread* thread,
 }
 
 void Trace::EncodeEventEntry(uint8_t* ptr,
-                             Thread* thread,
+                             uint16_t thread_id,
                              uint32_t method_index,
                              TraceAction action,
                              uint32_t thread_clock_diff,
                              uint32_t wall_clock_diff) {
   static constexpr size_t kPacketSize = 14U;  // The maximum size of data in a packet.
+  DCHECK(method_index < (1 << (32 - TraceActionBits)));
   uint32_t method_value = (method_index << TraceActionBits) | action;
-  Append2LE(ptr, thread->GetTid());
+  Append2LE(ptr, thread_id);
   Append4LE(ptr + 2, method_value);
   ptr += 6;
 
@@ -1260,24 +1288,16 @@ void Trace::DumpMethodList(std::ostream& os) {
 }
 
 void Trace::DumpThreadList(std::ostream& os) {
+  MutexLock mu(Thread::Current(), tracing_lock_);
   for (const auto& it : threads_list_) {
-    // We use only 16 bits to encode thread id. On Android, we don't expect to use more than
-    // 16-bits for a Tid. For 32-bit platforms it is always ensured we use less than 16 bits.
-    // See  __check_max_thread_id in bionic for more details. Even on 64-bit the max threads
-    // is currently less than 65536.
-    // TODO(mythria): On host, we know thread ids can be greater than 16 bits. Consider adding
-    // a map similar to method ids.
-    DCHECK(!kIsTargetBuild || it.first < (1 << 16));
-    os << static_cast<uint16_t>(it.first) << "\t" << it.second << "\n";
+    os << GetThreadEncoding(it.first) << "\t" << it.second << "\n";
   }
 }
 
 void Trace::StoreExitingThreadInfo(Thread* thread) {
   MutexLock mu(thread, *Locks::trace_lock_);
   if (the_trace_ != nullptr) {
-    std::string name;
-    thread->GetThreadName(name);
-    the_trace_->threads_list_.Put(thread->GetTid(), name);
+    the_trace_->UpdateThreadsList(thread);
   }
 }
 
