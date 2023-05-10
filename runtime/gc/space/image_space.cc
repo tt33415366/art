@@ -429,6 +429,13 @@ class ImageSpace::PatchObjectVisitor final {
       dex_cache->SetStringsArray(strings);
       VisitGcRootDexCacheArray(strings);
     }
+
+    mirror::GcRootArray<mirror::Class>* old_types = dex_cache->GetResolvedTypesArray();
+    if (old_types != nullptr) {
+      mirror::GcRootArray<mirror::Class>* types = native_visitor_(old_types);
+      dex_cache->SetResolvedTypesArray(types);
+      VisitGcRootDexCacheArray(types);
+    }
   }
 
   template <bool kMayBeNull = true, typename T>
@@ -1365,7 +1372,8 @@ class ImageSpace::Loader {
           image_header->GetImageRoot<kWithoutReadBarrier>(ImageHeader::kDexCaches)
               ->AsObjectArray<mirror::DexCache, kVerifyNone>();
       for (int32_t i = 0, count = dex_caches->GetLength(); i < count; ++i) {
-        ObjPtr<mirror::DexCache> dex_cache = dex_caches->Get<kVerifyNone, kWithoutReadBarrier>(i);
+        ObjPtr<mirror::DexCache> dex_cache =
+            dex_caches->GetWithoutChecks<kVerifyNone, kWithoutReadBarrier>(i);
         patch_object_visitor.VisitDexCacheArrays(dex_cache);
       }
     }
