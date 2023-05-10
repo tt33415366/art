@@ -101,12 +101,11 @@ void ThreadList::ShutDown() {
     Runtime::Current()->DetachCurrentThread();
   }
   WaitForOtherNonDaemonThreadsToExit();
-  // Disable GC and wait for GC to complete in case there are still daemon threads doing
-  // allocations.
+  // The only caller of this function, ~Runtime, has already disabled GC and
+  // ensured that the last GC is finished.
   gc::Heap* const heap = Runtime::Current()->GetHeap();
-  heap->DisableGCForShutdown();
-  // In case a GC is in progress, wait for it to finish.
-  heap->WaitForGcToComplete(gc::kGcCauseBackground, Thread::Current());
+  CHECK(heap->IsGCDisabledForShutdown());
+
   // TODO: there's an unaddressed race here where a thread may attach during shutdown, see
   //       Thread::Init.
   SuspendAllDaemonThreadsForShutdown();
@@ -515,11 +514,13 @@ size_t ThreadList::FlipThreadRoots(Closure* thread_flip_visitor,
   Locks::thread_list_lock_->AssertNotHeld(self);
   Locks::thread_suspend_count_lock_->AssertNotHeld(self);
   CHECK_NE(self->GetState(), ThreadState::kRunnable);
+  size_t runnable_thread_count = 0;
+  std::vector<Thread*> other_threads;
 
   collector->GetHeap()->ThreadFlipBegin(self);  // Sync with JNI critical calls.
 
-  // ThreadFlipBegin happens before we suspend all the threads, so it does not count towards the
-  // pause.
+  // ThreadFlipBegin happens before we suspend all the threads, so it does not
+  // count towards the pause.
   const uint64_t suspend_start_time = NanoTime();
   SuspendAllInternal(self, self, nullptr);
   if (pause_listener != nullptr) {
@@ -530,15 +531,28 @@ size_t ThreadList::FlipThreadRoots(Closure* thread_flip_visitor,
   Locks::mutator_lock_->ExclusiveLock(self);
   suspend_all_historam_.AdjustAndAddValue(NanoTime() - suspend_start_time);
   flip_callback->Run(self);
-  Locks::mutator_lock_->ExclusiveUnlock(self);
-  collector->RegisterPause(NanoTime() - suspend_start_time);
-  if (pause_listener != nullptr) {
-    pause_listener->EndPause();
+  // Releasing mutator-lock *before* setting up flip function in the threads
+  // leaves a gap for another thread trying to suspend all threads. That thread
+  // gets to run with mutator-lock, thereby accessing the heap, without running
+  // its flip function. It's not a problem with CC as the gc-thread hasn't
+  // started marking yet and the from-space is accessible. By delaying releasing
+  // mutator-lock until after the flip function are running on all threads we
+  // fix that without increasing pause time, except for any thread that might be
+  // trying to suspend all. Even though the change works irrespective of the GC,
+  // it has been limited to userfaultfd GC to keep the change behind the flag.
+  //
+  // TODO: It's a temporary change as aosp/2377951 is going to clean-up at a
+  // broad scale, including not allowing concurrent suspend-all.
+  //
+  // Compiler complains that the mutator is not held on all paths across this
+  // function, even though it's not required. Faking it to suppress the error.
+  auto fake_mutator_lock_acquire = []() ACQUIRE(*Locks::mutator_lock_) NO_THREAD_SAFETY_ANALYSIS {};
+  auto fake_mutator_lock_release = []() RELEASE(*Locks::mutator_lock_) NO_THREAD_SAFETY_ANALYSIS {};
+  if (!gUseUserfaultfd) {
+    Locks::mutator_lock_->ExclusiveUnlock(self);
+    fake_mutator_lock_acquire();
   }
-
   // Resume runnable threads.
-  size_t runnable_thread_count = 0;
-  std::vector<Thread*> other_threads;
   {
     TimingLogger::ScopedTiming split2("ResumeRunnableThreads", collector->GetTimings());
     MutexLock mu(self, *Locks::thread_list_lock_);
@@ -569,19 +583,36 @@ size_t ThreadList::FlipThreadRoots(Closure* thread_flip_visitor,
     Thread::resume_cond_->Broadcast(self);
   }
 
+  collector->RegisterPause(NanoTime() - suspend_start_time);
+  if (pause_listener != nullptr) {
+    pause_listener->EndPause();
+  }
   collector->GetHeap()->ThreadFlipEnd(self);
 
   // Try to run the closure on the other threads.
   {
     TimingLogger::ScopedTiming split3("FlipOtherThreads", collector->GetTimings());
-    ReaderMutexLock mu(self, *Locks::mutator_lock_);
-    for (Thread* thread : other_threads) {
-      thread->EnsureFlipFunctionStarted(self);
-      DCHECK(!thread->ReadFlag(ThreadFlag::kPendingFlipFunction));
+    if (gUseUserfaultfd) {
+      Locks::mutator_lock_->AssertExclusiveHeld(self);
+      for (Thread* thread : other_threads) {
+        thread->EnsureFlipFunctionStarted(self);
+        DCHECK(!thread->ReadFlag(ThreadFlag::kPendingFlipFunction));
+      }
+      // Try to run the flip function for self.
+      self->EnsureFlipFunctionStarted(self);
+      DCHECK(!self->ReadFlag(ThreadFlag::kPendingFlipFunction));
+      Locks::mutator_lock_->ExclusiveUnlock(self);
+    } else {
+      fake_mutator_lock_release();
+      ReaderMutexLock mu(self, *Locks::mutator_lock_);
+      for (Thread* thread : other_threads) {
+        thread->EnsureFlipFunctionStarted(self);
+        DCHECK(!thread->ReadFlag(ThreadFlag::kPendingFlipFunction));
+      }
+      // Try to run the flip function for self.
+      self->EnsureFlipFunctionStarted(self);
+      DCHECK(!self->ReadFlag(ThreadFlag::kPendingFlipFunction));
     }
-    // Try to run the flip function for self.
-    self->EnsureFlipFunctionStarted(self);
-    DCHECK(!self->ReadFlag(ThreadFlag::kPendingFlipFunction));
   }
 
   // Resume other threads.
@@ -1275,7 +1306,7 @@ void ThreadList::Register(Thread* self) {
   }
   CHECK(!Contains(self));
   list_.push_back(self);
-  if (kUseReadBarrier) {
+  if (gUseReadBarrier) {
     gc::collector::ConcurrentCopying* const cc =
         Runtime::Current()->GetHeap()->ConcurrentCopyingCollector();
     // Initialize according to the state of the CC collector.
@@ -1287,7 +1318,7 @@ void ThreadList::Register(Thread* self) {
   }
 }
 
-void ThreadList::Unregister(Thread* self) {
+void ThreadList::Unregister(Thread* self, bool should_run_callbacks) {
   DCHECK_EQ(self, Thread::Current());
   CHECK_NE(self->GetState(), ThreadState::kRunnable);
   Locks::mutator_lock_->AssertNotHeld(self);
@@ -1304,7 +1335,7 @@ void ThreadList::Unregister(Thread* self) {
   // causes the threads to join. It is important to do this after incrementing unregistering_count_
   // since we want the runtime to wait for the daemon threads to exit before deleting the thread
   // list.
-  self->Destroy();
+  self->Destroy(should_run_callbacks);
 
   // If tracing, remember thread id and name before thread exits.
   Trace::StoreExitingThreadInfo(self);
@@ -1411,6 +1442,13 @@ void ThreadList::VisitReflectiveTargets(ReflectiveValueVisitor *visitor) const {
   MutexLock mu(Thread::Current(), *Locks::thread_list_lock_);
   for (const auto& thread : list_) {
     thread->VisitReflectiveTargets(visitor);
+  }
+}
+
+void ThreadList::SweepInterpreterCaches(IsMarkedVisitor* visitor) const {
+  MutexLock mu(Thread::Current(), *Locks::thread_list_lock_);
+  for (const auto& thread : list_) {
+    thread->SweepInterpreterCache(visitor);
   }
 }
 

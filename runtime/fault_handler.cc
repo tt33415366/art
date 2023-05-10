@@ -20,11 +20,15 @@
 #include <sys/mman.h>
 #include <sys/ucontext.h>
 
+#include <atomic>
+
 #include "art_method-inl.h"
 #include "base/logging.h"  // For VLOG
 #include "base/safe_copy.h"
 #include "base/stl_util.h"
 #include "dex/dex_file_types.h"
+#include "gc/heap.h"
+#include "gc/space/bump_pointer_space.h"
 #include "jit/jit.h"
 #include "jit/jit_code_cache.h"
 #include "mirror/class.h"
@@ -47,8 +51,13 @@ extern "C" NO_INLINE __attribute__((visibility("default"))) void art_sigsegv_fau
 }
 
 // Signal handler called on SIGSEGV.
-static bool art_fault_handler(int sig, siginfo_t* info, void* context) {
-  return fault_manager.HandleFault(sig, info, context);
+static bool art_sigsegv_handler(int sig, siginfo_t* info, void* context) {
+  return fault_manager.HandleSigsegvFault(sig, info, context);
+}
+
+// Signal handler called on SIGBUS.
+static bool art_sigbus_handler(int sig, siginfo_t* info, void* context) {
+  return fault_manager.HandleSigbusFault(sig, info, context);
 }
 
 #if defined(__linux__)
@@ -62,9 +71,20 @@ constexpr bool kVerifySafeImpls = false;
 
 static mirror::Class* SafeGetDeclaringClass(ArtMethod* method)
     REQUIRES_SHARED(Locks::mutator_lock_) {
+  if (gUseUserfaultfd) {
+    // Avoid SafeCopy on userfaultfd updated memory ranges as kernel-space
+    // userfaults are not allowed, which can otherwise happen if compaction is
+    // simultaneously going on.
+    Runtime* runtime = Runtime::Current();
+    DCHECK_NE(runtime->GetHeap()->MarkCompactCollector(), nullptr);
+    GcVisitedArenaPool* pool = static_cast<GcVisitedArenaPool*>(runtime->GetLinearAllocArenaPool());
+    if (pool->Contains(method)) {
+      return method->GetDeclaringClassUnchecked<kWithoutReadBarrier>().Ptr();
+    }
+  }
+
   char* method_declaring_class =
       reinterpret_cast<char*>(method) + ArtMethod::DeclaringClassOffset().SizeValue();
-
   // ArtMethod::declaring_class_ is a GcRoot<mirror::Class>.
   // Read it out into as a CompressedReference directly for simplicity's sake.
   mirror::CompressedReference<mirror::Class> cls;
@@ -84,8 +104,18 @@ static mirror::Class* SafeGetDeclaringClass(ArtMethod* method)
 }
 
 static mirror::Class* SafeGetClass(mirror::Object* obj) REQUIRES_SHARED(Locks::mutator_lock_) {
-  char* obj_cls = reinterpret_cast<char*>(obj) + mirror::Object::ClassOffset().SizeValue();
+  if (gUseUserfaultfd) {
+    // Avoid SafeCopy on userfaultfd updated memory ranges as kernel-space
+    // userfaults are not allowed, which can otherwise happen if compaction is
+    // simultaneously going on.
+    gc::Heap* heap = Runtime::Current()->GetHeap();
+    DCHECK_NE(heap->MarkCompactCollector(), nullptr);
+    if (heap->GetBumpPointerSpace()->Contains(obj)) {
+      return obj->GetClass();
+    }
+  }
 
+  char* obj_cls = reinterpret_cast<char*>(obj) + mirror::Object::ClassOffset().SizeValue();
   mirror::HeapReference<mirror::Class> cls;
   ssize_t rc = SafeCopy(&cls, obj_cls, sizeof(cls));
   CHECK_NE(-1, rc);
@@ -126,36 +156,94 @@ static bool SafeVerifyClassClass(mirror::Class* cls) REQUIRES_SHARED(Locks::muta
 #endif
 
 
-FaultManager::FaultManager() : initialized_(false) {
-  sigaction(SIGSEGV, nullptr, &oldaction_);
+FaultManager::FaultManager() : initialized_(false) {}
+
+FaultManager::~FaultManager() {}
+
+static const char* SignalCodeName(int sig, int code) {
+  if (sig == SIGSEGV) {
+    switch (code) {
+      case SEGV_MAPERR: return "SEGV_MAPERR";
+      case SEGV_ACCERR: return "SEGV_ACCERR";
+      case 8:           return "SEGV_MTEAERR";
+      case 9:           return "SEGV_MTESERR";
+      default:          return "SEGV_UNKNOWN";
+    }
+  } else if (sig == SIGBUS) {
+    switch (code) {
+      case BUS_ADRALN: return "BUS_ADRALN";
+      case BUS_ADRERR: return "BUS_ADRERR";
+      case BUS_OBJERR: return "BUS_OBJERR";
+      default:         return "BUS_UNKNOWN";
+    }
+  } else {
+    return "UNKNOWN";
+  }
 }
 
-FaultManager::~FaultManager() {
+static std::ostream& PrintSignalInfo(std::ostream& os, siginfo_t* info) {
+  os << "  si_signo: " << info->si_signo << " (" << strsignal(info->si_signo) << ")\n"
+     << "  si_code: " << info->si_code
+     << " (" << SignalCodeName(info->si_signo, info->si_code) << ")";
+  if (info->si_signo == SIGSEGV || info->si_signo == SIGBUS) {
+    os << "\n" << "  si_addr: " << info->si_addr;
+  }
+  return os;
 }
 
-void FaultManager::Init() {
+static bool InstallSigbusHandler() {
+  return gUseUserfaultfd &&
+         Runtime::Current()->GetHeap()->MarkCompactCollector()->IsUsingSigbusFeature();
+}
+
+void FaultManager::Init(bool use_sig_chain) {
   CHECK(!initialized_);
-  sigset_t mask;
-  sigfillset(&mask);
-  sigdelset(&mask, SIGABRT);
-  sigdelset(&mask, SIGBUS);
-  sigdelset(&mask, SIGFPE);
-  sigdelset(&mask, SIGILL);
-  sigdelset(&mask, SIGSEGV);
+  if (use_sig_chain) {
+    sigset_t mask;
+    sigfillset(&mask);
+    sigdelset(&mask, SIGABRT);
+    sigdelset(&mask, SIGBUS);
+    sigdelset(&mask, SIGFPE);
+    sigdelset(&mask, SIGILL);
+    sigdelset(&mask, SIGSEGV);
 
-  SigchainAction sa = {
-    .sc_sigaction = art_fault_handler,
-    .sc_mask = mask,
-    .sc_flags = 0UL,
-  };
+    SigchainAction sa = {
+        .sc_sigaction = art_sigsegv_handler,
+        .sc_mask = mask,
+        .sc_flags = 0UL,
+    };
 
-  AddSpecialSignalHandlerFn(SIGSEGV, &sa);
-  initialized_ = true;
+    AddSpecialSignalHandlerFn(SIGSEGV, &sa);
+    if (InstallSigbusHandler()) {
+      sa.sc_sigaction = art_sigbus_handler;
+      AddSpecialSignalHandlerFn(SIGBUS, &sa);
+    }
+    initialized_ = true;
+  } else if (InstallSigbusHandler()) {
+    struct sigaction act;
+    std::memset(&act, '\0', sizeof(act));
+    act.sa_flags = SA_SIGINFO | SA_RESTART;
+    act.sa_sigaction = [](int sig, siginfo_t* info, void* context) {
+      if (!art_sigbus_handler(sig, info, context)) {
+        std::ostringstream oss;
+        PrintSignalInfo(oss, info);
+        LOG(FATAL) << "Couldn't handle SIGBUS fault:"
+                   << "\n"
+                   << oss.str();
+      }
+    };
+    if (sigaction(SIGBUS, &act, nullptr)) {
+      LOG(FATAL) << "Fault handler for SIGBUS couldn't be setup: " << strerror(errno);
+    }
+  }
 }
 
 void FaultManager::Release() {
   if (initialized_) {
-    RemoveSpecialSignalHandlerFn(SIGSEGV, art_fault_handler);
+    RemoveSpecialSignalHandlerFn(SIGSEGV, art_sigsegv_handler);
+    if (InstallSigbusHandler()) {
+      RemoveSpecialSignalHandlerFn(SIGBUS, art_sigbus_handler);
+    }
     initialized_ = false;
   }
 }
@@ -188,32 +276,22 @@ bool FaultManager::HandleFaultByOtherHandlers(int sig, siginfo_t* info, void* co
   return false;
 }
 
-static const char* SignalCodeName(int sig, int code) {
-  if (sig != SIGSEGV) {
-    return "UNKNOWN";
-  } else {
-    switch (code) {
-      case SEGV_MAPERR: return "SEGV_MAPERR";
-      case SEGV_ACCERR: return "SEGV_ACCERR";
-      case 8:           return "SEGV_MTEAERR";
-      case 9:           return "SEGV_MTESERR";
-      default:          return "UNKNOWN";
-    }
+bool FaultManager::HandleSigbusFault(int sig, siginfo_t* info, void* context ATTRIBUTE_UNUSED) {
+  DCHECK_EQ(sig, SIGBUS);
+  if (VLOG_IS_ON(signals)) {
+    PrintSignalInfo(VLOG_STREAM(signals) << "Handling SIGBUS fault:\n", info);
   }
-}
-static std::ostream& PrintSignalInfo(std::ostream& os, siginfo_t* info) {
-  os << "  si_signo: " << info->si_signo << " (" << strsignal(info->si_signo) << ")\n"
-     << "  si_code: " << info->si_code
-     << " (" << SignalCodeName(info->si_signo, info->si_code) << ")";
-  if (info->si_signo == SIGSEGV) {
-    os << "\n" << "  si_addr: " << info->si_addr;
-  }
-  return os;
+
+#ifdef TEST_NESTED_SIGNAL
+  // Simulate a crash in a handler.
+  raise(SIGBUS);
+#endif
+  return Runtime::Current()->GetHeap()->MarkCompactCollector()->SigbusHandler(info);
 }
 
-bool FaultManager::HandleFault(int sig, siginfo_t* info, void* context) {
+bool FaultManager::HandleSigsegvFault(int sig, siginfo_t* info, void* context) {
   if (VLOG_IS_ON(signals)) {
-    PrintSignalInfo(VLOG_STREAM(signals) << "Handling fault:" << "\n", info);
+    PrintSignalInfo(VLOG_STREAM(signals) << "Handling SIGSEGV fault:\n", info);
   }
 
 #ifdef TEST_NESTED_SIGNAL
