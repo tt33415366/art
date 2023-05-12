@@ -417,7 +417,18 @@ Heap::Heap(size_t initial_size,
   if (VLOG_IS_ON(heap) || VLOG_IS_ON(startup)) {
     LOG(INFO) << "Heap() entering";
   }
+
   LOG(INFO) << "Using " << foreground_collector_type_ << " GC.";
+  if (!gUseUserfaultfd) {
+    // This ensures that userfaultfd syscall is done before any seccomp filter is installed.
+    // TODO(b/266731037): Remove this when we no longer need to collect metric on userfaultfd
+    // support.
+    auto [uffd_supported, minor_fault_supported] = collector::MarkCompact::GetUffdAndMinorFault();
+    // The check is just to ensure that compiler doesn't eliminate the function call above.
+    // Userfaultfd support is certain to be there if its minor-fault feature is supported.
+    CHECK_IMPLIES(minor_fault_supported, uffd_supported);
+  }
+
   if (gUseReadBarrier) {
     CHECK_EQ(foreground_collector_type_, kCollectorTypeCC);
     CHECK_EQ(background_collector_type_, kCollectorTypeCCBackground);
@@ -1477,6 +1488,8 @@ void Heap::ThrowOutOfMemoryError(Thread* self, size_t byte_count, AllocatorType 
         Runtime::Current()->GetPreAllocatedOutOfMemoryErrorWhenHandlingStackOverflow());
     return;
   }
+  // Allow plugins to intercept out of memory errors.
+  Runtime::Current()->OutOfMemoryErrorHook();
 
   std::ostringstream oss;
   size_t total_bytes_free = GetFreeMemory();
@@ -1530,15 +1543,15 @@ void Heap::DoPendingCollectorTransition() {
     } else {
       VLOG(gc) << "Homogeneous compaction ignored due to jank perceptible process state";
     }
-  } else if (desired_collector_type == kCollectorTypeCCBackground) {
-    DCHECK(gUseReadBarrier);
+  } else if (desired_collector_type == kCollectorTypeCCBackground ||
+             desired_collector_type == kCollectorTypeCMC) {
     if (!CareAboutPauseTimes()) {
-      // Invoke CC full compaction.
+      // Invoke full compaction.
       CollectGarbageInternal(collector::kGcTypeFull,
                              kGcCauseCollectorTransition,
                              /*clear_soft_references=*/false, GC_NUM_ANY);
     } else {
-      VLOG(gc) << "CC background compaction ignored due to jank perceptible process state";
+      VLOG(gc) << "background compaction ignored due to jank perceptible process state";
     }
   } else {
     CHECK_EQ(desired_collector_type, collector_type_) << "Unsupported collector transition";
@@ -2521,7 +2534,7 @@ void Heap::PreZygoteFork() {
       new accounting::ModUnionTableCardCache("zygote space mod-union table", this, zygote_space_);
   CHECK(mod_union_table != nullptr) << "Failed to create zygote space mod-union table";
 
-  if (collector_type_ != kCollectorTypeCC) {
+  if (collector_type_ != kCollectorTypeCC && collector_type_ != kCollectorTypeCMC) {
     // Set all the cards in the mod-union table since we don't know which objects contain references
     // to large objects.
     mod_union_table->SetCards();
@@ -2533,10 +2546,10 @@ void Heap::PreZygoteFork() {
     mod_union_table->ProcessCards();
     mod_union_table->ClearTable();
 
-    // For CC we never collect zygote large objects. This means we do not need to set the cards for
-    // the zygote mod-union table and we can also clear all of the existing image mod-union tables.
-    // The existing mod-union tables are only for image spaces and may only reference zygote and
-    // image objects.
+    // For CC and CMC we never collect zygote large objects. This means we do not need to set the
+    // cards for the zygote mod-union table and we can also clear all of the existing image
+    // mod-union tables. The existing mod-union tables are only for image spaces and may only
+    // reference zygote and image objects.
     for (auto& pair : mod_union_tables_) {
       CHECK(pair.first->IsImageSpace());
       CHECK(!pair.first->AsImageSpace()->GetImageHeader().IsAppImage());
