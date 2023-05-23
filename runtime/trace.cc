@@ -349,7 +349,7 @@ static void GetSample(Thread* thread, void* arg) REQUIRES_SHARED(Locks::mutator_
   the_trace->CompareAndUpdateStackTrace(thread, stack_trace);
 }
 
-static void ClearThreadStackTraceAndClockBase(Thread* thread, void* arg ATTRIBUTE_UNUSED) {
+static void ClearThreadStackTraceAndClockBase(Thread* thread, [[maybe_unused]] void* arg) {
   thread->SetTraceClockBase(0);
   std::vector<ArtMethod*>* stack_trace = thread->GetStackTraceSample();
   thread->SetStackTraceSample(nullptr);
@@ -489,7 +489,7 @@ void Trace::Start(std::unique_ptr<File>&& trace_file_in,
   auto deleter = [](File* file) {
     if (file != nullptr) {
       file->MarkUnchecked();  // Don't deal with flushing requirements.
-      int result ATTRIBUTE_UNUSED = file->Close();
+      [[maybe_unused]] int result = file->Close();
       delete file;
     }
   };
@@ -555,16 +555,15 @@ void Trace::Start(std::unique_ptr<File>&& trace_file_in,
           runtime->GetInstrumentation()->UpdateEntrypointsForDebuggable();
           runtime->DeoptimizeBootImage();
         }
+        // For thread cpu clocks, we need to make a kernel call and hence we call into c++ to
+        // support them.
+        bool is_fast_trace = !the_trace_->UseThreadCpuClock();
         runtime->GetInstrumentation()->AddListener(
             the_trace_,
             instrumentation::Instrumentation::kMethodEntered |
                 instrumentation::Instrumentation::kMethodExited |
-                instrumentation::Instrumentation::kMethodUnwind);
-        // TODO: In full-PIC mode, we don't need to fully deopt.
-        // TODO: We can only use trampoline entrypoints if we are java-debuggable since in that case
-        // we know that inlining and other problematic optimizations are disabled. We might just
-        // want to use the trampolines anyway since it is faster. It makes the story with disabling
-        // jit-gc more complex though.
+                instrumentation::Instrumentation::kMethodUnwind,
+            is_fast_trace);
         runtime->GetInstrumentation()->EnableMethodTracing(kTracerInstrumentationKey,
                                                            the_trace_,
                                                            /*needs_interpreter=*/false);
@@ -638,11 +637,15 @@ void Trace::StopTracing(bool finish_tracing, bool flush_file) {
       MutexLock mu(self, *Locks::thread_list_lock_);
       runtime->GetThreadList()->ForEach(ClearThreadStackTraceAndClockBase, nullptr);
     } else {
+      // For thread cpu clocks, we need to make a kernel call and hence we call into c++ to support
+      // them.
+      bool is_fast_trace = !the_trace_->UseThreadCpuClock();
       runtime->GetInstrumentation()->RemoveListener(
           the_trace,
           instrumentation::Instrumentation::kMethodEntered |
               instrumentation::Instrumentation::kMethodExited |
-              instrumentation::Instrumentation::kMethodUnwind);
+              instrumentation::Instrumentation::kMethodUnwind,
+          is_fast_trace);
       runtime->GetInstrumentation()->DisableMethodTracing(kTracerInstrumentationKey);
       runtime->GetInstrumentation()->MaybeSwitchRuntimeDebugState(self);
     }
@@ -913,8 +916,8 @@ void Trace::FinishTracing() {
   }
 }
 
-void Trace::DexPcMoved(Thread* thread ATTRIBUTE_UNUSED,
-                       Handle<mirror::Object> this_object ATTRIBUTE_UNUSED,
+void Trace::DexPcMoved([[maybe_unused]] Thread* thread,
+                       [[maybe_unused]] Handle<mirror::Object> this_object,
                        ArtMethod* method,
                        uint32_t new_dex_pc) {
   // We're not recorded to listen to this kind of event, so complain.
@@ -922,23 +925,22 @@ void Trace::DexPcMoved(Thread* thread ATTRIBUTE_UNUSED,
              << " " << new_dex_pc;
 }
 
-void Trace::FieldRead(Thread* thread ATTRIBUTE_UNUSED,
-                      Handle<mirror::Object> this_object ATTRIBUTE_UNUSED,
+void Trace::FieldRead([[maybe_unused]] Thread* thread,
+                      [[maybe_unused]] Handle<mirror::Object> this_object,
                       ArtMethod* method,
                       uint32_t dex_pc,
-                      ArtField* field ATTRIBUTE_UNUSED)
-    REQUIRES_SHARED(Locks::mutator_lock_) {
+                      [[maybe_unused]] ArtField* field) REQUIRES_SHARED(Locks::mutator_lock_) {
   // We're not recorded to listen to this kind of event, so complain.
   LOG(ERROR) << "Unexpected field read event in tracing " << ArtMethod::PrettyMethod(method)
              << " " << dex_pc;
 }
 
-void Trace::FieldWritten(Thread* thread ATTRIBUTE_UNUSED,
-                         Handle<mirror::Object> this_object ATTRIBUTE_UNUSED,
+void Trace::FieldWritten([[maybe_unused]] Thread* thread,
+                         [[maybe_unused]] Handle<mirror::Object> this_object,
                          ArtMethod* method,
                          uint32_t dex_pc,
-                         ArtField* field ATTRIBUTE_UNUSED,
-                         const JValue& field_value ATTRIBUTE_UNUSED)
+                         [[maybe_unused]] ArtField* field,
+                         [[maybe_unused]] const JValue& field_value)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   // We're not recorded to listen to this kind of event, so complain.
   LOG(ERROR) << "Unexpected field write event in tracing " << ArtMethod::PrettyMethod(method)
@@ -954,31 +956,29 @@ void Trace::MethodEntered(Thread* thread, ArtMethod* method) {
 
 void Trace::MethodExited(Thread* thread,
                          ArtMethod* method,
-                         instrumentation::OptionalFrame frame ATTRIBUTE_UNUSED,
-                         JValue& return_value ATTRIBUTE_UNUSED) {
+                         [[maybe_unused]] instrumentation::OptionalFrame frame,
+                         [[maybe_unused]] JValue& return_value) {
   uint32_t thread_clock_diff = 0;
   uint64_t timestamp_counter = 0;
   ReadClocks(thread, &thread_clock_diff, &timestamp_counter);
   LogMethodTraceEvent(thread, method, kTraceMethodExit, thread_clock_diff, timestamp_counter);
 }
 
-void Trace::MethodUnwind(Thread* thread,
-                         ArtMethod* method,
-                         uint32_t dex_pc ATTRIBUTE_UNUSED) {
+void Trace::MethodUnwind(Thread* thread, ArtMethod* method, [[maybe_unused]] uint32_t dex_pc) {
   uint32_t thread_clock_diff = 0;
   uint64_t timestamp_counter = 0;
   ReadClocks(thread, &thread_clock_diff, &timestamp_counter);
   LogMethodTraceEvent(thread, method, kTraceUnroll, thread_clock_diff, timestamp_counter);
 }
 
-void Trace::ExceptionThrown(Thread* thread ATTRIBUTE_UNUSED,
-                            Handle<mirror::Throwable> exception_object ATTRIBUTE_UNUSED)
+void Trace::ExceptionThrown([[maybe_unused]] Thread* thread,
+                            [[maybe_unused]] Handle<mirror::Throwable> exception_object)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   LOG(ERROR) << "Unexpected exception thrown event in tracing";
 }
 
-void Trace::ExceptionHandled(Thread* thread ATTRIBUTE_UNUSED,
-                             Handle<mirror::Throwable> exception_object ATTRIBUTE_UNUSED)
+void Trace::ExceptionHandled([[maybe_unused]] Thread* thread,
+                             [[maybe_unused]] Handle<mirror::Throwable> exception_object)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   LOG(ERROR) << "Unexpected exception thrown event in tracing";
 }
@@ -989,8 +989,8 @@ void Trace::Branch(Thread* /*thread*/, ArtMethod* method,
   LOG(ERROR) << "Unexpected branch event in tracing" << ArtMethod::PrettyMethod(method);
 }
 
-void Trace::WatchedFramePop(Thread* self ATTRIBUTE_UNUSED,
-                            const ShadowFrame& frame ATTRIBUTE_UNUSED) {
+void Trace::WatchedFramePop([[maybe_unused]] Thread* self,
+                            [[maybe_unused]] const ShadowFrame& frame) {
   LOG(ERROR) << "Unexpected WatchedFramePop event in tracing";
 }
 
@@ -1031,7 +1031,7 @@ void Trace::RecordStreamingMethodEvent(Thread* thread,
   if (method_trace_buffer == nullptr) {
     method_trace_buffer = new uintptr_t[std::max(kMinBufSize, kPerThreadBufSize)]();
     thread->SetMethodTraceBuffer(method_trace_buffer);
-    *current_offset = 0;
+    *current_offset = kPerThreadBufSize - 1;
 
     // This is the first event from this thread, so first record information about the thread.
     std::string thread_name;
@@ -1055,30 +1055,30 @@ void Trace::RecordStreamingMethodEvent(Thread* thread,
     }
   }
 
-  size_t required_entries = (clock_source_ == TraceClockSource::kDual) ? 4 : 3;
-  if (*current_offset + required_entries >= kPerThreadBufSize) {
+  size_t required_entries = (clock_source_ == TraceClockSource::kDual) ?
+                                kNumEntriesForDualClock :
+                                kNumEntriesForWallClock;
+  if (*current_offset < required_entries) {
     // We don't have space for further entries. Flush the contents of the buffer and reuse the
     // buffer to store contents. Reset the index to the start of the buffer.
     FlushStreamingBuffer(thread);
-    *current_offset = 0;
+    *current_offset = kPerThreadBufSize - 1;
   }
 
   // Record entry in per-thread trace buffer.
   int current_index = *current_offset;
-  method_trace_buffer[current_index++] = reinterpret_cast<uintptr_t>(method);
-  // TODO(mythria): We only need two bits to record the action. Consider merging
-  // it with the method entry to save space.
-  method_trace_buffer[current_index++] = action;
+  method_trace_buffer[current_index--] = reinterpret_cast<uintptr_t>(method) | action;
+
   if (UseThreadCpuClock()) {
-    method_trace_buffer[current_index++] = thread_clock_diff;
+    method_trace_buffer[current_index--] = thread_clock_diff;
   }
   if (UseWallClock()) {
     if (art::kRuntimePointerSize == PointerSize::k32) {
       // On 32-bit architectures store timestamp counter as two 32-bit values.
-      method_trace_buffer[current_index++] = timestamp_counter >> 32;
-      method_trace_buffer[current_index++] = static_cast<uint32_t>(timestamp_counter);
+      method_trace_buffer[current_index--] = timestamp_counter >> 32;
+      method_trace_buffer[current_index--] = static_cast<uint32_t>(timestamp_counter);
     } else {
-      method_trace_buffer[current_index++] = timestamp_counter;
+      method_trace_buffer[current_index--] = timestamp_counter;
     }
   }
   *current_offset = current_index;
@@ -1114,6 +1114,7 @@ void Trace::FlushStreamingBuffer(Thread* thread) {
   // seen method. tracing_lock_ is required to serialize these.
   MutexLock mu(Thread::Current(), tracing_lock_);
   uintptr_t* method_trace_buffer = thread->GetMethodTraceBuffer();
+  CHECK(method_trace_buffer != nullptr);
   // Create a temporary buffer to encode the trace events from the specified thread.
   size_t buffer_size = kPerThreadBufSize;
   size_t current_index = 0;
@@ -1121,19 +1122,20 @@ void Trace::FlushStreamingBuffer(Thread* thread) {
 
   size_t num_entries = *(thread->GetMethodTraceIndexPtr());
   uint16_t thread_id = GetThreadEncoding(thread->GetTid());
-  for (size_t entry_index = 0; entry_index < num_entries;) {
-    ArtMethod* method = reinterpret_cast<ArtMethod*>(method_trace_buffer[entry_index++]);
-    TraceAction action = DecodeTraceAction(method_trace_buffer[entry_index++]);
+  for (size_t entry_index = kPerThreadBufSize - 1; entry_index > num_entries;) {
+    uintptr_t method_and_action = method_trace_buffer[entry_index--];
+    ArtMethod* method = reinterpret_cast<ArtMethod*>(method_and_action & kMaskTraceAction);
+    TraceAction action = DecodeTraceAction(method_and_action);
     uint32_t thread_time = 0;
     uint32_t wall_time = 0;
     if (UseThreadCpuClock()) {
-      thread_time = method_trace_buffer[entry_index++];
+      thread_time = method_trace_buffer[entry_index--];
     }
     if (UseWallClock()) {
-      uint64_t timestamp = method_trace_buffer[entry_index++];
+      uint64_t timestamp = method_trace_buffer[entry_index--];
       if (art::kRuntimePointerSize == PointerSize::k32) {
         // On 32-bit architectures timestamp is stored as two 32-bit values.
-        timestamp = (timestamp << 32 | method_trace_buffer[entry_index++]);
+        timestamp = (timestamp << 32 | method_trace_buffer[entry_index--]);
       }
       wall_time = GetMicroTime(timestamp) - start_time_;
     }

@@ -70,6 +70,7 @@ cc_defaults {
             },
             static_libs: [
                 "libcap",
+                "libmodules-utils-build",
                 // ZipArchive support, the order matters here to get all symbols.
                 "libziparchive",
             ],
@@ -248,7 +249,7 @@ art_cc_library {
     },
 }
 
-cc_defaults {
+art_cc_defaults {
     name: "libartbase-art-gtest-defaults",
     srcs: [
         "base/common_art_test.cc",
@@ -300,7 +301,7 @@ art_cc_library {
     ],
 }
 
-cc_defaults {
+art_cc_defaults {
     name: "libartbase-testing-defaults",
     defaults: [
         "art_defaults",
@@ -341,7 +342,7 @@ art_cc_library {
     ],
 }
 
-cc_defaults {
+art_cc_defaults {
     name: "art_libartbase_tests_defaults",
     tidy_timeout_srcs: [
         "base/bit_utils_test.cc",

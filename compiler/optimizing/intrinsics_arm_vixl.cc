@@ -2653,7 +2653,7 @@ void IntrinsicLocationsBuilderARMVIXL::VisitReachabilityFence(HInvoke* invoke) {
   locations->SetInAt(0, Location::Any());
 }
 
-void IntrinsicCodeGeneratorARMVIXL::VisitReachabilityFence(HInvoke* invoke ATTRIBUTE_UNUSED) { }
+void IntrinsicCodeGeneratorARMVIXL::VisitReachabilityFence([[maybe_unused]] HInvoke* invoke) {}
 
 void IntrinsicLocationsBuilderARMVIXL::VisitIntegerDivideUnsigned(HInvoke* invoke) {
   CreateIntIntToIntSlowPathCallLocations(allocator_, invoke);
@@ -4351,7 +4351,7 @@ static void GenerateVarHandleTarget(HInvoke* invoke,
                                          LocationFrom(target.object),
                                          method,
                                          ArtField::DeclaringClassOffset().Int32Value(),
-                                         gCompilerReadBarrierOption);
+                                         GetCompilerReadBarrierOption());
       }
     }
   } else {

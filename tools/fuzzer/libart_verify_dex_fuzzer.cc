@@ -17,8 +17,10 @@
 #include "base/mem_map.h"
 #include "dex/dex_file_loader.h"
 
-extern "C" int LLVMFuzzerInitialize(int* argc ATTRIBUTE_UNUSED, char*** argv ATTRIBUTE_UNUSED) {
+extern "C" int LLVMFuzzerInitialize([[maybe_unused]] int* argc, [[maybe_unused]] char*** argv) {
   // Initialize environment.
+  // TODO(solanes): `art::MemMap::Init` is not needed for the current DexFileLoader code path.
+  // Consider removing it once the fuzzer stabilizes and check that it is actually not needed.
   art::MemMap::Init();
   // Set logging to error and above to avoid warnings about unexpected checksums.
   android::base::SetMinimumLogSeverity(android::base::ERROR);
@@ -29,7 +31,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   // Skip compact DEX.
   // TODO(dsrbecky): Remove after removing compact DEX.
   const char* dex_string = "cdex";
-  if (strncmp(dex_string, (const char*)data, strlen(dex_string)) == 0) {
+  if (size >= strlen(dex_string) &&
+      strncmp(dex_string, (const char*)data, strlen(dex_string)) == 0) {
     // A -1 indicates we don't want this DEX added to the corpus.
     return -1;
   }

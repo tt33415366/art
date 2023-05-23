@@ -27,8 +27,12 @@ cc_fuzz {
     name: "libart_verify_dex_fuzzer",
     srcs: ["libart_verify_dex_fuzzer.cc"],
 
-    // Run in debug mode for the DCHECKs.
-    defaults: ["libartd_static_defaults"],
+    defaults: [
+        // Run in release mode since debug is too slow.
+        "libart_static_defaults",
+        // To allow the ART module to build correctly.
+        "art_module_source_build_defaults",
+    ],
 
     // Build and run on x86 too.
     host_supported: true,
@@ -45,7 +49,7 @@ cc_fuzz {
     corpus: ["corpus/*"],
     dictionary: "dex.dict",
     fuzz_config: {
-        triage_assignee: "art-performance-team@google.com",
+        triage_assignee: "art-perf-team@google.com",
         cc: ["solanes@google.com", "art-bugs@google.com"],
         componentid: 86431,
         acknowledgement: [
