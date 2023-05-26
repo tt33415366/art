@@ -28,27 +28,16 @@
 #include "android-base/logging.h"
 #include "android-base/parseint.h"
 #include "android-base/result.h"
+#include "base/macros.h"
 
 namespace art {
 namespace odrefresh {
 
 namespace {
-
 using ::android::base::Result;
-
 }
 
-std::string Concatenate(std::initializer_list<std::string_view> args) {
-  std::stringstream ss;
-  for (auto arg : args) {
-    ss << arg;
-  }
-  return ss.str();
-}
-
-std::string QuotePath(std::string_view path) {
-  return Concatenate({"'", path, "'"});
-}
+std::string QuotePath(std::string_view path) { return ART_FORMAT("'{}'", path); }
 
 Result<int> ParseSecurityPatchStr(const std::string& security_patch_str) {
   std::regex security_patch_regex(R"re((\d{4})-(\d{2})-(\d{2}))re");

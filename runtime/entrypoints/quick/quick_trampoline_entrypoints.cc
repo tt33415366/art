@@ -279,9 +279,15 @@ class QuickArgumentVisitor {
     return reinterpret_cast<StackReference<mirror::Object>*>(this_arg_address);
   }
 
-  static ArtMethod* GetCallingMethod(ArtMethod** sp) REQUIRES_SHARED(Locks::mutator_lock_) {
+  static ArtMethod* GetCallingMethodAndDexPc(ArtMethod** sp, uint32_t* dex_pc)
+      REQUIRES_SHARED(Locks::mutator_lock_) {
     DCHECK((*sp)->IsCalleeSaveMethod());
-    return GetCalleeSaveMethodCaller(sp, CalleeSaveType::kSaveRefsAndArgs);
+    return GetCalleeSaveMethodCallerAndDexPc(sp, CalleeSaveType::kSaveRefsAndArgs, dex_pc);
+  }
+
+  static ArtMethod* GetCallingMethod(ArtMethod** sp) REQUIRES_SHARED(Locks::mutator_lock_) {
+    uint32_t dex_pc;
+    return GetCallingMethodAndDexPc(sp, &dex_pc);
   }
 
   static ArtMethod* GetOuterMethod(ArtMethod** sp) REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -289,31 +295,6 @@ class QuickArgumentVisitor {
     uint8_t* previous_sp =
         reinterpret_cast<uint8_t*>(sp) + kQuickCalleeSaveFrame_RefAndArgs_FrameSize;
     return *reinterpret_cast<ArtMethod**>(previous_sp);
-  }
-
-  static uint32_t GetCallingDexPc(ArtMethod** sp) REQUIRES_SHARED(Locks::mutator_lock_) {
-    DCHECK((*sp)->IsCalleeSaveMethod());
-    constexpr size_t callee_frame_size =
-        RuntimeCalleeSaveFrame::GetFrameSize(CalleeSaveType::kSaveRefsAndArgs);
-    ArtMethod** caller_sp = reinterpret_cast<ArtMethod**>(
-        reinterpret_cast<uintptr_t>(sp) + callee_frame_size);
-    uintptr_t outer_pc = QuickArgumentVisitor::GetCallingPc(sp);
-    const OatQuickMethodHeader* current_code = (*caller_sp)->GetOatQuickMethodHeader(outer_pc);
-    uintptr_t outer_pc_offset = current_code->NativeQuickPcOffset(outer_pc);
-
-    if (current_code->IsOptimized()) {
-      CodeInfo code_info = CodeInfo::DecodeInlineInfoOnly(current_code);
-      StackMap stack_map = code_info.GetStackMapForNativePcOffset(outer_pc_offset);
-      DCHECK(stack_map.IsValid());
-      BitTableRange<InlineInfo> inline_infos = code_info.GetInlineInfosOf(stack_map);
-      if (!inline_infos.empty()) {
-        return inline_infos.back().GetDexPc();
-      } else {
-        return stack_map.GetDexPc();
-      }
-    } else {
-      return current_code->ToDexPc(caller_sp, outer_pc);
-    }
   }
 
   static uint8_t* GetCallingPcAddr(ArtMethod** sp) REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -1154,11 +1135,11 @@ extern "C" const void* artQuickResolutionTrampoline(
   const bool called_method_known_on_entry = !called->IsRuntimeMethod();
   ArtMethod* caller = nullptr;
   if (!called_method_known_on_entry) {
-    caller = QuickArgumentVisitor::GetCallingMethod(sp);
+    uint32_t dex_pc;
+    caller = QuickArgumentVisitor::GetCallingMethodAndDexPc(sp, &dex_pc);
     called_method.dex_file = caller->GetDexFile();
 
     {
-      uint32_t dex_pc = QuickArgumentVisitor::GetCallingDexPc(sp);
       CodeItemInstructionAccessor accessor(caller->DexInstructions());
       CHECK_LT(dex_pc, accessor.InsnsSizeInCodeUnits());
       const Instruction& instr = accessor.InstructionAt(dex_pc);
@@ -1653,9 +1634,8 @@ class ComputeNativeCallFrameSize {
   }
 
   virtual void WalkHeader(
-      BuildNativeCallFrameStateMachine<ComputeNativeCallFrameSize>* sm ATTRIBUTE_UNUSED)
-      REQUIRES_SHARED(Locks::mutator_lock_) {
-  }
+      [[maybe_unused]] BuildNativeCallFrameStateMachine<ComputeNativeCallFrameSize>* sm)
+      REQUIRES_SHARED(Locks::mutator_lock_) {}
 
   void Walk(const char* shorty, uint32_t shorty_len) REQUIRES_SHARED(Locks::mutator_lock_) {
     BuildNativeCallFrameStateMachine<ComputeNativeCallFrameSize> sm(this);
@@ -2116,8 +2096,8 @@ static TwoWordReturn artInvokeCommon(uint32_t method_idx,
                                      ArtMethod** sp) {
   ScopedQuickEntrypointChecks sqec(self);
   DCHECK_EQ(*sp, Runtime::Current()->GetCalleeSaveMethod(CalleeSaveType::kSaveRefsAndArgs));
-  ArtMethod* caller_method = QuickArgumentVisitor::GetCallingMethod(sp);
-  uint32_t dex_pc = QuickArgumentVisitor::GetCallingDexPc(sp);
+  uint32_t dex_pc;
+  ArtMethod* caller_method = QuickArgumentVisitor::GetCallingMethodAndDexPc(sp, &dex_pc);
   CodeItemInstructionAccessor accessor(caller_method->DexInstructions());
   DCHECK_LT(dex_pc, accessor.InsnsSizeInCodeUnits());
   const Instruction& instr = accessor.InstructionAt(dex_pc);
@@ -2193,10 +2173,8 @@ extern "C" TwoWordReturn artInvokeDirectTrampolineWithAccessCheck(
 }
 
 extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
-    uint32_t method_idx,
-    mirror::Object* this_object ATTRIBUTE_UNUSED,
-    Thread* self,
-    ArtMethod** sp) REQUIRES_SHARED(Locks::mutator_lock_) {
+    uint32_t method_idx, [[maybe_unused]] mirror::Object* this_object, Thread* self, ArtMethod** sp)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
   // For static, this_object is not required and may be random garbage. Don't pass it down so that
   // it doesn't cause ObjPtr alignment failure check.
   return artInvokeCommon<kStatic>(method_idx, nullptr, self, sp);
@@ -2230,9 +2208,9 @@ extern "C" TwoWordReturn artInvokeInterfaceTrampoline(ArtMethod* interface_metho
     // Fetch the dex_method_idx of the target interface method from the caller.
     StackHandleScope<1> hs(self);
     Handle<mirror::Object> this_object = hs.NewHandle(raw_this_object);
-    ArtMethod* caller_method = QuickArgumentVisitor::GetCallingMethod(sp);
+    uint32_t dex_pc;
+    ArtMethod* caller_method = QuickArgumentVisitor::GetCallingMethodAndDexPc(sp, &dex_pc);
     uint32_t dex_method_idx;
-    uint32_t dex_pc = QuickArgumentVisitor::GetCallingDexPc(sp);
     const Instruction& instr = caller_method->DexInstructions().InstructionAt(dex_pc);
     Instruction::Code instr_code = instr.Opcode();
     DCHECK(instr_code == Instruction::INVOKE_INTERFACE ||
@@ -2351,8 +2329,8 @@ extern "C" uint64_t artInvokePolymorphic(mirror::Object* raw_receiver, Thread* s
   const char* old_cause = self->StartAssertNoThreadSuspension("Making stack arguments safe.");
 
   // From the instruction, get the |callsite_shorty| and expose arguments on the stack to the GC.
-  ArtMethod* caller_method = QuickArgumentVisitor::GetCallingMethod(sp);
-  uint32_t dex_pc = QuickArgumentVisitor::GetCallingDexPc(sp);
+  uint32_t dex_pc;
+  ArtMethod* caller_method = QuickArgumentVisitor::GetCallingMethodAndDexPc(sp, &dex_pc);
   const Instruction& inst = caller_method->DexInstructions().InstructionAt(dex_pc);
   DCHECK(inst.Opcode() == Instruction::INVOKE_POLYMORPHIC ||
          inst.Opcode() == Instruction::INVOKE_POLYMORPHIC_RANGE);
@@ -2478,8 +2456,8 @@ extern "C" uint64_t artInvokeCustom(uint32_t call_site_idx, Thread* self, ArtMet
   const char* old_cause = self->StartAssertNoThreadSuspension("Making stack arguments safe.");
 
   // From the instruction, get the |callsite_shorty| and expose arguments on the stack to the GC.
-  ArtMethod* caller_method = QuickArgumentVisitor::GetCallingMethod(sp);
-  uint32_t dex_pc = QuickArgumentVisitor::GetCallingDexPc(sp);
+  uint32_t dex_pc;
+  ArtMethod* caller_method = QuickArgumentVisitor::GetCallingMethodAndDexPc(sp, &dex_pc);
   const DexFile* dex_file = caller_method->GetDexFile();
   const dex::ProtoIndex proto_idx(dex_file->GetProtoIndexForCallSite(call_site_idx));
   const char* shorty = caller_method->GetDexFile()->GetShorty(proto_idx);

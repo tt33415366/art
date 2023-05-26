@@ -58,8 +58,9 @@ class MANAGED Array : public Object {
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Roles::uninterruptible_);
 
-  template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags,
-           ReadBarrierOption kReadBarrierOption = kWithoutReadBarrier>
+  template <VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags,
+            ReadBarrierOption kReadBarrierOption = kWithoutReadBarrier,
+            bool kIsObjArray = false>
   size_t SizeOf() REQUIRES_SHARED(Locks::mutator_lock_);
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   ALWAYS_INLINE int32_t GetLength() REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -139,10 +140,10 @@ class MANAGED Array : public Object {
 
   // The number of array elements.
   // We only use the field indirectly using the LengthOffset() method.
-  int32_t length_ ATTRIBUTE_UNUSED;
+  [[maybe_unused]] int32_t length_;
   // Marker for the data (used by generated code)
   // We only use the field indirectly using the DataOffset() method.
-  uint32_t first_element_[0] ATTRIBUTE_UNUSED;
+  [[maybe_unused]] uint32_t first_element_[0];
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(Array);
 };

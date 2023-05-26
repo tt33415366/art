@@ -25,6 +25,7 @@
 
 #include "android-base/file.h"
 #include "android-base/logging.h"
+#include "android-base/properties.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
 #include "arch/instruction_set.h"
@@ -309,6 +310,9 @@ int OatFileAssistant::GetDexOptNeeded(CompilerFilter::Filter target_compiler_fil
                                       bool profile_changed,
                                       bool downgrade) {
   OatFileInfo& info = GetBestInfo();
+  if (info.CheckDisableCompactDexExperiment()) {  // TODO(b/256664509): Clean this up.
+    return kDex2OatFromScratch;
+  }
   DexOptNeeded dexopt_needed = info.GetDexOptNeeded(
       target_compiler_filter, GetDexOptTrigger(target_compiler_filter, profile_changed, downgrade));
   if (dexopt_needed != kNoDexOptNeeded && (&info == &dm_for_oat_ || &info == &dm_for_odex_)) {
@@ -327,6 +331,10 @@ bool OatFileAssistant::GetDexOptNeeded(CompilerFilter::Filter target_compiler_fi
                                        DexOptTrigger dexopt_trigger,
                                        /*out*/ DexOptStatus* dexopt_status) {
   OatFileInfo& info = GetBestInfo();
+  if (info.CheckDisableCompactDexExperiment()) {  // TODO(b/256664509): Clean this up.
+    dexopt_status->location_ = kLocationNoneOrError;
+    return true;
+  }
   DexOptNeeded dexopt_needed = info.GetDexOptNeeded(target_compiler_filter, dexopt_trigger);
   if (info.IsUseable()) {
     if (&info == &dm_for_oat_ || &info == &dm_for_odex_) {
@@ -881,10 +889,16 @@ OatFileAssistant::OatFileInfo& OatFileAssistant::GetBestInfo() {
 
     // If the odex is not useable, and we have a useable vdex, return the vdex
     // instead.
+    VLOG(oat) << ART_FORMAT("GetBestInfo checking odex next to the dex file ({})",
+                            odex_.DisplayFilename());
     if (!odex_.IsUseable()) {
+      VLOG(oat) << ART_FORMAT("GetBestInfo checking vdex next to the dex file ({})",
+                              vdex_for_odex_.DisplayFilename());
       if (vdex_for_odex_.IsUseable()) {
         return vdex_for_odex_;
-      } else if (dm_for_odex_.IsUseable()) {
+      }
+      VLOG(oat) << ART_FORMAT("GetBestInfo checking dm ({})", dm_for_odex_.DisplayFilename());
+      if (dm_for_odex_.IsUseable()) {
         return dm_for_odex_;
       }
     }
@@ -894,6 +908,7 @@ OatFileAssistant::OatFileInfo& OatFileAssistant::GetBestInfo() {
   // We cannot write to the odex location. This must be a system app.
 
   // If the oat location is useable take it.
+  VLOG(oat) << ART_FORMAT("GetBestInfo checking odex in dalvik-cache ({})", oat_.DisplayFilename());
   if (oat_.IsUseable()) {
     return oat_;
   }
@@ -901,20 +916,29 @@ OatFileAssistant::OatFileInfo& OatFileAssistant::GetBestInfo() {
   // The oat file is not useable but the odex file might be up to date.
   // This is an indication that we are dealing with an up to date prebuilt
   // (that doesn't need relocation).
+  VLOG(oat) << ART_FORMAT("GetBestInfo checking odex next to the dex file ({})",
+                          odex_.DisplayFilename());
   if (odex_.IsUseable()) {
     return odex_;
   }
 
   // Look for a useable vdex file.
+  VLOG(oat) << ART_FORMAT("GetBestInfo checking vdex in dalvik-cache ({})",
+                          vdex_for_oat_.DisplayFilename());
   if (vdex_for_oat_.IsUseable()) {
     return vdex_for_oat_;
   }
+  VLOG(oat) << ART_FORMAT("GetBestInfo checking vdex next to the dex file ({})",
+                          vdex_for_odex_.DisplayFilename());
   if (vdex_for_odex_.IsUseable()) {
     return vdex_for_odex_;
   }
+  VLOG(oat) << ART_FORMAT("GetBestInfo checking dm ({})", dm_for_oat_.DisplayFilename());
   if (dm_for_oat_.IsUseable()) {
     return dm_for_oat_;
   }
+  // TODO(jiakaiz): Is this the same as above?
+  VLOG(oat) << ART_FORMAT("GetBestInfo checking dm ({})", dm_for_odex_.DisplayFilename());
   if (dm_for_odex_.IsUseable()) {
     return dm_for_odex_;
   }
@@ -925,6 +949,7 @@ OatFileAssistant::OatFileInfo& OatFileAssistant::GetBestInfo() {
   // - the vdex-only file is not useable
   // - and we don't have the original dex file anymore (stripped).
   // Pick the odex if it exists, or the oat if not.
+  VLOG(oat) << "GetBestInfo no usable artifacts";
   return (odex_.Status() == kOatCannotOpen) ? oat_ : odex_;
 }
 
@@ -952,6 +977,10 @@ bool OatFileAssistant::OatFileInfo::IsOatLocation() { return is_oat_location_; }
 
 const std::string* OatFileAssistant::OatFileInfo::Filename() {
   return filename_provided_ ? &filename_ : nullptr;
+}
+
+const char* OatFileAssistant::OatFileInfo::DisplayFilename() {
+  return filename_provided_ ? filename_.c_str() : "unknown";
 }
 
 bool OatFileAssistant::OatFileInfo::IsUseable() {
@@ -1130,12 +1159,21 @@ bool OatFileAssistant::OatFileInfo::ShouldRecompileForFilter(CompilerFilter::Fil
 
   CompilerFilter::Filter current = file->GetCompilerFilter();
   if (dexopt_trigger.targetFilterIsBetter && CompilerFilter::IsBetter(target, current)) {
+    VLOG(oat) << ART_FORMAT("Should recompile: targetFilterIsBetter (current: {}, target: {})",
+                            CompilerFilter::NameOfFilter(current),
+                            CompilerFilter::NameOfFilter(target));
     return true;
   }
   if (dexopt_trigger.targetFilterIsSame && current == target) {
+    VLOG(oat) << ART_FORMAT("Should recompile: targetFilterIsSame (current: {}, target: {})",
+                            CompilerFilter::NameOfFilter(current),
+                            CompilerFilter::NameOfFilter(target));
     return true;
   }
   if (dexopt_trigger.targetFilterIsWorse && CompilerFilter::IsBetter(current, target)) {
+    VLOG(oat) << ART_FORMAT("Should recompile: targetFilterIsWorse (current: {}, target: {})",
+                            CompilerFilter::NameOfFilter(current),
+                            CompilerFilter::NameOfFilter(target));
     return true;
   }
 
@@ -1151,15 +1189,18 @@ bool OatFileAssistant::OatFileInfo::ShouldRecompileForFilter(CompilerFilter::Fil
         !StartsWith(oat_boot_class_path_checksums, "i") &&
         oat_file_assistant_->IsPrimaryBootImageUsable()) {
       DCHECK(!file->GetOatHeader().RequiresImage());
+      VLOG(oat) << "Should recompile: primaryBootImageBecomesUsable";
       return true;
     }
   }
 
   if (dexopt_trigger.needExtraction && !file->ContainsDexCode() &&
       !oat_file_assistant_->ZipFileOnlyContainsUncompressedDex()) {
+    VLOG(oat) << "Should recompile: needExtraction";
     return true;
   }
 
+  VLOG(oat) << "Should not recompile";
   return false;
 }
 
@@ -1227,6 +1268,23 @@ std::unique_ptr<OatFile> OatFileAssistant::OatFileInfo::ReleaseFileForUse() {
   }
 
   return std::unique_ptr<OatFile>();
+}
+
+// Check if we should reject vdex containing cdex code as part of the
+// disable_cdex experiment.
+// TODO(b/256664509): Clean this up.
+bool OatFileAssistant::OatFileInfo::CheckDisableCompactDexExperiment() {
+  std::string ph_disable_compact_dex = android::base::GetProperty(kPhDisableCompactDex, "false");
+  if (ph_disable_compact_dex != "true") {
+    return false;
+  }
+  const OatFile* oat_file = GetFile();
+  if (oat_file == nullptr) {
+    return false;
+  }
+  const VdexFile* vdex_file = oat_file->GetVdexFile();
+  return vdex_file != nullptr && vdex_file->HasDexSection() &&
+         !vdex_file->HasOnlyStandardDexFiles();
 }
 
 // TODO(calin): we could provide a more refined status here

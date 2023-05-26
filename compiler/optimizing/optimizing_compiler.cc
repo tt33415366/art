@@ -447,8 +447,8 @@ void OptimizingCompiler::DumpInstructionSetFeaturesToCfg() const {
       << HGraphVisualizer::InsertMetaDataAsCompilationBlock(isa_string + ' ' + features_string);
 }
 
-bool OptimizingCompiler::CanCompileMethod(uint32_t method_idx ATTRIBUTE_UNUSED,
-                                          const DexFile& dex_file ATTRIBUTE_UNUSED) const {
+bool OptimizingCompiler::CanCompileMethod([[maybe_unused]] uint32_t method_idx,
+                                          [[maybe_unused]] const DexFile& dex_file) const {
   return true;
 }
 
@@ -1221,7 +1221,7 @@ Compiler* CreateOptimizingCompiler(const CompilerOptions& compiler_options,
   return new OptimizingCompiler(compiler_options, storage);
 }
 
-bool EncodeArtMethodInInlineInfo(ArtMethod* method ATTRIBUTE_UNUSED) {
+bool EncodeArtMethodInInlineInfo([[maybe_unused]] ArtMethod* method) {
   // Note: the runtime is null only for unit testing.
   return Runtime::Current() == nullptr || !Runtime::Current()->IsAotCompiler();
 }
@@ -1255,10 +1255,15 @@ bool OptimizingCompiler::JitCompile(Thread* self,
     // support calling method entry / exit hooks for critical native methods yet.
     // TODO(mythria): Add support for calling method entry / exit hooks in JITed stubs for critical
     // native methods too.
-    if (runtime->IsJavaDebuggable() && method->IsCriticalNative()) {
+    if (compiler_options.GetDebuggable() && method->IsCriticalNative()) {
       DCHECK(compiler_options.IsJitCompiler());
       return false;
     }
+    // Java debuggable runtimes should set compiler options to debuggable, so that we either
+    // generate method entry / exit hooks or skip JITing. For critical native methods we don't
+    // generate method entry / exit hooks so we shouldn't JIT them in debuggable runtimes.
+    DCHECK_IMPLIES(method->IsCriticalNative(), !runtime->IsJavaDebuggable());
+
     JniCompiledMethod jni_compiled_method = ArtQuickJniCompileMethod(
         compiler_options, access_flags, method_idx, *dex_file, &allocator);
     std::vector<Handle<mirror::Object>> roots;

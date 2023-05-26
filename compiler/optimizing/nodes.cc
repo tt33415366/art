@@ -3026,9 +3026,9 @@ HInstruction* HGraph::InlineInto(HGraph* outer_graph, HInvoke* invoke) {
       replacement = outer_graph->GetDoubleConstant(
           current->AsDoubleConstant()->GetValue(), current->GetDexPc());
     } else if (current->IsParameterValue()) {
-      if (kIsDebugBuild
-          && invoke->IsInvokeStaticOrDirect()
-          && invoke->AsInvokeStaticOrDirect()->IsStaticWithExplicitClinitCheck()) {
+      if (kIsDebugBuild &&
+          invoke->IsInvokeStaticOrDirect() &&
+          invoke->AsInvokeStaticOrDirect()->IsStaticWithExplicitClinitCheck()) {
         // Ensure we do not use the last input of `invoke`, as it
         // contains a clinit check which is not an actual argument.
         size_t last_input_index = invoke->InputCount() - 1;
@@ -3571,8 +3571,8 @@ static inline IntrinsicExceptions GetExceptionsIntrinsic(Intrinsics i) {
   return kCanThrow;
 }
 
-void HInvoke::SetResolvedMethod(ArtMethod* method) {
-  if (method != nullptr && method->IsIntrinsic()) {
+void HInvoke::SetResolvedMethod(ArtMethod* method, bool enable_intrinsic_opt) {
+  if (method != nullptr && method->IsIntrinsic() && enable_intrinsic_opt) {
     Intrinsics intrinsic = static_cast<Intrinsics>(method->GetIntrinsic());
     SetIntrinsic(intrinsic,
                  NeedsEnvironmentIntrinsic(intrinsic),
