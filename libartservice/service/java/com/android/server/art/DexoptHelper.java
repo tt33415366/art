@@ -26,10 +26,13 @@ import android.annotation.Nullable;
 import android.apphibernation.AppHibernationManager;
 import android.content.Context;
 import android.os.Binder;
+import android.os.Build;
 import android.os.CancellationSignal;
 import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.WorkSource;
+
+import androidx.annotation.RequiresApi;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.art.model.ArtFlags;
@@ -55,7 +58,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -65,8 +68,9 @@ import java.util.stream.Collectors;
  *
  * @hide
  */
+@RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
 public class DexoptHelper {
-    private static final String TAG = "DexoptHelper";
+    private static final String TAG = ArtManagerLocal.TAG;
 
     /**
      * Timeout of the wake lock. This is required by AndroidLint, but we set it to a very large
@@ -76,16 +80,8 @@ public class DexoptHelper {
 
     @NonNull private final Injector mInjector;
 
-    /**
-     * Constructs a new instance.
-     *
-     * The {@link AppHibernationManager} reference may be null for boot time compilation runs, when
-     * the app hibernation manager hasn't yet been initialized. It should not be null otherwise. See
-     * comment in {@link ArtManagerLocal.dexoptPackages} for more details.
-     */
-    public DexoptHelper(@NonNull Context context, @NonNull Config config,
-            @Nullable AppHibernationManager appHibernationManager) {
-        this(new Injector(context, config, appHibernationManager));
+    public DexoptHelper(@NonNull Context context, @NonNull Config config) {
+        this(new Injector(context, config));
     }
 
     @VisibleForTesting
@@ -226,14 +222,14 @@ public class DexoptHelper {
     private PackageDexoptResult dexoptPackage(@NonNull PackageState pkgState,
             @NonNull DexoptParams params, @NonNull CancellationSignal cancellationSignal) {
         List<DexContainerFileDexoptResult> results = new ArrayList<>();
-        Supplier<PackageDexoptResult> createResult = ()
+        Function<Integer, PackageDexoptResult> createResult = (packageLevelStatus)
                 -> PackageDexoptResult.create(
-                        pkgState.getPackageName(), results, cancellationSignal.isCanceled());
+                        pkgState.getPackageName(), results, packageLevelStatus);
 
         AndroidPackage pkg = Utils.getPackageOrThrow(pkgState);
 
         if (!canDexoptPackage(pkgState)) {
-            return createResult.get();
+            return createResult.apply(null /* packageLevelStatus */);
         }
 
         if ((params.getFlags() & ArtFlags.FLAG_FOR_SINGLE_SPLIT) != 0) {
@@ -244,7 +240,7 @@ public class DexoptHelper {
         try (var tracing = new Utils.Tracing("dexopt")) {
             if ((params.getFlags() & ArtFlags.FLAG_FOR_PRIMARY_DEX) != 0) {
                 if (cancellationSignal.isCanceled()) {
-                    return createResult.get();
+                    return createResult.apply(DexoptResult.DEXOPT_CANCELLED);
                 }
 
                 results.addAll(
@@ -254,7 +250,7 @@ public class DexoptHelper {
 
             if ((params.getFlags() & ArtFlags.FLAG_FOR_SECONDARY_DEX) != 0) {
                 if (cancellationSignal.isCanceled()) {
-                    return createResult.get();
+                    return createResult.apply(DexoptResult.DEXOPT_CANCELLED);
                 }
 
                 results.addAll(
@@ -262,10 +258,11 @@ public class DexoptHelper {
                                 .dexopt());
             }
         } catch (RemoteException e) {
-            throw new IllegalStateException("An error occurred when calling artd", e);
+            Utils.logArtdException(e);
+            return createResult.apply(DexoptResult.DEXOPT_FAILED);
         }
 
-        return createResult.get();
+        return createResult.apply(null /* packageLevelStatus */);
     }
 
     private boolean canDexoptPackage(@NonNull PackageState pkgState) {
@@ -335,16 +332,14 @@ public class DexoptHelper {
     public static class Injector {
         @NonNull private final Context mContext;
         @NonNull private final Config mConfig;
-        @Nullable private final AppHibernationManager mAppHibernationManager;
 
-        Injector(@NonNull Context context, @NonNull Config config,
-                @Nullable AppHibernationManager appHibernationManager) {
+        Injector(@NonNull Context context, @NonNull Config config) {
             mContext = context;
             mConfig = config;
-            mAppHibernationManager = appHibernationManager;
 
             // Call the getters for the dependencies that aren't optional, to ensure correct
             // initialization order.
+            getAppHibernationManager();
             getPowerManager();
         }
 
@@ -362,9 +357,9 @@ public class DexoptHelper {
             return new SecondaryDexopter(mContext, pkgState, pkg, params, cancellationSignal);
         }
 
-        @Nullable
+        @NonNull
         public AppHibernationManager getAppHibernationManager() {
-            return mAppHibernationManager;
+            return Objects.requireNonNull(mContext.getSystemService(AppHibernationManager.class));
         }
 
         @NonNull

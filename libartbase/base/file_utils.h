@@ -83,8 +83,13 @@ std::string GetArtApexData();
 // generated at build time).
 std::string GetPrebuiltPrimaryBootImageDir();
 
+// Returns the filename of the first mainline framework library.
+std::string GetFirstMainlineFrameworkLibraryFilename(std::string* error_msg);
+
 // Returns the default boot image location, based on the passed `android_root`.
 // Returns an empty string if an error occurs.
+// The default boot image location can only be used with the default bootclasspath (the value of the
+// BOOTCLASSPATH environment variable).
 std::string GetDefaultBootImageLocationSafe(const std::string& android_root,
                                             bool deny_art_apex_data_files,
                                             std::string* error_msg);

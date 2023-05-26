@@ -46,6 +46,7 @@
 
 namespace art {
 
+using ::android::base::Error;
 using ::testing::IsSupersetOf;
 
 constexpr const char* kZygote32 = "zygote";
@@ -95,10 +96,16 @@ android::base::Result<std::vector<std::pair<std::string, InstructionSet>>> GetZy
 }
 
 android::base::Result<std::vector<std::string>> GetZygoteExpectedArtifacts(InstructionSet isa) {
-  std::vector<std::string> jars = GetListFromEnv("BOOTCLASSPATH");
+  std::vector<std::string> jars = GetListFromEnv("DEX2OATBOOTCLASSPATH");
   if (jars.empty()) {
-    return Errorf("Environment variable `BOOTCLASSPATH` is not defined or empty");
+    return Errorf("Environment variable `DEX2OATBOOTCLASSPATH` is not defined or empty");
   }
+  std::string error_msg;
+  std::string first_mainline_jar = GetFirstMainlineFrameworkLibraryFilename(&error_msg);
+  if (first_mainline_jar.empty()) {
+    return Error() << error_msg;
+  }
+  jars.push_back(std::move(first_mainline_jar));
   std::string art_root = GetArtRoot();
   std::string android_root = GetAndroidRoot();
   std::vector<std::string> artifacts;

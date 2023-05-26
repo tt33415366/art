@@ -182,7 +182,7 @@ bool HInliner::Run() {
       HInstruction* next = instruction->GetNext();
       HInvoke* call = instruction->AsInvoke();
       // As long as the call is not intrinsified, it is worth trying to inline.
-      if (call != nullptr && call->GetIntrinsic() == Intrinsics::kNone) {
+      if (call != nullptr && !codegen_->IsImplementedIntrinsic(call)) {
         if (honor_noinline_directives) {
           // Debugging case: directives in method names control or assert on inlining.
           std::string callee_name =
@@ -1272,6 +1272,13 @@ bool HInliner::TryDevirtualize(HInvoke* invoke_instruction,
     return false;
   }
 
+  // Don't try to devirtualize intrinsics as it breaks pattern matching from later phases.
+  // TODO(solanes): This `if` could be removed if we update optimizations like
+  // TryReplaceStringBuilderAppend.
+  if (invoke_instruction->IsIntrinsic()) {
+    return false;
+  }
+
   // Don't bother trying to call directly a default conflict method. It
   // doesn't have a proper MethodReference, but also `GetCanonicalMethod`
   // will return an actual default implementation.
@@ -1314,7 +1321,8 @@ bool HInliner::TryDevirtualize(HInvoke* invoke_instruction,
       dispatch_info,
       kDirect,
       MethodReference(method->GetDexFile(), method->GetDexMethodIndex()),
-      HInvokeStaticOrDirect::ClinitCheckRequirement::kNone);
+      HInvokeStaticOrDirect::ClinitCheckRequirement::kNone,
+      !graph_->IsDebuggable());
   HInputsRef inputs = invoke_instruction->GetInputs();
   DCHECK_EQ(inputs.size(), invoke_instruction->GetNumberOfArguments());
   for (size_t index = 0; index != inputs.size(); ++index) {
@@ -1344,7 +1352,7 @@ bool HInliner::TryInlineAndReplace(HInvoke* invoke_instruction,
                                    ReferenceTypeInfo receiver_type,
                                    bool do_rtp,
                                    bool is_speculative) {
-  DCHECK(!invoke_instruction->IsIntrinsic());
+  DCHECK(!codegen_->IsImplementedIntrinsic(invoke_instruction));
   HInstruction* return_replacement = nullptr;
 
   if (!TryBuildAndInline(
@@ -1520,7 +1528,8 @@ bool HInliner::TryBuildAndInline(HInvoke* invoke_instruction,
         invoke_instruction->GetMethodReference(),  // Use existing invoke's method's reference.
         method,
         MethodReference(method->GetDexFile(), method->GetDexMethodIndex()),
-        method->GetMethodIndex());
+        method->GetMethodIndex(),
+        !graph_->IsDebuggable());
     DCHECK_NE(new_invoke->GetIntrinsic(), Intrinsics::kNone);
     HInputsRef inputs = invoke_instruction->GetInputs();
     for (size_t index = 0; index != inputs.size(); ++index) {
@@ -1688,7 +1697,7 @@ bool HInliner::TryPatternSubstitution(HInvoke* invoke_instruction,
       bool needs_constructor_barrier = false;
       for (size_t i = 0; i != number_of_iputs; ++i) {
         HInstruction* value = GetInvokeInputForArgVRegIndex(invoke_instruction, iput_args[i]);
-        if (!value->IsConstant() || !value->AsConstant()->IsZeroBitPattern()) {
+        if (!IsZeroBitPattern(value)) {
           uint16_t field_index = iput_field_indexes[i];
           bool is_final;
           HInstanceFieldSet* iput =
@@ -2015,8 +2024,10 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
       if (current->IsUnresolvedStaticFieldGet() ||
           current->IsUnresolvedInstanceFieldGet() ||
           current->IsUnresolvedStaticFieldSet() ||
-          current->IsUnresolvedInstanceFieldSet()) {
-        // Entrypoint for unresolved fields does not handle inlined frames.
+          current->IsUnresolvedInstanceFieldSet() ||
+          current->IsInvokeUnresolved()) {
+        // Unresolved invokes / field accesses are expensive at runtime when decoding inlining info,
+        // so don't inline methods that have them.
         LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedUnresolvedEntrypoint)
             << "Method " << resolved_method->PrettyMethod()
             << " could not be inlined because it is using an unresolved"

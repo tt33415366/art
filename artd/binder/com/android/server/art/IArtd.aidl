@@ -35,7 +35,7 @@ interface IArtd {
      */
     com.android.server.art.GetDexoptStatusResult getDexoptStatus(
             @utf8InCpp String dexFile, @utf8InCpp String instructionSet,
-            @utf8InCpp String classLoaderContext);
+            @nullable @utf8InCpp String classLoaderContext);
 
     /**
      * Returns true if the profile exists and contains entries for the given dex file.
@@ -169,4 +169,11 @@ interface IArtd {
     long cleanup(in List<com.android.server.art.ProfilePath> profilesToKeep,
             in List<com.android.server.art.ArtifactsPath> artifactsToKeep,
             in List<com.android.server.art.VdexPath> vdexFilesToKeep);
+
+    /**
+     * Returns whether the dex file is in Incremental FS.
+     *
+     * Throws fatal errors. On non-fatal errors, logs the error and returns false.
+     */
+    boolean isIncrementalFsPath(@utf8InCpp String dexFile);
 }

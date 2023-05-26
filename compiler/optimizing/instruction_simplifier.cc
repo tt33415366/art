@@ -37,7 +37,7 @@ namespace art HIDDEN {
 // is replaced with its copy if it is clonable.
 static constexpr bool kTestInstructionClonerExhaustively = false;
 
-class InstructionSimplifierVisitor : public HGraphDelegateVisitor {
+class InstructionSimplifierVisitor final : public HGraphDelegateVisitor {
  public:
   InstructionSimplifierVisitor(HGraph* graph,
                                CodeGenerator* codegen,
@@ -1117,6 +1117,10 @@ void InstructionSimplifierVisitor::VisitIf(HIf* instruction) {
   }
 }
 
+// TODO(solanes): This optimization should be in ConstantFolding since we are folding to a constant.
+// However, we get code size regressions when we do that since we sometimes have a NullCheck between
+// HArrayLength and IsNewArray, and said NullCheck is eliminated in InstructionSimplifier. If we run
+// ConstantFolding and InstructionSimplifier in lockstep this wouldn't be an issue.
 void InstructionSimplifierVisitor::VisitArrayLength(HArrayLength* instruction) {
   HInstruction* input = instruction->InputAt(0);
   // If the array is a NewArray with constant size, replace the array length
@@ -2461,7 +2465,7 @@ void InstructionSimplifierVisitor::SimplifySystemArrayCopy(HInvoke* instruction)
       DCHECK(method != nullptr);
       DCHECK(method->IsStatic());
       DCHECK(method->GetDeclaringClass() == system);
-      invoke->SetResolvedMethod(method);
+      invoke->SetResolvedMethod(method, !codegen_->GetGraph()->IsDebuggable());
       // Sharpen the new invoke. Note that we do not update the dex method index of
       // the invoke, as we would need to look it up in the current dex file, and it
       // is unlikely that it exists. The most usual situation for such typed
