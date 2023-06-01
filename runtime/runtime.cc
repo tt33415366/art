@@ -298,7 +298,7 @@ Runtime::Runtime()
       experimental_flags_(ExperimentalFlags::kNone),
       oat_file_manager_(nullptr),
       is_low_memory_mode_(false),
-      madvise_willneed_vdex_filesize_(0),
+      madvise_willneed_total_dex_size_(0),
       madvise_willneed_odex_filesize_(0),
       madvise_willneed_art_filesize_(0),
       safe_mode_(false),
@@ -531,7 +531,7 @@ Runtime::~Runtime() {
   // Destroy allocators before shutting down the MemMap because they may use it.
   java_vm_.reset();
   linear_alloc_.reset();
-  startup_linear_alloc_.reset();
+  delete ReleaseStartupLinearAlloc();
   linear_alloc_arena_pool_.reset();
   arena_pool_.reset();
   jit_arena_pool_.reset();
@@ -1585,8 +1585,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   zygote_max_failed_boots_ = runtime_options.GetOrDefault(Opt::ZygoteMaxFailedBoots);
   experimental_flags_ = runtime_options.GetOrDefault(Opt::Experimental);
   is_low_memory_mode_ = runtime_options.Exists(Opt::LowMemoryMode);
-  madvise_random_access_ = runtime_options.GetOrDefault(Opt::MadviseRandomAccess);
-  madvise_willneed_vdex_filesize_ = runtime_options.GetOrDefault(Opt::MadviseWillNeedVdexFileSize);
+  madvise_willneed_total_dex_size_ = runtime_options.GetOrDefault(Opt::MadviseWillNeedVdexFileSize);
   madvise_willneed_odex_filesize_ = runtime_options.GetOrDefault(Opt::MadviseWillNeedOdexFileSize);
   madvise_willneed_art_filesize_ = runtime_options.GetOrDefault(Opt::MadviseWillNeedArtFileSize);
 
@@ -1735,7 +1734,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
     linear_alloc_arena_pool_.reset(new MemMapArenaPool(low_4gb));
   }
   linear_alloc_.reset(CreateLinearAlloc());
-  startup_linear_alloc_.reset(CreateLinearAlloc());
+  startup_linear_alloc_.store(CreateLinearAlloc(), std::memory_order_relaxed);
 
   small_lrt_allocator_ = new jni::SmallLrtAllocator();
 
@@ -2764,6 +2763,31 @@ void Runtime::RegisterAppInfo(const std::string& package_name,
     return;
   }
 
+  // Framework calls this method for all split APKs. Ignore the calls for the ones with no dex code
+  // so that we don't unnecessarily create profiles for them or write bootclasspath profiling info
+  // to those profiles.
+  bool has_code = false;
+  for (const std::string& path : code_paths) {
+    std::string error_msg;
+    std::vector<uint32_t> checksums;
+    std::vector<std::string> dex_locations;
+    if (!ArtDexFileLoader::GetMultiDexChecksums(
+            path.c_str(), &checksums, &dex_locations, &error_msg)) {
+      LOG(WARNING) << error_msg;
+      continue;
+    }
+    if (dex_locations.size() > 0) {
+      has_code = true;
+      break;
+    }
+  }
+  if (!has_code) {
+    VLOG(profiler) << ART_FORMAT(
+        "JIT profile information will not be recorded: no dex code in '{}'.",
+        android::base::Join(code_paths, ','));
+    return;
+  }
+
   jit_->StartProfileSaver(profile_output_filename, code_paths, ref_profile_filename);
 }
 
@@ -3343,6 +3367,7 @@ void Runtime::ResetStartupCompleted() {
 }
 
 bool Runtime::NotifyStartupCompleted() {
+  DCHECK(!IsZygote());
   bool expected = false;
   if (!startup_completed_.compare_exchange_strong(expected, true, std::memory_order_seq_cst)) {
     // Right now NotifyStartupCompleted will be called up to twice, once from profiler and up to
@@ -3397,6 +3422,8 @@ void Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
                                   const uint8_t* map_begin,
                                   const uint8_t* map_end,
                                   const std::string& file_name) {
+  map_begin = AlignDown(map_begin, kPageSize);
+  map_size_bytes = RoundUp(map_size_bytes, kPageSize);
 #ifdef ART_TARGET_ANDROID
   // Short-circuit the madvise optimization for background processes. This
   // avoids IO and memory contention with foreground processes, particularly
@@ -3429,7 +3456,7 @@ void Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
 
     // Clamp endOfFile if its past map_end
     if (target_pos > map_end) {
-        target_pos = map_end;
+      target_pos = map_end;
     }
 
     // Madvise the whole file up to target_pos in chunks of
@@ -3447,7 +3474,9 @@ void Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
       int status = madvise(madvise_addr, madvise_length, MADV_WILLNEED);
       // In case of error we stop madvising rest of the file
       if (status < 0) {
-        LOG(ERROR) << "Failed to madvise file:" << file_name << " for size:" << map_size_bytes;
+        LOG(ERROR) << "Failed to madvise file " << file_name
+                   << " for size:" << map_size_bytes
+                   << ": " << strerror(errno);
         break;
       }
     }

@@ -57,7 +57,7 @@ bool VdexFile::VdexFileHeader::IsVdexVersionValid() const {
   return (memcmp(vdex_version_, kVdexVersion, sizeof(kVdexVersion)) == 0);
 }
 
-VdexFile::VdexFileHeader::VdexFileHeader(bool has_dex_section ATTRIBUTE_UNUSED)
+VdexFile::VdexFileHeader::VdexFileHeader([[maybe_unused]] bool has_dex_section)
     : number_of_sections_(static_cast<uint32_t>(VdexSection::kNumberOfSections)) {
   memcpy(magic_, kVdexMagic, sizeof(kVdexMagic));
   memcpy(vdex_version_, kVdexVersion, sizeof(kVdexVersion));
@@ -382,6 +382,12 @@ bool VdexFile::MatchesDexFileChecksums(const std::vector<const DexFile::Header*>
     }
   }
   return true;
+}
+
+bool VdexFile::HasOnlyStandardDexFiles() const {
+  // All are the same so it's enough to check the first one.
+  const uint8_t* dex_file_start = GetNextDexFileData(nullptr, 0);
+  return dex_file_start == nullptr || StandardDexFile::IsMagicValid(dex_file_start);
 }
 
 static ObjPtr<mirror::Class> FindClassAndClearException(ClassLinker* class_linker,

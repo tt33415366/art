@@ -1185,7 +1185,7 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_);
   bool LinkInstanceFields(Thread* self, Handle<mirror::Class> klass)
       REQUIRES_SHARED(Locks::mutator_lock_);
-  void SetRecordClassFlagIfNeeded(Handle<mirror::Class> klass)
+  bool VerifyRecordClass(Handle<mirror::Class> klass, ObjPtr<mirror::Class> super)
       REQUIRES_SHARED(Locks::mutator_lock_);
   void CreateReferenceInstanceOffsets(Handle<mirror::Class> klass)
       REQUIRES_SHARED(Locks::mutator_lock_);
@@ -1414,13 +1414,13 @@ class ClassLoadCallback {
   //       different object. It is the listener's responsibility to handle this.
   // Note: This callback is rarely useful so a default implementation has been given that does
   //       nothing.
-  virtual void ClassPreDefine(const char* descriptor ATTRIBUTE_UNUSED,
-                              Handle<mirror::Class> klass ATTRIBUTE_UNUSED,
-                              Handle<mirror::ClassLoader> class_loader ATTRIBUTE_UNUSED,
-                              const DexFile& initial_dex_file ATTRIBUTE_UNUSED,
-                              const dex::ClassDef& initial_class_def ATTRIBUTE_UNUSED,
-                              /*out*/DexFile const** final_dex_file ATTRIBUTE_UNUSED,
-                              /*out*/dex::ClassDef const** final_class_def ATTRIBUTE_UNUSED)
+  virtual void ClassPreDefine([[maybe_unused]] const char* descriptor,
+                              [[maybe_unused]] Handle<mirror::Class> klass,
+                              [[maybe_unused]] Handle<mirror::ClassLoader> class_loader,
+                              [[maybe_unused]] const DexFile& initial_dex_file,
+                              [[maybe_unused]] const dex::ClassDef& initial_class_def,
+                              [[maybe_unused]] /*out*/ DexFile const** final_dex_file,
+                              [[maybe_unused]] /*out*/ dex::ClassDef const** final_class_def)
       REQUIRES_SHARED(Locks::mutator_lock_) {}
 
   // A class has been loaded.
