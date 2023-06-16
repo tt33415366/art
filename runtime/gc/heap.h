@@ -178,7 +178,7 @@ class Heap {
   // RegisterNativeAllocation checks immediately whether GC is needed if size exceeds the
   // following. kCheckImmediatelyThreshold * kNotifyNativeInterval should be small enough to
   // make it safe to allocate that many bytes between checks.
-  static constexpr size_t kCheckImmediatelyThreshold = 300000;
+  static constexpr size_t kCheckImmediatelyThreshold = (10'000'000 / kNotifyNativeInterval);
 
   // How often we allow heap trimming to happen (nanoseconds).
   static constexpr uint64_t kHeapTrimWait = MsToNs(5000);
@@ -389,7 +389,7 @@ class Heap {
 
   // Clear all of the mark bits, doesn't clear bitmaps which have the same live bits as mark bits.
   // Mutator lock is required for GetContinuousSpaces.
-  void ClearMarkedObjects()
+  void ClearMarkedObjects(bool release_eagerly = true)
       REQUIRES(Locks::heap_bitmap_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 

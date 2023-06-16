@@ -145,6 +145,7 @@
 #include "runtime.h"
 #include "runtime_callbacks.h"
 #include "scoped_thread_state_change-inl.h"
+#include "startup_completed_task.h"
 #include "thread-inl.h"
 #include "thread.h"
 #include "thread_list.h"
@@ -1076,8 +1077,6 @@ void ClassLinker::FinishInit(Thread* self) {
   // initialize the StackOverflowError class (as it might require running the verifier). Instead,
   // ensure that the class will be initialized.
   if (kMemoryToolIsAvailable && !Runtime::Current()->IsAotCompiler()) {
-    verifier::ClassVerifier::Init(this);  // Need to prepare the verifier.
-
     ObjPtr<mirror::Class> soe_klass = FindSystemClass(self, "Ljava/lang/StackOverflowError;");
     if (soe_klass == nullptr || !EnsureInitialized(self, hs.NewHandle(soe_klass), true, true)) {
       // Strange, but don't crash.
@@ -4288,6 +4287,14 @@ ObjPtr<mirror::DexCache> ClassLinker::FindDexCache(Thread* self, const OatDexFil
     return dex_cache;
   }
   // Failure, dump diagnostic and abort.
+  if (dex_cache_data == nullptr) {
+    LOG(FATAL_WITHOUT_ABORT) << "NULL dex_cache_data";
+  } else {
+    LOG(FATAL_WITHOUT_ABORT)
+        << "dex_cache_data=" << dex_cache_data
+        << " weak_root=" << dex_cache_data->weak_root
+        << " decoded_weak_root=" << self->DecodeJObject(dex_cache_data->weak_root);
+  }
   for (const auto& entry : dex_caches_) {
     const DexCacheData& data = entry.second;
     if (DecodeDexCacheLocked(self, &data) != nullptr) {
@@ -4299,7 +4306,10 @@ ObjPtr<mirror::DexCache> ClassLinker::FindDexCache(Thread* self, const OatDexFil
           << " oat_dex_file=" << other_oat_dex_file
           << " oat_file=" << oat_file
           << " oat_location=" << (oat_file == nullptr ? "null" : oat_file->GetLocation())
-          << " dex_file=" << &entry.first;
+          << " dex_file=" << &entry.first
+          << " weak_root=" << data.weak_root
+          << " decoded_weak_root=" << self->DecodeJObject(data.weak_root)
+          << " dex_cache_data=" << &data;
     }
   }
   LOG(FATAL) << "Failed to find DexCache for OatDexFile "
@@ -10789,9 +10799,12 @@ void ClassLinker::CleanupClassLoaders() {
       }
     }
   }
+  if (to_delete.empty()) {
+    return;
+  }
   std::set<const OatFile*> unregistered_oat_files;
-  if (!to_delete.empty()) {
-    JavaVMExt* vm = self->GetJniEnv()->GetVm();
+  JavaVMExt* vm = self->GetJniEnv()->GetVm();
+  {
     WriterMutexLock mu(self, *Locks::dex_lock_);
     for (auto it = dex_caches_.begin(), end = dex_caches_.end(); it != end; ) {
       const DexFile* dex_file = it->first;
@@ -10820,6 +10833,7 @@ void ClassLinker::CleanupClassLoaders() {
       DeleteClassLoader(self, data, /*cleanup_cha=*/ true);
     }
   }
+  Runtime* runtime = Runtime::Current();
   if (!unregistered_oat_files.empty()) {
     for (const OatFile* oat_file : unregistered_oat_files) {
       // Notify the fault handler about removal of the executable code range if needed.
@@ -10828,9 +10842,17 @@ void ClassLinker::CleanupClassLoaders() {
       DCHECK_LE(exec_offset, oat_file->Size());
       size_t exec_size = oat_file->Size() - exec_offset;
       if (exec_size != 0u) {
-        Runtime::Current()->RemoveGeneratedCodeRange(oat_file->Begin() + exec_offset, exec_size);
+        runtime->RemoveGeneratedCodeRange(oat_file->Begin() + exec_offset, exec_size);
       }
     }
+  }
+
+  if (runtime->GetStartupLinearAlloc() != nullptr) {
+    // Because the startup linear alloc can contain dex cache arrays associated
+    // to class loaders that got unloaded, we need to delete these
+    // arrays.
+    StartupCompletedTask::DeleteStartupDexCaches(self, /* called_by_gc= */ true);
+    DCHECK_EQ(runtime->GetStartupLinearAlloc(), nullptr);
   }
 }
 

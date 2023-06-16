@@ -70,7 +70,11 @@
     // Padding of 3 * 4 bytes to get 16 bytes alignment of code entry.
     .4byte 0, 0, 0
     // OatQuickMethodHeader `data_` field. Note that the top two bits must be clear.
-    .4byte (\end - \name)
+    // The calculation must be based on the current address to emit relocation data,
+    // otherwise the size calculated by the assembler could be wrong after linking.
+    // (Alternatively, we could use `.option norelax` to suppress linker optimizations.)
+1:
+    .4byte (\end - /* \name */ (1b + 4))
 \name:
 .endm
 
@@ -100,7 +104,7 @@ ENTRY \name
     SETUP_SAVE_REFS_ONLY_FRAME
     call \helper
     RESTORE_SAVE_REFS_ONLY_FRAME
-    lw t0, THREAD_EXCEPTION_OFFSET(xSELF)
+    ld t0, THREAD_EXCEPTION_OFFSET(xSELF)
     bnez t0, nterp_deliver_pending_exception
     ret
 END \name
@@ -177,7 +181,7 @@ END \name
     mv \old_sp, sp
     .cfi_def_cfa_register \old_sp
     mv sp, t0
-    sw \old_sp, -8(\refs)
+    sd \old_sp, -8(\refs)
     CFI_DEF_CFA_BREG_PLUS_UCONST \cfi_refs, -8, FRAME_SIZE_SAVE_ALL_CALLEE_SAVES
 
     // Put nulls in reference array.

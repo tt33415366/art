@@ -71,7 +71,7 @@ static constexpr uint32_t kJitStressDefaultOptimizeThreshold = kJitDefaultOptimi
 static constexpr uint32_t kJitSlowStressDefaultOptimizeThreshold =
     kJitStressDefaultOptimizeThreshold / 2;
 
-static constexpr uint32_t kJitDefaultWarmupThreshold = 0xffff;
+static constexpr uint32_t kJitDefaultWarmupThreshold = 0x3fff;
 // Different warm-up threshold constants. These default to the equivalent warmup thresholds divided
 // by 2, but can be overridden at the command-line.
 static constexpr uint32_t kJitStressDefaultWarmupThreshold = kJitDefaultWarmupThreshold / 2;
@@ -810,6 +810,7 @@ class JitCompileTask final : public Task {
         compilation_kind_(compilation_kind),
         scoped_compilation_(std::move(sc)) {
     DCHECK(scoped_compilation_.OwnsCompilation());
+    // NOLINTNEXTLINE - OwnsCompilation is still valid after move constructor
     DCHECK(!sc.OwnsCompilation());
   }
 

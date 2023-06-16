@@ -526,12 +526,11 @@ Runtime::~Runtime() {
   oat_file_manager_ = nullptr;
   Thread::Shutdown();
   QuasiAtomic::Shutdown();
-  verifier::ClassVerifier::Shutdown();
 
   // Destroy allocators before shutting down the MemMap because they may use it.
   java_vm_.reset();
   linear_alloc_.reset();
-  startup_linear_alloc_.reset();
+  delete ReleaseStartupLinearAlloc();
   linear_alloc_arena_pool_.reset();
   arena_pool_.reset();
   jit_arena_pool_.reset();
@@ -1734,7 +1733,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
     linear_alloc_arena_pool_.reset(new MemMapArenaPool(low_4gb));
   }
   linear_alloc_.reset(CreateLinearAlloc());
-  startup_linear_alloc_.reset(CreateLinearAlloc());
+  startup_linear_alloc_.store(CreateLinearAlloc(), std::memory_order_relaxed);
 
   small_lrt_allocator_ = new jni::SmallLrtAllocator();
 
@@ -1909,8 +1908,6 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
                                                                                 bcp_dex_files);
 
   CHECK(class_linker_ != nullptr);
-
-  verifier::ClassVerifier::Init(class_linker_);
 
   if (runtime_options.Exists(Opt::MethodTrace)) {
     trace_config_.reset(new TraceConfig());
@@ -2537,7 +2534,6 @@ void Runtime::VisitNonThreadRoots(RootVisitor* visitor) {
       .VisitRootIfNonNull(visitor, RootInfo(kRootVMInternal));
   pre_allocated_NoClassDefFoundError_.VisitRootIfNonNull(visitor, RootInfo(kRootVMInternal));
   VisitImageRoots(visitor);
-  verifier::ClassVerifier::VisitStaticRoots(visitor);
   VisitTransactionRoots(visitor);
 }
 
@@ -3367,6 +3363,7 @@ void Runtime::ResetStartupCompleted() {
 }
 
 bool Runtime::NotifyStartupCompleted() {
+  DCHECK(!IsZygote());
   bool expected = false;
   if (!startup_completed_.compare_exchange_strong(expected, true, std::memory_order_seq_cst)) {
     // Right now NotifyStartupCompleted will be called up to twice, once from profiler and up to
