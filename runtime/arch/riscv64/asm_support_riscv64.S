@@ -66,6 +66,17 @@
 .endm
 
 
+.macro CFI_EXPRESSION_BREG n, b, offset
+    .if (-0x40 <= (\offset)) && ((\offset) < 0x40)
+        CFI_EXPRESSION_BREG_1(\n, \b, \offset)
+    .elseif (-0x2000 <= (\offset)) && ((\offset) < 0x2000)
+        CFI_EXPRESSION_BREG_2(\n, \b, \offset)
+    .else
+        .error "Unsupported offset"
+    .endif
+.endm
+
+
 .macro CFI_DEF_CFA_BREG_PLUS_UCONST reg, offset, size
     .if (((\offset) < -0x40) || ((\offset) >= 0x40))
         .error "Unsupported offset"
@@ -95,15 +106,25 @@
 .endm
 
 
-.macro SAVE_GPR reg, offset
-    sd \reg, (\offset)(sp)
+.macro SAVE_GPR_BASE base, reg, offset
+    sd \reg, (\offset)(\base)
     .cfi_rel_offset \reg, (\offset)
 .endm
 
 
-.macro RESTORE_GPR reg, offset
-    ld \reg, (\offset)(sp)
+.macro SAVE_GPR reg, offset
+    SAVE_GPR_BASE sp, \reg, \offset
+.endm
+
+
+.macro RESTORE_GPR_BASE base, reg, offset
+    ld \reg, (\offset)(\base)
     .cfi_restore \reg
+.endm
+
+
+.macro RESTORE_GPR reg, offset
+    RESTORE_GPR_BASE sp, \reg, \offset
 .endm
 
 
@@ -149,8 +170,9 @@
     SAVE_FPR fa7, (8*8)
 
     SAVE_GPR fp,  (9*8)  // x8, frame pointer
+    // s1 (x9) is the ART thread register
 
-    // a0 is the method pointer
+    // a0 (x10) is the method pointer
     SAVE_GPR a1,  (10*8)  // x11
     SAVE_GPR a2,  (11*8)  // x12
     SAVE_GPR a3,  (12*8)  // x13
@@ -159,7 +181,6 @@
     SAVE_GPR a6,  (15*8)  // x16
     SAVE_GPR a7,  (16*8)  // x17
 
-    // s1 is the ART thread register
     SAVE_GPR s2,  (17*8)  // x18
     SAVE_GPR s3,  (18*8)  // x19
     SAVE_GPR s4,  (19*8)  // x20
@@ -175,7 +196,7 @@
 .endm
 
 
-.macro RESTORE_SAVE_REFS_AND_ARGS_FRAME_INTERNAL base
+.macro RESTORE_SAVE_REFS_AND_ARGS_FRAME_INTERNAL
     // stack slot (0*8)(sp) is for ArtMethod*
 
     RESTORE_FPR fa0, (1*8)
@@ -277,7 +298,7 @@
 
     // GP callee-saves
     SAVE_GPR s0,  (8*14)  // x8/fp, frame pointer
-    // s1 is the ART thread register
+    // s1 (x9) is the ART thread register
     SAVE_GPR s2,  (8*15)  // x18
     SAVE_GPR s3,  (8*16)  // x19
     SAVE_GPR s4,  (8*17)  // x20
@@ -290,6 +311,45 @@
     SAVE_GPR s11, (8*24)  // x27
 
     SAVE_GPR ra,  (8*25)  // x1, return address
+.endm
+
+
+.macro RESTORE_ALL_CALLEE_SAVES
+#if (FRAME_SIZE_SAVE_ALL_CALLEE_SAVES != 8*(12 + 11 + 1 + 1 + 1))
+#error "FRAME_SIZE_SAVE_ALL_CALLEE_SAVES(RISCV64) size not as expected."
+#endif
+    // stack slot (8*0)(sp) is for ArtMethod*
+    // stack slot (8*1)(sp) is for padding
+
+    // FP callee-saves.
+    RESTORE_FPR fs0,  (8*2)   // f8
+    RESTORE_FPR fs1,  (8*3)   // f9
+    RESTORE_FPR fs2,  (8*4)   // f18
+    RESTORE_FPR fs3,  (8*5)   // f19
+    RESTORE_FPR fs4,  (8*6)   // f20
+    RESTORE_FPR fs5,  (8*7)   // f21
+    RESTORE_FPR fs6,  (8*8)   // f22
+    RESTORE_FPR fs7,  (8*9)   // f23
+    RESTORE_FPR fs8,  (8*10)  // f24
+    RESTORE_FPR fs9,  (8*11)  // f25
+    RESTORE_FPR fs10, (8*12)  // f26
+    RESTORE_FPR fs11, (8*13)  // f27
+
+    // GP callee-saves
+    RESTORE_GPR s0,  (8*14)  // x8/fp, frame pointer
+    // s1 is the ART thread register
+    RESTORE_GPR s2,  (8*15)  // x18
+    RESTORE_GPR s3,  (8*16)  // x19
+    RESTORE_GPR s4,  (8*17)  // x20
+    RESTORE_GPR s5,  (8*18)  // x21
+    RESTORE_GPR s6,  (8*19)  // x22
+    RESTORE_GPR s7,  (8*20)  // x23
+    RESTORE_GPR s8,  (8*21)  // x24
+    RESTORE_GPR s9,  (8*22)  // x25
+    RESTORE_GPR s10, (8*23)  // x26
+    RESTORE_GPR s11, (8*24)  // x27
+
+    RESTORE_GPR ra,  (8*25)  // x1, return address
 .endm
 
 
@@ -457,21 +517,22 @@
 
 // For compatibility with Runtime::CreateCalleeSaveMethod(kSaveRefsOnly).
 .macro SETUP_SAVE_REFS_ONLY_FRAME
-    // 11 callee-save regs, plus ArtMethod*
     INCREASE_FRAME FRAME_SIZE_SAVE_REFS_ONLY
 
     // stack slot (8*0)(sp) is for ArtMethod*
-    SAVE_GPR s0,  (8*1)   // x8
-    SAVE_GPR s2,  (8*2)   // x18
-    SAVE_GPR s3,  (8*3)   // x19
-    SAVE_GPR s4,  (8*4)   // x20
-    SAVE_GPR s5,  (8*5)   // x21
-    SAVE_GPR s6,  (8*6)   // x22
-    SAVE_GPR s7,  (8*7)   // x23
-    SAVE_GPR s8,  (8*8)   // x24
-    SAVE_GPR s9,  (8*9)   // x25
-    SAVE_GPR s10, (8*10)  // x26
-    SAVE_GPR s11, (8*11)  // x27
+    // stack slot (8*1)(sp) is for padding
+    SAVE_GPR s0,  (8*2)   // x8
+    SAVE_GPR s2,  (8*3)   // x18
+    SAVE_GPR s3,  (8*4)   // x19
+    SAVE_GPR s4,  (8*5)   // x20
+    SAVE_GPR s5,  (8*6)   // x21
+    SAVE_GPR s6,  (8*7)   // x22
+    SAVE_GPR s7,  (8*8)   // x23
+    SAVE_GPR s8,  (8*9)   // x24
+    SAVE_GPR s9,  (8*10)   // x25
+    SAVE_GPR s10, (8*11)  // x26
+    SAVE_GPR s11, (8*12)  // x27
+    SAVE_GPR ra,  (8*13)  // x1
 
     SETUP_CALLEE_SAVE_FRAME_COMMON t0, RUNTIME_SAVE_REFS_ONLY_METHOD_OFFSET
 .endm
@@ -479,17 +540,19 @@
 
 .macro RESTORE_SAVE_REFS_ONLY_FRAME
     // stack slot (8*0)(sp) is for ArtMethod*
-    RESTORE_GPR s0,  (8*1)   // x8
-    RESTORE_GPR s2,  (8*2)   // x18
-    RESTORE_GPR s3,  (8*3)   // x19
-    RESTORE_GPR s4,  (8*4)   // x20
-    RESTORE_GPR s5,  (8*5)   // x21
-    RESTORE_GPR s6,  (8*6)   // x22
-    RESTORE_GPR s7,  (8*7)   // x23
-    RESTORE_GPR s8,  (8*8)   // x24
-    RESTORE_GPR s9,  (8*9)   // x25
-    RESTORE_GPR s10, (8*10)  // x26
-    RESTORE_GPR s11, (8*11)  // x27
+    // stack slot (8*1)(sp) is for padding
+    RESTORE_GPR s0,  (8*2)   // x8
+    RESTORE_GPR s2,  (8*3)   // x18
+    RESTORE_GPR s3,  (8*4)   // x19
+    RESTORE_GPR s4,  (8*5)   // x20
+    RESTORE_GPR s5,  (8*6)   // x21
+    RESTORE_GPR s6,  (8*7)   // x22
+    RESTORE_GPR s7,  (8*8)   // x23
+    RESTORE_GPR s8,  (8*9)   // x24
+    RESTORE_GPR s9,  (8*10)   // x25
+    RESTORE_GPR s10, (8*11)  // x26
+    RESTORE_GPR s11, (8*12)  // x27
+    RESTORE_GPR ra,  (8*13)  // x1
 
     DECREASE_FRAME FRAME_SIZE_SAVE_REFS_ONLY
 .endm
