@@ -36,6 +36,10 @@
 namespace art {
 namespace mirror {
 
+// Whether to allocate full dex cache arrays during startup. Currently disabled
+// while debugging b/283632504.
+static constexpr bool kEnableFullArraysAtStartup = false;
+
 void DexCache::Initialize(const DexFile* dex_file, ObjPtr<ClassLoader> class_loader) {
   DCHECK(GetDexFile() == nullptr);
   DCHECK(GetStrings() == nullptr);
@@ -44,12 +48,6 @@ void DexCache::Initialize(const DexFile* dex_file, ObjPtr<ClassLoader> class_loa
   DCHECK(GetResolvedFields() == nullptr);
   DCHECK(GetResolvedMethodTypes() == nullptr);
   DCHECK(GetResolvedCallSites() == nullptr);
-
-  DCHECK(GetStringsArray() == nullptr);
-  DCHECK(GetResolvedTypesArray() == nullptr);
-  DCHECK(GetResolvedMethodsArray() == nullptr);
-  DCHECK(GetResolvedFieldsArray() == nullptr);
-  DCHECK(GetResolvedMethodTypesArray() == nullptr);
 
   ScopedAssertNoThreadSuspension sants(__FUNCTION__);
 
@@ -167,9 +165,17 @@ ObjPtr<ClassLoader> DexCache::GetClassLoader() {
 }
 
 bool DexCache::ShouldAllocateFullArrayAtStartup() {
+  if (!kEnableFullArraysAtStartup) {
+    return false;
+  }
   Runtime* runtime = Runtime::Current();
   if (runtime->IsAotCompiler()) {
     // To save on memory in dex2oat, we don't allocate full arrays by default.
+    return false;
+  }
+
+  if (runtime->IsZygote()) {
+    // Zygote doesn't have a notion of startup.
     return false;
   }
 
@@ -190,13 +196,6 @@ bool DexCache::ShouldAllocateFullArrayAtStartup() {
       CompilerFilter::IsAotCompilationEnabled(oat_dex_file->GetOatFile()->GetCompilerFilter())) {
     // We only allocate full arrays for dex files where we do not have
     // compilation.
-    return false;
-  }
-
-  if (!ProfileSaver::IsStarted()) {
-    // Only allocate full arrays if the profile saver is running: if the app
-    // does not call `reportFullyDrawn`, then only the profile saver will notify
-    // that the app has eventually started.
     return false;
   }
 
