@@ -387,8 +387,8 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     DCHECK(main_jni_conv->HasNext());
     static_assert(kObjectReferenceSize == 4u);
     bool is_reference = mr_conv->IsCurrentParamAReference();
-    size_t src_size = (!is_reference && mr_conv->IsCurrentParamALongOrDouble()) ? 8u : 4u;
-    size_t dest_size = is_reference ? kRawPointerSize : src_size;
+    size_t src_size = mr_conv->CurrentParamSize();
+    size_t dest_size = main_jni_conv->CurrentParamSize();
     src_args.push_back(mr_conv->IsCurrentParamInRegister()
         ? ArgumentLocation(mr_conv->CurrentParamRegister(), src_size)
         : ArgumentLocation(mr_conv->CurrentParamStackOffset(), src_size));
@@ -724,7 +724,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   size_t cs = __ CodeSize();
   std::vector<uint8_t> managed_code(cs);
   MemoryRegion code(&managed_code[0], managed_code.size());
-  __ FinalizeInstructions(code);
+  __ CopyInstructions(code);
 
   return JniCompiledMethod(instruction_set,
                            std::move(managed_code),

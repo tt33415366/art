@@ -77,6 +77,7 @@ constexpr uint32_t shifted_initialized_value =
     enum_cast<uint32_t>(ClassStatus::kInitialized) << (status_lsb_position % kBitsPerByte);
 
 class Assembler;
+class CodeGenerationData;
 class CodeGenerator;
 class CompilerOptions;
 class StackMapStream;
@@ -85,18 +86,6 @@ class ParallelMoveResolver;
 namespace linker {
 class LinkerPatch;
 }  // namespace linker
-
-class CodeAllocator {
- public:
-  CodeAllocator() {}
-  virtual ~CodeAllocator() {}
-
-  virtual uint8_t* Allocate(size_t size) = 0;
-  virtual ArrayRef<const uint8_t> GetMemory() const = 0;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(CodeAllocator);
-};
 
 class SlowPathCode : public DeletableArenaObject<kArenaAllocSlowPaths> {
  public:
@@ -204,7 +193,7 @@ class FieldAccessCallingConvention {
 class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
  public:
   // Compiles the graph to executable instructions.
-  void Compile(CodeAllocator* allocator);
+  void Compile();
   static std::unique_ptr<CodeGenerator> Create(HGraph* graph,
                                                const CompilerOptions& compiler_options,
                                                OptimizingCompilerStats* stats = nullptr);
@@ -225,7 +214,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   }
 
   virtual void Initialize() = 0;
-  virtual void Finalize(CodeAllocator* allocator);
+  virtual void Finalize();
   virtual void EmitLinkerPatches(ArenaVector<linker::LinkerPatch>* linker_patches);
   virtual bool NeedsThunkCode(const linker::LinkerPatch& patch) const;
   virtual void EmitThunkCode(const linker::LinkerPatch& patch,
@@ -280,14 +269,6 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
     core_spill_mask_ = allocated_registers_.GetCoreRegisters() & core_callee_save_mask_;
     DCHECK_NE(core_spill_mask_, 0u) << "At least the return address register must be saved";
     fpu_spill_mask_ = allocated_registers_.GetFloatingPointRegisters() & fpu_callee_save_mask_;
-  }
-
-  static uint32_t ComputeRegisterMask(const int* registers, size_t length) {
-    uint32_t mask = 0;
-    for (size_t i = 0, e = length; i < e; ++i) {
-      mask |= (1 << registers[i]);
-    }
-    return mask;
   }
 
   virtual void DumpCoreRegister(std::ostream& stream, int reg) const = 0;
@@ -735,6 +716,11 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   static QuickEntrypointEnum GetArrayAllocationEntrypoint(HNewArray* new_array);
   static ScaleFactor ScaleFactorForType(DataType::Type type);
 
+  ArrayRef<const uint8_t> GetCode() const {
+    return ArrayRef<const uint8_t>(GetAssembler().CodeBufferBaseAddress(),
+                                   GetAssembler().CodeSize());
+  }
+
  protected:
   // Patch info used for recording locations of required linker patches and their targets,
   // i.e. target method, string, type or code identified by their dex file and index,
@@ -764,6 +750,15 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
 
   virtual HGraphVisitor* GetLocationBuilder() = 0;
   virtual HGraphVisitor* GetInstructionVisitor() = 0;
+
+  template <typename RegType>
+  static uint32_t ComputeRegisterMask(const RegType* registers, size_t length) {
+    uint32_t mask = 0;
+    for (size_t i = 0, e = length; i < e; ++i) {
+      mask |= (1 << registers[i]);
+    }
+    return mask;
+  }
 
   // Returns the location of the first spilled entry for floating point registers,
   // relative to the stack pointer.
@@ -818,6 +813,10 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
 
   StackMapStream* GetStackMapStream();
 
+  CodeGenerationData* GetCodeGenerationData() {
+    return code_generation_data_.get();
+  }
+
   void ReserveJitStringRoot(StringReference string_reference, Handle<mirror::String> string);
   uint64_t GetJitStringRootIndex(StringReference string_reference);
   void ReserveJitClassRoot(TypeReference type_reference, Handle<mirror::Class> klass);
@@ -852,8 +851,6 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   DisassemblyInformation* disasm_info_;
 
  private:
-  class CodeGenerationData;
-
   void InitializeCodeGenerationData();
   size_t GetStackOffsetOfSavedRegister(size_t index);
   void GenerateSlowPaths();

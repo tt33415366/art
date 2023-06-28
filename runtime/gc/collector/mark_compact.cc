@@ -29,10 +29,15 @@
 
 #include <fstream>
 #include <numeric>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include "android-base/file.h"
 #include "android-base/parsebool.h"
+#include "android-base/parseint.h"
 #include "android-base/properties.h"
+#include "android-base/strings.h"
 #include "base/file_utils.h"
 #include "base/memfd.h"
 #include "base/quasi_atomic.h"
@@ -164,18 +169,64 @@ static gc::CollectorType FetchCmdlineGcType() {
 }
 
 #ifdef ART_TARGET_ANDROID
+static int GetOverrideCacheInfoFd() {
+  std::string args_str;
+  if (!android::base::ReadFileToString("/proc/self/cmdline", &args_str)) {
+    LOG(WARNING) << "Failed to load /proc/self/cmdline";
+    return -1;
+  }
+  std::vector<std::string_view> args;
+  Split(std::string_view(args_str), /*separator=*/'\0', &args);
+  for (std::string_view arg : args) {
+    if (android::base::ConsumePrefix(&arg, "--cache-info-fd=")) {  // This is a dex2oat flag.
+      int fd;
+      if (!android::base::ParseInt(std::string(arg), &fd)) {
+        LOG(ERROR) << "Failed to parse --cache-info-fd (value: '" << arg << "')";
+        return -1;
+      }
+      return fd;
+    }
+  }
+  return -1;
+}
+
 static bool GetCachedBoolProperty(const std::string& key, bool default_value) {
-  std::string path = GetApexDataDalvikCacheDirectory(InstructionSet::kNone) + "/cache-info.xml";
-  std::optional<com::android::art::CacheInfo> cache_info = com::android::art::read(path.c_str());
+  // For simplicity, we don't handle multiple calls because otherwise we would have to reset the fd.
+  static bool called = false;
+  CHECK(!called) << "GetCachedBoolProperty can be called only once";
+  called = true;
+
+  std::string cache_info_contents;
+  int fd = GetOverrideCacheInfoFd();
+  if (fd >= 0) {
+    if (!android::base::ReadFdToString(fd, &cache_info_contents)) {
+      PLOG(ERROR) << "Failed to read cache-info from fd " << fd;
+      return default_value;
+    }
+  } else {
+    std::string path = GetApexDataDalvikCacheDirectory(InstructionSet::kNone) + "/cache-info.xml";
+    if (!android::base::ReadFileToString(path, &cache_info_contents)) {
+      // If the file is not found, then we are in chroot or in a standalone runtime process (e.g.,
+      // IncidentHelper), or odsign/odrefresh failed to generate and sign the cache info. There's
+      // nothing we can do.
+      if (errno != ENOENT) {
+        PLOG(ERROR) << "Failed to read cache-info from the default path";
+      }
+      return default_value;
+    }
+  }
+
+  std::optional<com::android::art::CacheInfo> cache_info =
+      com::android::art::parse(cache_info_contents.c_str());
   if (!cache_info.has_value()) {
-    // We are in chroot or in a standalone runtime process (e.g., IncidentHelper), or
-    // odsign/odrefresh failed to generate and sign the cache info. There's nothing we can do.
+    // This should never happen.
+    LOG(ERROR) << "Failed to parse cache-info";
     return default_value;
   }
   const com::android::art::KeyValuePairList* list = cache_info->getFirstSystemProperties();
   if (list == nullptr) {
     // This should never happen.
-    LOG(ERROR) << "Missing system properties from cache-info.";
+    LOG(ERROR) << "Missing system properties from cache-info";
     return default_value;
   }
   const std::vector<com::android::art::KeyValuePair>& properties = list->getItem();
@@ -3405,7 +3456,7 @@ void MarkCompact::ProcessLinearAlloc() {
     // processing any pages in this arena, then we can madvise the shadow size.
     // Otherwise, we will double the memory use for linear-alloc.
     if (!minor_fault_initialized_ && !others_processing) {
-      ZeroAndReleasePages(arena_begin + diff, arena_size);
+      ZeroAndReleaseMemory(arena_begin + diff, arena_size);
     }
   }
 }
@@ -3531,7 +3582,7 @@ void MarkCompact::CompactionPhase() {
     // We will only iterate once if gKernelHasFaultRetry is true.
     do {
       // madvise the page so that we can get userfaults on it.
-      ZeroAndReleasePages(conc_compaction_termination_page_, kPageSize);
+      ZeroAndReleaseMemory(conc_compaction_termination_page_, kPageSize);
       // The following load triggers 'special' userfaults. When received by the
       // thread-pool workers, they will exit out of the compaction task. This fault
       // happens because we madvised the page.
@@ -4182,8 +4233,8 @@ void MarkCompact::FinishPhase() {
   if (use_uffd_sigbus_ || !minor_fault_initialized_ || !shadow_to_space_map_.IsValid() ||
       shadow_to_space_map_.Size() < (moving_first_objs_count_ + black_page_count_) * kPageSize) {
     size_t adjustment = use_uffd_sigbus_ ? 0 : kPageSize;
-    ZeroAndReleasePages(compaction_buffers_map_.Begin() + adjustment,
-                        compaction_buffers_map_.Size() - adjustment);
+    ZeroAndReleaseMemory(compaction_buffers_map_.Begin() + adjustment,
+                         compaction_buffers_map_.Size() - adjustment);
   } else if (shadow_to_space_map_.Size() == bump_pointer_space_->Capacity()) {
     // Now that we are going to use minor-faults from next GC cycle, we can
     // unmap the buffers used by worker threads.
