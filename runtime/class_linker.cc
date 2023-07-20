@@ -1077,8 +1077,6 @@ void ClassLinker::FinishInit(Thread* self) {
   // initialize the StackOverflowError class (as it might require running the verifier). Instead,
   // ensure that the class will be initialized.
   if (kMemoryToolIsAvailable && !Runtime::Current()->IsAotCompiler()) {
-    verifier::ClassVerifier::Init(this);  // Need to prepare the verifier.
-
     ObjPtr<mirror::Class> soe_klass = FindSystemClass(self, "Ljava/lang/StackOverflowError;");
     if (soe_klass == nullptr || !EnsureInitialized(self, hs.NewHandle(soe_klass), true, true)) {
       // Strange, but don't crash.
@@ -1693,6 +1691,7 @@ void AppImageLoadingHelper::Update(
           // consistent with `StartupCompletedTask`.
           dex_cache->UnlinkStartupCaches();
         }
+        VLOG(image) << "App image registers dex file " << dex_file->GetLocation();
         class_linker->RegisterDexFileLocked(*dex_file, dex_cache, class_loader.Get());
       }
     }
@@ -2205,11 +2204,16 @@ bool ClassLinker::AddImageSpace(gc::space::ImageSpace* space,
   }
 
   if (!runtime->IsAotCompiler()) {
-    // If we are profiling the boot classpath, disable the shared memory for
-    // boot image method optimization. We need to disable it before doing
-    // ResetCounter below, as counters of shared memory method always hold the
-    // "hot" value.
-    if (runtime->GetJITOptions()->GetProfileSaverOptions().GetProfileBootClassPath()) {
+    // If the boot image is not loaded by the zygote, we don't need the shared
+    // memory optimization.
+    // If we are profiling the boot classpath, we disable the shared memory
+    // optimization to make sure boot classpath methods all get properly
+    // profiled.
+    //
+    // We need to disable the flag before doing ResetCounter below, as counters
+    // of shared memory method always hold the "hot" value.
+    if (!runtime->IsZygote() ||
+        runtime->GetJITOptions()->GetProfileSaverOptions().GetProfileBootClassPath()) {
       header.VisitPackedArtMethods([&](ArtMethod& method) REQUIRES_SHARED(Locks::mutator_lock_) {
         method.ClearMemorySharedMethod();
       }, space->Begin(), image_pointer_size_);
@@ -2420,7 +2424,7 @@ void ClassLinker::VisitClassRoots(RootVisitor* visitor, VisitRootFlags flags) {
       for (GcRoot<mirror::Object>& root : oat_file->GetBssGcRoots()) {
         ObjPtr<mirror::Object> old_ref = root.Read<kWithoutReadBarrier>();
         if (old_ref != nullptr) {
-          DCHECK(old_ref->IsClass());
+          DCHECK(old_ref->IsClass() || old_ref->IsString());
           root.VisitRoot(visitor, RootInfo(kRootStickyClass));
           ObjPtr<mirror::Object> new_ref = root.Read<kWithoutReadBarrier>();
           // Concurrent moving GC marked new roots through the to-space invariant.

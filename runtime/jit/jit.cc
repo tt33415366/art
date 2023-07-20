@@ -246,9 +246,8 @@ bool Jit::LoadSymbol(T* address, const char* name, std::string* error_msg) {
 extern "C" JitCompilerInterface* jit_load();
 #endif
 
-bool Jit::LoadCompilerLibrary(std::string* error_msg) {
+bool Jit::LoadCompilerLibrary([[maybe_unused]] /*out*/ std::string* error_msg) {
 #ifdef ART_STATIC_LIBART
-  (void)error_msg;
   jit_load_ = &jit_load;
   return true;
 #else

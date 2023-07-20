@@ -30,6 +30,7 @@
 #include "adbconnection/client.h"
 #include "android-base/endian.h"
 #include "android-base/stringprintf.h"
+#include "android-base/unique_fd.h"
 #include "art_field-inl.h"
 #include "art_method-alloc-inl.h"
 #include "base/file_utils.h"
@@ -483,10 +484,6 @@ void AdbConnectionState::SendAgentFds(bool require_handshake) {
   }
 }
 
-android::base::unique_fd AdbConnectionState::ReadFdFromAdb() {
-  return android::base::unique_fd(adbconnection_client_receive_jdwp_fd(control_ctx_.get()));
-}
-
 bool AdbConnectionState::SetupAdbConnection() {
   int sleep_ms = 500;
   const int sleep_max_ms = 2 * 1000;
@@ -859,6 +856,36 @@ bool ValidateJdwpOptions(const std::string& opts) {
   return res;
 }
 
+#if defined(__ANDROID__)
+void FixLogfile(JdwpArgs& parameters) {
+  const std::string kLogfile = "logfile";
+  // On Android, an app will not have write access to the cwd (which is "/").
+  // If a relative path was provided, we need to patch it with a writable
+  // location. For now, we use /data/data/<PKG_NAME>.
+  // Note that /data/local/tmp/ was also considered but it not a good candidate since apps don't
+  // have write access to it.
+
+  if (!parameters.contains(kLogfile)) {
+    return;
+  }
+
+  std::string& logfile = parameters.get(kLogfile);
+  if (logfile.front() == '/') {
+    // We only fix logfile if it is not using an absolute path
+    return;
+  }
+
+  std::string packageName = art::Runtime::Current()->GetProcessPackageName();
+  if (packageName.empty()) {
+    VLOG(jdwp) << "Unable to fix relative path logfile='" + logfile + "' without package name.";
+    return;
+  }
+  parameters.put(kLogfile, "/data/data/" + packageName + "/" + logfile);
+}
+#else
+void FixLogfile(JdwpArgs&) {}
+#endif
+
 std::string AdbConnectionState::MakeAgentArg() {
   const std::string& opts = art::Runtime::Current()->GetJdwpOptions();
   DCHECK(ValidateJdwpOptions(opts));
@@ -882,6 +909,9 @@ std::string AdbConnectionState::MakeAgentArg() {
 
   parameters.put("transport", "dt_fd_forward");
   parameters.put("address", std::to_string(remote_agent_control_sock_));
+
+  // If logfile is relative, we need to fix it.
+  FixLogfile(parameters);
 
   // TODO Get agent_name_ from something user settable?
   return agent_name_ + "=" + parameters.join();

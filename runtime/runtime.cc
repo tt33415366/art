@@ -16,6 +16,7 @@
 
 #include "runtime.h"
 
+#include <optional>
 #include <utility>
 
 #ifdef __linux__
@@ -526,7 +527,6 @@ Runtime::~Runtime() {
   oat_file_manager_ = nullptr;
   Thread::Shutdown();
   QuasiAtomic::Shutdown();
-  verifier::ClassVerifier::Shutdown();
 
   // Destroy allocators before shutting down the MemMap because they may use it.
   java_vm_.reset();
@@ -1910,8 +1910,6 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
 
   CHECK(class_linker_ != nullptr);
 
-  verifier::ClassVerifier::Init(class_linker_);
-
   if (runtime_options.Exists(Opt::MethodTrace)) {
     trace_config_.reset(new TraceConfig());
     trace_config_->trace_file = runtime_options.ReleaseOrDefault(Opt::MethodTraceFile);
@@ -2537,7 +2535,6 @@ void Runtime::VisitNonThreadRoots(RootVisitor* visitor) {
       .VisitRootIfNonNull(visitor, RootInfo(kRootVMInternal));
   pre_allocated_NoClassDefFoundError_.VisitRootIfNonNull(visitor, RootInfo(kRootVMInternal));
   VisitImageRoots(visitor);
-  verifier::ClassVerifier::VisitStaticRoots(visitor);
   VisitTransactionRoots(visitor);
 }
 
@@ -2769,14 +2766,14 @@ void Runtime::RegisterAppInfo(const std::string& package_name,
   bool has_code = false;
   for (const std::string& path : code_paths) {
     std::string error_msg;
-    std::vector<uint32_t> checksums;
+    std::optional<uint32_t> checksum;
     std::vector<std::string> dex_locations;
-    if (!ArtDexFileLoader::GetMultiDexChecksums(
-            path.c_str(), &checksums, &dex_locations, &error_msg)) {
+    DexFileLoader loader(path);
+    if (!loader.GetMultiDexChecksum(&checksum, &error_msg)) {
       LOG(WARNING) << error_msg;
       continue;
     }
-    if (dex_locations.size() > 0) {
+    if (checksum.has_value()) {
       has_code = true;
       break;
     }
@@ -3017,7 +3014,7 @@ std::string Runtime::GetFaultMessage() {
 void Runtime::AddCurrentRuntimeFeaturesAsDex2OatArguments(std::vector<std::string>* argv)
     const {
   if (GetInstrumentation()->InterpretOnly()) {
-    argv->push_back("--compiler-filter=quicken");
+    argv->push_back("--compiler-filter=verify");
   }
 
   // Make the dex2oat instruction set match that of the launching runtime. If we have multiple

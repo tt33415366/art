@@ -632,6 +632,7 @@ cc_defaults {
 
 // libartd_static_defaults for gtests.
 // Doesn't link libsigchain_fake.
+// Note that `libartd-for-test` is not required here, because `libartd` doesn't use LTO.
 cc_defaults {
     name: "libartd-for-test_static_defaults",
     defaults: [

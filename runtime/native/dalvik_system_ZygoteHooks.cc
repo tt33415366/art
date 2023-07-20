@@ -187,8 +187,8 @@ static uint32_t EnableDebugFeatures(uint32_t runtime_flags) {
 
   const bool safe_mode = (runtime_flags & DEBUG_ENABLE_SAFEMODE) != 0;
   if (safe_mode) {
-    // Only quicken oat files.
-    runtime->AddCompilerOption("--compiler-filter=quicken");
+    // Only verify oat files.
+    runtime->AddCompilerOption("--compiler-filter=verify");
     runtime->SetSafeMode(true);
     runtime_flags &= ~DEBUG_ENABLE_SAFEMODE;
   }
@@ -347,10 +347,12 @@ static void ZygoteHooks_nativePostForkChild(JNIEnv* env,
 
   runtime->GetHeap()->PostForkChildAction(thread);
 
-  // Setup an app startup complete task in case the app doesn't notify it
-  // through VMRuntime::notifyStartupCompleted.
-  static constexpr uint64_t kMaxAppStartupTimeNs = MsToNs(5000);  // 5 seconds
-  runtime->GetHeap()->AddHeapTask(new StartupCompletedTask(NanoTime() + kMaxAppStartupTimeNs));
+  if (!is_zygote) {
+    // Setup an app startup complete task in case the app doesn't notify it
+    // through VMRuntime::notifyStartupCompleted.
+    static constexpr uint64_t kMaxAppStartupTimeNs = MsToNs(5000);  // 5 seconds
+    runtime->GetHeap()->AddHeapTask(new StartupCompletedTask(NanoTime() + kMaxAppStartupTimeNs));
+  }
 
   if (runtime->GetJit() != nullptr) {
     if (!is_system_server) {

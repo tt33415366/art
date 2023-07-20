@@ -88,18 +88,10 @@ art_cc_defaults {
             static_libs: [
                 "libvixld",
             ],
-            // Export vixl headers as they are included in this library's headers used by tests.
-            export_static_lib_headers: [
-                "libvixld",
-            ],
         },
         arm64: {
             // VIXL assembly support for ARM64 targets.
             static_libs: [
-                "libvixld",
-            ],
-            // Export vixl headers as they are included in this library's headers used by tests.
-            export_static_lib_headers: [
                 "libvixld",
             ],
         },
@@ -129,6 +121,7 @@ art_cc_defaults {
         "optimizing/bounds_check_elimination.cc",
         "optimizing/builder.cc",
         "optimizing/cha_guard_optimization.cc",
+        "optimizing/code_generation_data.cc",
         "optimizing/code_generator.cc",
         "optimizing/code_generator_utils.cc",
         "optimizing/code_sinking.cc",
@@ -204,6 +197,7 @@ art_cc_defaults {
                 "optimizing/code_generator_arm64.cc",
                 "optimizing/code_generator_vector_arm64_neon.cc",
                 "optimizing/code_generator_vector_arm64_sve.cc",
+                "optimizing/jit_patches_arm64.cc",
                 "optimizing/scheduler_arm64.cc",
                 "optimizing/instruction_simplifier_arm64.cc",
                 "optimizing/intrinsics_arm64.cc",
@@ -214,6 +208,8 @@ art_cc_defaults {
         },
         riscv64: {
             srcs: [
+                "jni/quick/riscv64/calling_convention_riscv64.cc",
+                "optimizing/code_generator_riscv64.cc",
                 "utils/riscv64/assembler_riscv64.cc",
                 "utils/riscv64/jni_macro_assembler_riscv64.cc",
                 "utils/riscv64/managed_register_riscv64.cc",
@@ -392,8 +388,10 @@ cc_defaults {
     whole_static_libs: ["libartd-compiler"],
 }
 
-// libartd-compiler_static_defaults for standalone gtests.
+// libartd-compiler_static_defaults for gtests.
 // Uses libartd-for-test_static_defaults instead of libart_static_defaults.
+// Note that `libartd-compiler-for-test` is not required here, because `libartd-compiler`
+// doesn't use LTO.
 cc_defaults {
     name: "libartd-compiler-for-test_static_defaults",
     defaults: [
@@ -594,6 +592,7 @@ art_cc_test {
         riscv64: {
             srcs: [
                 "utils/riscv64/assembler_riscv64_test.cc",
+                "utils/riscv64/jni_macro_assembler_riscv64_test.cc",
             ],
         },
         x86: {
