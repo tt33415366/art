@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <optional>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -1089,9 +1090,11 @@ TEST_F(Dex2oatClassLoaderContextTest, ContextWithTheSourceDexFiles) {
 TEST_F(Dex2oatClassLoaderContextTest, ContextWithOtherDexFiles) {
   std::vector<std::unique_ptr<const DexFile>> dex_files = OpenTestDexFiles("Nested");
 
+  uint32_t expected_checksum = DexFileLoader::GetMultiDexChecksum(dex_files);
+
   std::string context = "PCL[" + dex_files[0]->GetLocation() + "]";
-  std::string expected_classpath_key = "PCL[" + dex_files[0]->GetLocation() + "*" +
-                                       std::to_string(dex_files[0]->GetLocationChecksum()) + "]";
+  std::string expected_classpath_key =
+      "PCL[" + dex_files[0]->GetLocation() + "*" + std::to_string(expected_checksum) + "]";
   RunTest(context.c_str(), expected_classpath_key.c_str(), true);
 }
 
@@ -1854,8 +1857,8 @@ TEST_F(Dex2oatTest, CompactDexInvalidSource) {
     ZipWriter writer(file);
     writer.StartEntry("classes.dex", ZipWriter::kAlign32);
     DexFile::Header header = {};
-    StandardDexFile::WriteMagic(header.magic_);
-    StandardDexFile::WriteCurrentVersion(header.magic_);
+    StandardDexFile::WriteMagic(header.magic_.data());
+    StandardDexFile::WriteCurrentVersion(header.magic_.data());
     header.file_size_ = 4 * KB;
     header.data_size_ = 4 * KB;
     header.data_off_ = 10 * MB;
@@ -1881,8 +1884,8 @@ TEST_F(Dex2oatTest, CompactDexInvalidSource) {
 // Test that dex2oat with a CompactDex file in the APK fails.
 TEST_F(Dex2oatTest, CompactDexInZip) {
   CompactDexFile::Header header = {};
-  CompactDexFile::WriteMagic(header.magic_);
-  CompactDexFile::WriteCurrentVersion(header.magic_);
+  CompactDexFile::WriteMagic(header.magic_.data());
+  CompactDexFile::WriteCurrentVersion(header.magic_.data());
   header.file_size_ = sizeof(CompactDexFile::Header);
   header.data_off_ = 10 * MB;
   header.map_off_ = 10 * MB;
@@ -2215,21 +2218,9 @@ TEST_F(Dex2oatClassLoaderContextTest, StoredClassLoaderContext) {
   const std::string odex_location = out_dir + "/base.odex";
   const std::string valid_context = "PCL[" + dex_files[0]->GetLocation() + "]";
   const std::string stored_context = "PCL[/system/not_real_lib.jar]";
-  std::string expected_stored_context = "PCL[";
-  size_t index = 1;
-  for (const std::unique_ptr<const DexFile>& dex_file : dex_files) {
-    const bool is_first = index == 1u;
-    if (!is_first) {
-      expected_stored_context += ":";
-    }
-    expected_stored_context += "/system/not_real_lib.jar";
-    if (!is_first) {
-      expected_stored_context += "!classes" + std::to_string(index) + ".dex";
-    }
-    expected_stored_context += "*" + std::to_string(dex_file->GetLocationChecksum());
-    ++index;
-  }
-  expected_stored_context += "]";
+  uint32_t checksum = DexFileLoader::GetMultiDexChecksum(dex_files);
+  std::string expected_stored_context =
+      "PCL[/system/not_real_lib.jar*" + std::to_string(checksum) + "]";
   // The class path should not be valid and should fail being stored.
   EXPECT_TRUE(GenerateOdexForTest(GetTestDexFileName("ManyMethods"),
                                   odex_location,

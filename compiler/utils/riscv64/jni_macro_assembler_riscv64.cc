@@ -188,10 +188,11 @@ void Riscv64JNIMacroAssembler::StoreRawPtr(FrameOffset offs, ManagedRegister m_s
 
 void Riscv64JNIMacroAssembler::StoreStackPointerToThread(ThreadOffset64 offs, bool tag_sp) {
   XRegister src = SP;
+  ScratchRegisterScope srs(&asm_);
   if (tag_sp) {
-    // Note: We use `TMP2` here because `TMP` can be used by `Stored()`.
-    __ Ori(TMP2, SP, 0x2);
-    src = TMP2;
+    XRegister tmp = srs.AllocateXRegister();
+    __ Ori(tmp, SP, 0x2);
+    src = tmp;
   }
   __ Stored(src, TR, offs.Int32Value());
 }
@@ -234,6 +235,14 @@ void Riscv64JNIMacroAssembler::Load(ManagedRegister m_dest,
 void Riscv64JNIMacroAssembler::LoadRawPtrFromThread(ManagedRegister m_dest, ThreadOffset64 offs) {
   Riscv64ManagedRegister tr = Riscv64ManagedRegister::FromXRegister(TR);
   Load(m_dest, tr, MemberOffset(offs.Int32Value()), static_cast<size_t>(kRiscv64PointerSize));
+}
+
+void Riscv64JNIMacroAssembler::LoadGcRootWithoutReadBarrier(ManagedRegister m_dest,
+                                                            ManagedRegister m_base,
+                                                            MemberOffset offs) {
+  Riscv64ManagedRegister base = m_base.AsRiscv64();
+  Riscv64ManagedRegister dest = m_dest.AsRiscv64();
+  __ Loadwu(dest.AsXRegister(), base.AsXRegister(), offs.Int32Value());
 }
 
 void Riscv64JNIMacroAssembler::MoveArguments(ArrayRef<ArgumentLocation> dests,
@@ -286,12 +295,18 @@ void Riscv64JNIMacroAssembler::MoveArguments(ArrayRef<ArgumentLocation> dests,
         dest_regs |= get_mask(dest.GetRegister());
       }
     } else {
-      // Note: We use `TMP2` here because `TMP` can be used by `Store()`.
+      ScratchRegisterScope srs(&asm_);
       Riscv64ManagedRegister reg = src.IsRegister()
           ? src.GetRegister().AsRiscv64()
-          : Riscv64ManagedRegister::FromXRegister(TMP2);
+          : Riscv64ManagedRegister::FromXRegister(srs.AllocateXRegister());
       if (!src.IsRegister()) {
-        Load(reg, src.GetFrameOffset(), src.GetSize());
+        if (ref != kInvalidReferenceOffset) {
+          // We're loading the reference only for comparison with null, so it does not matter
+          // if we sign- or zero-extend but let's correctly zero-extend the reference anyway.
+          __ Loadwu(reg.AsRiscv64().AsXRegister(), SP, src.GetFrameOffset().SizeValue());
+        } else {
+          Load(reg, src.GetFrameOffset(), src.GetSize());
+        }
       }
       if (ref != kInvalidReferenceOffset) {
         DCHECK_NE(i, 0u);
@@ -408,8 +423,10 @@ void Riscv64JNIMacroAssembler::VerifyObject([[maybe_unused]] FrameOffset src,
 void Riscv64JNIMacroAssembler::Jump(ManagedRegister m_base, Offset offs) {
   Riscv64ManagedRegister base = m_base.AsRiscv64();
   CHECK(base.IsXRegister()) << base;
-  __ Loadd(TMP, base.AsXRegister(), offs.Int32Value());
-  __ Jr(TMP);
+  ScratchRegisterScope srs(&asm_);
+  XRegister tmp = srs.AllocateXRegister();
+  __ Loadd(tmp, base.AsXRegister(), offs.Int32Value());
+  __ Jr(tmp);
 }
 
 void Riscv64JNIMacroAssembler::Call(ManagedRegister m_base, Offset offs) {
@@ -491,15 +508,19 @@ void Riscv64JNIMacroAssembler::TryToTransitionFromNativeToRunnable(
 }
 
 void Riscv64JNIMacroAssembler::SuspendCheck(JNIMacroLabel* label) {
-  __ Loadw(TMP, TR, Thread::ThreadFlagsOffset<kRiscv64PointerSize>().Int32Value());
+  ScratchRegisterScope srs(&asm_);
+  XRegister tmp = srs.AllocateXRegister();
+  __ Loadw(tmp, TR, Thread::ThreadFlagsOffset<kRiscv64PointerSize>().Int32Value());
   DCHECK(IsInt<12>(dchecked_integral_cast<int32_t>(Thread::SuspendOrCheckpointRequestFlags())));
-  __ Andi(TMP, TMP, dchecked_integral_cast<int32_t>(Thread::SuspendOrCheckpointRequestFlags()));
-  __ Bnez(TMP, Riscv64JNIMacroLabel::Cast(label)->AsRiscv64());
+  __ Andi(tmp, tmp, dchecked_integral_cast<int32_t>(Thread::SuspendOrCheckpointRequestFlags()));
+  __ Bnez(tmp, Riscv64JNIMacroLabel::Cast(label)->AsRiscv64());
 }
 
 void Riscv64JNIMacroAssembler::ExceptionPoll(JNIMacroLabel* label) {
-  __ Loadd(TMP, TR, Thread::ExceptionOffset<kRiscv64PointerSize>().Int32Value());
-  __ Bnez(TMP, Riscv64JNIMacroLabel::Cast(label)->AsRiscv64());
+  ScratchRegisterScope srs(&asm_);
+  XRegister tmp = srs.AllocateXRegister();
+  __ Loadd(tmp, TR, Thread::ExceptionOffset<kRiscv64PointerSize>().Int32Value());
+  __ Bnez(tmp, Riscv64JNIMacroLabel::Cast(label)->AsRiscv64());
 }
 
 void Riscv64JNIMacroAssembler::DeliverPendingException() {
@@ -527,7 +548,8 @@ void Riscv64JNIMacroAssembler::TestGcMarking(JNIMacroLabel* label, JNIMacroUnary
 
   DCHECK_EQ(Thread::IsGcMarkingSize(), 4u);
 
-  XRegister test_reg = TMP;
+  ScratchRegisterScope srs(&asm_);
+  XRegister test_reg = srs.AllocateXRegister();
   int32_t is_gc_marking_offset = Thread::IsGcMarkingOffset<kRiscv64PointerSize>().Int32Value();
   __ Loadw(test_reg, TR, is_gc_marking_offset);
   switch (cond) {
@@ -547,17 +569,19 @@ void Riscv64JNIMacroAssembler::TestMarkBit(ManagedRegister m_ref,
                                            JNIMacroLabel* label,
                                            JNIMacroUnaryCondition cond) {
   XRegister ref = m_ref.AsRiscv64().AsXRegister();
-  __ Loadw(TMP, ref, mirror::Object::MonitorOffset().Int32Value());
+  ScratchRegisterScope srs(&asm_);
+  XRegister tmp = srs.AllocateXRegister();
+  __ Loadw(tmp, ref, mirror::Object::MonitorOffset().Int32Value());
   // Move the bit we want to check to the sign bit, so that we can use BGEZ/BLTZ
   // to check it. Extracting the bit for BEQZ/BNEZ would require one more instruction.
   static_assert(LockWord::kMarkBitStateSize == 1u);
-  __ Slliw(TMP, TMP, 31 - LockWord::kMarkBitStateShift);
+  __ Slliw(tmp, tmp, 31 - LockWord::kMarkBitStateShift);
   switch (cond) {
     case JNIMacroUnaryCondition::kZero:
-      __ Bgez(TMP, Riscv64JNIMacroLabel::Cast(label)->AsRiscv64());
+      __ Bgez(tmp, Riscv64JNIMacroLabel::Cast(label)->AsRiscv64());
       break;
     case JNIMacroUnaryCondition::kNotZero:
-      __ Bltz(TMP, Riscv64JNIMacroLabel::Cast(label)->AsRiscv64());
+      __ Bltz(tmp, Riscv64JNIMacroLabel::Cast(label)->AsRiscv64());
       break;
     default:
       LOG(FATAL) << "Not implemented unary condition: " << static_cast<int>(cond);
@@ -569,10 +593,11 @@ void Riscv64JNIMacroAssembler::TestByteAndJumpIfNotZero(uintptr_t address, JNIMa
   int32_t small_offset = dchecked_integral_cast<int32_t>(address & 0xfff) -
                          dchecked_integral_cast<int32_t>((address & 0x800) << 1);
   int64_t remainder = static_cast<int64_t>(address) - small_offset;
-  // Note: We use `TMP2` here because `TMP` can be used by `LoadConst64()`.
-  __ LoadConst64(TMP2, remainder);
-  __ Lb(TMP2, TMP2, small_offset);
-  __ Bnez(TMP2, down_cast<Riscv64Label*>(Riscv64JNIMacroLabel::Cast(label)->AsRiscv64()));
+  ScratchRegisterScope srs(&asm_);
+  XRegister tmp = srs.AllocateXRegister();
+  __ LoadConst64(tmp, remainder);
+  __ Lb(tmp, tmp, small_offset);
+  __ Bnez(tmp, down_cast<Riscv64Label*>(Riscv64JNIMacroLabel::Cast(label)->AsRiscv64()));
 }
 
 void Riscv64JNIMacroAssembler::Bind(JNIMacroLabel* label) {

@@ -214,9 +214,8 @@ class AssemblerRISCV64Test : public AssemblerTest<riscv64::Riscv64Assembler,
     // Test various registers with a few small values.
     // (Even Zero is an accepted register even if that does not really load the requested value.)
     for (XRegister* reg : GetRegisters()) {
-      if (can_use_tmp && *reg == TMP) {
-        continue;  // Not a valid target register.
-      }
+      ScratchRegisterScope srs(GetAssembler());
+      srs.ExcludeXRegister(*reg);
       std::string rd = GetRegisterName(*reg);
       emit_load_const(*reg, -1);
       expected += "li " + rd + ", -1\n";
@@ -648,31 +647,31 @@ class AssemblerRISCV64Test : public AssemblerTest<riscv64::Riscv64Assembler,
     large_values.erase(kept_end, large_values.end());
     large_values.push_back(0xfff);
 
-    std::string tmp_name = GetRegisterName(TMP);
-    std::string addi_tmp = "addi" + suffix + " " + tmp_name + ", ";
-
     std::string expected;
     for (XRegister* rd : GetRegisters()) {
       std::string rd_name = GetRegisterName(*rd);
-      std::string addi_rd = "addi" + suffix + " " + rd_name + ", ";
-      std::string add_rd = "add" + suffix + " " + rd_name + ", ";
+      std::string addi_rd = ART_FORMAT("addi{} {}, ", suffix, rd_name);
+      std::string add_rd = ART_FORMAT("add{} {}, ", suffix, rd_name);
       for (XRegister* rs1 : GetRegisters()) {
-        // TMP can be the destination register but not the source register.
-        if (*rs1 == TMP) {
-          continue;
-        }
+        ScratchRegisterScope srs(GetAssembler());
+        srs.ExcludeXRegister(*rs1);
+        srs.ExcludeXRegister(*rd);
+
         std::string rs1_name = GetRegisterName(*rs1);
+        std::string tmp_name = GetRegisterName((*rs1 != TMP) ? TMP : TMP2);
+        std::string addi_tmp = ART_FORMAT("addi{} {}, ", suffix, tmp_name);
 
         for (int64_t imm : kImm12s) {
           emit_op(*rd, *rs1, imm);
-          expected += addi_rd + rs1_name + ", " + std::to_string(imm) + "\n";
+          expected += ART_FORMAT("{}{}, {}\n", addi_rd, rs1_name, std::to_string(imm));
         }
 
         auto emit_simple_ops = [&](ArrayRef<const int64_t> imms, int64_t adjustment) {
           for (int64_t imm : imms) {
             emit_op(*rd, *rs1, imm);
-            expected += addi_tmp + rs1_name + ", " + std::to_string(adjustment) + "\n" +
-                        addi_rd + tmp_name + ", " + std::to_string(imm - adjustment) + "\n";
+            expected += ART_FORMAT("{}{}, {}\n", addi_tmp, rs1_name, std::to_string(adjustment));
+            expected +=
+                ART_FORMAT("{}{}, {}\n", addi_rd, tmp_name, std::to_string(imm - adjustment));
           }
         };
         emit_simple_ops(ArrayRef<const int64_t>(kSimplePositiveValues), 0x7ff);
@@ -680,16 +679,18 @@ class AssemblerRISCV64Test : public AssemblerTest<riscv64::Riscv64Assembler,
 
         for (int64_t imm : large_values) {
           emit_op(*rd, *rs1, imm);
-          expected += "li " + tmp_name + ", " + std::to_string(imm) + "\n" +
-                      add_rd + rs1_name + ", " + tmp_name + "\n";
+          expected += ART_FORMAT("li {}, {}\n", tmp_name, std::to_string(imm));
+          expected += ART_FORMAT("{}{}, {}\n", add_rd, rs1_name, tmp_name);
         }
       }
     }
     DriverStr(expected, test_name);
   }
 
-  template <typename EmitOp>
-  std::string RepeatLoadStoreArbitraryOffset(const std::string& head, EmitOp&& emit_op) {
+  template <typename GetTemp, typename EmitOp>
+  std::string RepeatLoadStoreArbitraryOffset(const std::string& head,
+                                             GetTemp&& get_temp,
+                                             EmitOp&& emit_op) {
     int64_t kImm12s[] = {
         0, 1, 2, 0xff, 0x100, 0x1ff, 0x200, 0x3ff, 0x400, 0x7ff,
         -1, -2, -0x100, -0x101, -0x200, -0x201, -0x400, -0x401, -0x800,
@@ -719,25 +720,28 @@ class AssemblerRISCV64Test : public AssemblerTest<riscv64::Riscv64Assembler,
         0x7ffff800, 0x7ffff801, 0x7ffffffe, 0x7fffffff
     };
 
-    std::string tmp_name = GetRegisterName(TMP);
     std::string expected;
     for (XRegister* rs1 : GetRegisters()) {
-      if (*rs1 == TMP) {
-        continue;  // TMP cannot be the address base register.
+      XRegister tmp = get_temp(*rs1);
+      if (tmp == kNoXRegister) {
+        continue;  // Unsupported register combination.
       }
+      std::string tmp_name = GetRegisterName(tmp);
+      ScratchRegisterScope srs(GetAssembler());
+      srs.ExcludeXRegister(*rs1);
       std::string rs1_name = GetRegisterName(*rs1);
 
       for (int64_t imm : kImm12s) {
         emit_op(*rs1, imm);
-        expected += head + ", " + std::to_string(imm) + "(" + rs1_name + ")" + "\n";
+        expected += ART_FORMAT("{}, {}({})\n", head, std::to_string(imm), rs1_name);
       }
 
       auto emit_simple_ops = [&](ArrayRef<const int64_t> imms, int64_t adjustment) {
         for (int64_t imm : imms) {
           emit_op(*rs1, imm);
           expected +=
-              "addi " + tmp_name + ", " + rs1_name + ", " + std::to_string(adjustment) + "\n" +
-              head + ", " + std::to_string(imm - adjustment) + "(" + tmp_name + ")" + "\n";
+              ART_FORMAT("addi {}, {}, {}\n", tmp_name, rs1_name, std::to_string(adjustment));
+          expected += ART_FORMAT("{}, {}({})\n", head, std::to_string(imm - adjustment), tmp_name);
         }
       };
       emit_simple_ops(ArrayRef<const int64_t>(kSimplePositiveOffsetsAlign8), 0x7f8);
@@ -750,18 +754,18 @@ class AssemblerRISCV64Test : public AssemblerTest<riscv64::Riscv64Assembler,
         emit_op(*rs1, imm);
         uint32_t imm20 = ((imm >> 12) + ((imm >> 11) & 1)) & 0xfffff;
         int32_t small_offset = (imm & 0xfff) - ((imm & 0x800) << 1);
-        expected += "lui " + tmp_name + ", " + std::to_string(imm20) + "\n"
-                    "add " + tmp_name + ", " + tmp_name + ", " + rs1_name + "\n" +
-                    head + ", " + std::to_string(small_offset) + "(" + tmp_name + ")\n";
+        expected += ART_FORMAT("lui {}, {}\n", tmp_name, std::to_string(imm20));
+        expected += ART_FORMAT("add {}, {}, {}\n", tmp_name, tmp_name, rs1_name);
+        expected += ART_FORMAT("{},{}({})\n", head, std::to_string(small_offset), tmp_name);
       }
 
       for (int64_t imm : kSpecialOffsets) {
         emit_op(*rs1, imm);
+        expected += ART_FORMAT("lui {}, 0x80000\n", tmp_name);
         expected +=
-            "lui " + tmp_name + ", 0x80000\n"
-            "addiw " + tmp_name + ", " + tmp_name + ", " + std::to_string(imm - 0x80000000) + "\n" +
-            "add " + tmp_name + ", " + tmp_name + ", " + rs1_name + "\n" +
-            head + ", (" + tmp_name + ")\n";
+            ART_FORMAT("addiw {}, {}, {}\n", tmp_name, tmp_name, std::to_string(imm - 0x80000000));
+        expected += ART_FORMAT("add {}, {}, {}\n", tmp_name, tmp_name, rs1_name);
+        expected += ART_FORMAT("{}, ({})\n", head, tmp_name);
       }
     }
     return expected;
@@ -773,13 +777,20 @@ class AssemblerRISCV64Test : public AssemblerTest<riscv64::Riscv64Assembler,
                                     bool is_store) {
     std::string expected;
     for (XRegister* rd : GetRegisters()) {
-      // TMP can be the target register for loads but not for stores where loading the
-      // adjusted address to TMP would clobber the value we want to store.
-      if (is_store && *rd == TMP) {
-        continue;
-      }
+      ScratchRegisterScope srs(GetAssembler());
+      srs.ExcludeXRegister(*rd);
+      auto get_temp = [&](XRegister rs1) {
+        if (is_store) {
+          return (rs1 != TMP && *rd != TMP)
+              ? TMP
+              : (rs1 != TMP2 && *rd != TMP2) ? TMP2 : kNoXRegister;
+        } else {
+          return rs1 != TMP ? TMP : TMP2;
+        }
+      };
       expected += RepeatLoadStoreArbitraryOffset(
           insn + " " + GetRegisterName(*rd),
+          get_temp,
           [&](XRegister rs1, int64_t offset) { (GetAssembler()->*fn)(*rd, rs1, offset); });
     }
     DriverStr(expected, test_name);
@@ -792,6 +803,7 @@ class AssemblerRISCV64Test : public AssemblerTest<riscv64::Riscv64Assembler,
     for (FRegister* rd : GetFPRegisters()) {
       expected += RepeatLoadStoreArbitraryOffset(
           insn + " " + GetFPRegName(*rd),
+          [&](XRegister rs1) { return rs1 != TMP ? TMP : TMP2; },
           [&](XRegister rs1, int64_t offset) { (GetAssembler()->*fn)(*rd, rs1, offset); });
     }
     DriverStr(expected, test_name);
@@ -2013,6 +2025,9 @@ TEST_F(AssemblerRISCV64Test, Csrci) {
 
 TEST_F(AssemblerRISCV64Test, LoadConst32) {
   // `LoadConst32()` emits the same code sequences as `Li()` for 32-bit values.
+  ScratchRegisterScope srs(GetAssembler());
+  srs.ExcludeXRegister(TMP);
+  srs.ExcludeXRegister(TMP2);
   DriverStr(RepeatRIb(&Riscv64Assembler::LoadConst32, -32, "li {reg}, {imm}"), "LoadConst32");
 }
 
@@ -2346,9 +2361,9 @@ TEST_F(AssemblerRISCV64Test, LoadLabelAddress) {
       DCHECK_NE(rd, Zero);
       std::string rd_name = GetRegisterName(rd);
       __ LoadLabelAddress(rd, &label);
-      expected += "1:\n"
-                  "auipc " + rd_name + ", %pcrel_hi(" + target_label + ")\n"
-                  "addi " + rd_name + ", " + rd_name + ", %pcrel_lo(1b)\n";
+      expected += "1:\n";
+      expected += ART_FORMAT("auipc {}, %pcrel_hi({})\n", rd_name, target_label);
+      expected += ART_FORMAT("addi {}, {}, %pcrel_lo(1b)\n", rd_name, rd_name);
     }
   };
   emit_batch(kNumLoadsForward, "2f");
@@ -2396,6 +2411,65 @@ TEST_F(AssemblerRISCV64Test, JumpTable) {
               ".4byte " + target_offset(2) + "\n"
               ".4byte " + target_offset(3) + "\n";
   DriverStr(expected, "JumpTable");
+}
+
+TEST_F(AssemblerRISCV64Test, ScratchRegisters) {
+  ScratchRegisterScope srs(GetAssembler());
+  ASSERT_EQ(2u, srs.AvailableXRegisters());  // Default: TMP(T6) and TMP2(T5).
+  ASSERT_EQ(1u, srs.AvailableFRegisters());  // Default: FTMP(FT11).
+
+  XRegister tmp = srs.AllocateXRegister();
+  EXPECT_EQ(TMP, tmp);
+  XRegister tmp2 = srs.AllocateXRegister();
+  EXPECT_EQ(TMP2, tmp2);
+  ASSERT_EQ(0u, srs.AvailableXRegisters());
+
+  FRegister ftmp = srs.AllocateFRegister();
+  EXPECT_EQ(FTMP, ftmp);
+  ASSERT_EQ(0u, srs.AvailableFRegisters());
+
+  // Test nesting.
+  srs.FreeXRegister(A0);
+  srs.FreeXRegister(A1);
+  srs.FreeFRegister(FA0);
+  srs.FreeFRegister(FA1);
+  ASSERT_EQ(2u, srs.AvailableXRegisters());
+  ASSERT_EQ(2u, srs.AvailableFRegisters());
+  {
+    ScratchRegisterScope srs2(GetAssembler());
+    ASSERT_EQ(2u, srs2.AvailableXRegisters());
+    ASSERT_EQ(2u, srs2.AvailableFRegisters());
+    XRegister a1 = srs2.AllocateXRegister();
+    EXPECT_EQ(A1, a1);
+    XRegister a0 = srs2.AllocateXRegister();
+    EXPECT_EQ(A0, a0);
+    ASSERT_EQ(0u, srs2.AvailableXRegisters());
+    FRegister fa1 = srs2.AllocateFRegister();
+    EXPECT_EQ(FA1, fa1);
+    FRegister fa0 = srs2.AllocateFRegister();
+    EXPECT_EQ(FA0, fa0);
+    ASSERT_EQ(0u, srs2.AvailableFRegisters());
+  }
+  ASSERT_EQ(2u, srs.AvailableXRegisters());
+  ASSERT_EQ(2u, srs.AvailableFRegisters());
+
+  srs.IncludeXRegister(A0);  // No-op as the register was already available.
+  ASSERT_EQ(2u, srs.AvailableXRegisters());
+  srs.IncludeFRegister(FA0);  // No-op as the register was already available.
+  ASSERT_EQ(2u, srs.AvailableFRegisters());
+  srs.IncludeXRegister(S0);
+  ASSERT_EQ(3u, srs.AvailableXRegisters());
+  srs.IncludeFRegister(FS0);
+  ASSERT_EQ(3u, srs.AvailableFRegisters());
+
+  srs.ExcludeXRegister(S1);  // No-op as the register was not available.
+  ASSERT_EQ(3u, srs.AvailableXRegisters());
+  srs.ExcludeFRegister(FS1);  // No-op as the register was not available.
+  ASSERT_EQ(3u, srs.AvailableFRegisters());
+  srs.ExcludeXRegister(A0);
+  ASSERT_EQ(2u, srs.AvailableXRegisters());
+  srs.ExcludeFRegister(FA0);
+  ASSERT_EQ(2u, srs.AvailableFRegisters());
 }
 
 #undef __
