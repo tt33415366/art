@@ -378,6 +378,24 @@ static bool IsSigbusFeatureAvailable() {
   return (gUffdFeatures & kUffdFeaturesForSigbus) == kUffdFeaturesForSigbus;
 }
 
+size_t MarkCompact::InitializeInfoMap(uint8_t* p, size_t moving_space_sz) {
+  size_t nr_moving_pages = moving_space_sz / kPageSize;
+
+  chunk_info_vec_ = reinterpret_cast<uint32_t*>(p);
+  vector_length_ = moving_space_sz / kOffsetChunkSize;
+  size_t total = vector_length_ * sizeof(uint32_t);
+
+  first_objs_non_moving_space_ = reinterpret_cast<ObjReference*>(p + total);
+  total += heap_->GetNonMovingSpace()->Capacity() / kPageSize * sizeof(ObjReference);
+
+  first_objs_moving_space_ = reinterpret_cast<ObjReference*>(p + total);
+  total += nr_moving_pages * sizeof(ObjReference);
+
+  pre_compact_offset_moving_space_ = reinterpret_cast<uint32_t*>(p + total);
+  total += nr_moving_pages * sizeof(uint32_t);
+  return total;
+}
+
 MarkCompact::MarkCompact(Heap* heap)
     : GarbageCollector(heap, "concurrent mark compact"),
       gc_barrier_(0),
@@ -395,7 +413,8 @@ MarkCompact::MarkCompact(Heap* heap)
       uffd_minor_fault_supported_(false),
       use_uffd_sigbus_(IsSigbusFeatureAvailable()),
       minor_fault_initialized_(false),
-      map_linear_alloc_shared_(false) {
+      map_linear_alloc_shared_(false),
+      clamp_info_map_status_(ClampInfoStatus::kClampInfoNotDone) {
   if (kIsDebugBuild) {
     updated_roots_.reset(new std::unordered_set<void*>());
   }
@@ -433,18 +452,8 @@ MarkCompact::MarkCompact(Heap* heap)
   if (UNLIKELY(!info_map_.IsValid())) {
     LOG(FATAL) << "Failed to allocate concurrent mark-compact chunk-info vector: " << err_msg;
   } else {
-    uint8_t* p = info_map_.Begin();
-    chunk_info_vec_ = reinterpret_cast<uint32_t*>(p);
-    vector_length_ = chunk_info_vec_size;
-
-    p += chunk_info_vec_size * sizeof(uint32_t);
-    first_objs_non_moving_space_ = reinterpret_cast<ObjReference*>(p);
-
-    p += nr_non_moving_pages * sizeof(ObjReference);
-    first_objs_moving_space_ = reinterpret_cast<ObjReference*>(p);
-
-    p += nr_moving_pages * sizeof(ObjReference);
-    pre_compact_offset_moving_space_ = reinterpret_cast<uint32_t*>(p);
+    size_t total = InitializeInfoMap(info_map_.Begin(), moving_space_size);
+    DCHECK_EQ(total, info_map_.Size());
   }
 
   size_t moving_space_alignment = BestPageTableAlignment(moving_space_size);
@@ -570,6 +579,49 @@ void MarkCompact::AddLinearAllocSpaceData(uint8_t* begin, size_t len) {
                                          begin,
                                          begin + len,
                                          is_shared);
+}
+
+void MarkCompact::ClampGrowthLimit(size_t new_capacity) {
+  // From-space is the same size as moving-space in virtual memory.
+  // However, if it's in >4GB address space then we don't need to do it
+  // synchronously.
+#if defined(__LP64__)
+  constexpr bool kClampFromSpace = kObjPtrPoisoning;
+#else
+  constexpr bool kClampFromSpace = true;
+#endif
+  size_t old_capacity = bump_pointer_space_->Capacity();
+  new_capacity = bump_pointer_space_->ClampGrowthLimit(new_capacity);
+  if (new_capacity < old_capacity) {
+    CHECK(from_space_map_.IsValid());
+    if (kClampFromSpace) {
+      from_space_map_.SetSize(new_capacity);
+    }
+    // NOTE: We usually don't use shadow_to_space_map_ and therefore the condition will
+    // mostly be false.
+    if (shadow_to_space_map_.IsValid() && shadow_to_space_map_.Size() > new_capacity) {
+      shadow_to_space_map_.SetSize(new_capacity);
+    }
+    clamp_info_map_status_ = ClampInfoStatus::kClampInfoPending;
+  }
+}
+
+void MarkCompact::MaybeClampGcStructures() {
+  size_t moving_space_size = bump_pointer_space_->Capacity();
+  DCHECK(thread_running_gc_ != nullptr);
+  if (UNLIKELY(clamp_info_map_status_ == ClampInfoStatus::kClampInfoPending)) {
+    CHECK(from_space_map_.IsValid());
+    if (from_space_map_.Size() > moving_space_size) {
+      from_space_map_.SetSize(moving_space_size);
+    }
+    // Bitmaps and other data structures
+    live_words_bitmap_->SetBitmapSize(moving_space_size);
+    size_t set_size = InitializeInfoMap(info_map_.Begin(), moving_space_size);
+    CHECK_LT(set_size, info_map_.Size());
+    info_map_.SetSize(set_size);
+
+    clamp_info_map_status_ = ClampInfoStatus::kClampInfoFinished;
+  }
 }
 
 void MarkCompact::PrepareCardTableForMarking(bool clear_alloc_space_cards) {
@@ -1684,7 +1736,7 @@ void MarkCompact::SlideBlackPage(mirror::Object* first_obj,
                                  uint8_t* const pre_compact_page,
                                  uint8_t* dest,
                                  bool needs_memset_zero) {
-  CHECK(IsAligned<kPageSize>(pre_compact_page));
+  DCHECK(IsAligned<kPageSize>(pre_compact_page));
   size_t bytes_copied;
   uint8_t* src_addr = reinterpret_cast<uint8_t*>(GetFromSpaceAddr(first_obj));
   uint8_t* pre_compact_addr = reinterpret_cast<uint8_t*>(first_obj);
@@ -1702,7 +1754,7 @@ void MarkCompact::SlideBlackPage(mirror::Object* first_obj,
   // We have empty portion at the beginning of the page. Zero it.
   if (pre_compact_addr > pre_compact_page) {
     bytes_copied = pre_compact_addr - pre_compact_page;
-    CHECK_LT(bytes_copied, kPageSize);
+    DCHECK_LT(bytes_copied, kPageSize);
     if (needs_memset_zero) {
       std::memset(dest, 0x0, bytes_copied);
     }
@@ -1712,7 +1764,7 @@ void MarkCompact::SlideBlackPage(mirror::Object* first_obj,
     size_t offset = pre_compact_page - pre_compact_addr;
     pre_compact_addr = pre_compact_page;
     src_addr += offset;
-    CHECK(IsAligned<kPageSize>(src_addr));
+    DCHECK(IsAligned<kPageSize>(src_addr));
   }
   // Copy the first chunk of live words
   std::memcpy(dest, src_addr, first_chunk_size);
@@ -1722,7 +1774,7 @@ void MarkCompact::SlideBlackPage(mirror::Object* first_obj,
     size_t obj_size;
     // The first object started in some previous page. So we need to check the
     // beginning.
-    CHECK_LE(reinterpret_cast<uint8_t*>(first_obj), pre_compact_addr);
+    DCHECK_LE(reinterpret_cast<uint8_t*>(first_obj), pre_compact_addr);
     size_t offset = pre_compact_addr - reinterpret_cast<uint8_t*>(first_obj);
     if (bytes_copied == 0 && offset > 0) {
       mirror::Object* to_obj = reinterpret_cast<mirror::Object*>(dest - offset);
@@ -1767,8 +1819,8 @@ void MarkCompact::SlideBlackPage(mirror::Object* first_obj,
         && reinterpret_cast<uint8_t*>(next_page_first_obj) < pre_compact_page_end
         && bytes_copied == kPageSize) {
       size_t diff = pre_compact_page_end - reinterpret_cast<uint8_t*>(next_page_first_obj);
-      CHECK_LE(diff, kPageSize);
-      CHECK_LE(diff, bytes_to_visit);
+      DCHECK_LE(diff, kPageSize);
+      DCHECK_LE(diff, bytes_to_visit);
       bytes_to_visit -= diff;
       check_last_obj = true;
     }
@@ -1784,7 +1836,7 @@ void MarkCompact::SlideBlackPage(mirror::Object* first_obj,
       bytes_to_visit -= obj_size;
       dest += obj_size;
     }
-    CHECK_EQ(bytes_to_visit, 0u);
+    DCHECK_EQ(bytes_to_visit, 0u);
     if (check_last_obj) {
       mirror::Object* dest_obj = reinterpret_cast<mirror::Object*>(dest);
       VerifyObject(dest_obj, verify_obj_callback);
@@ -1825,11 +1877,10 @@ void MarkCompact::SlideBlackPage(mirror::Object* first_obj,
       }
       return;
     }
-    LOG(INFO) << "Found a black-page with two TLABs on it";
     // Copy everything in this page, which includes any zeroed regions
     // in-between.
     std::memcpy(dest, src_addr, remaining_bytes);
-    CHECK_LT(reinterpret_cast<uintptr_t>(found_obj), page_end);
+    DCHECK_LT(reinterpret_cast<uintptr_t>(found_obj), page_end);
     moving_space_bitmap_->VisitMarkedRange(
             reinterpret_cast<uintptr_t>(found_obj) + mirror::kObjectHeaderSize,
             page_end,
@@ -1848,8 +1899,8 @@ void MarkCompact::SlideBlackPage(mirror::Object* first_obj,
             });
     // found_obj may have been updated in VisitMarkedRange. Visit the last found
     // object.
-    CHECK_GT(reinterpret_cast<uint8_t*>(found_obj), pre_compact_addr);
-    CHECK_LT(reinterpret_cast<uintptr_t>(found_obj), page_end);
+    DCHECK_GT(reinterpret_cast<uint8_t*>(found_obj), pre_compact_addr);
+    DCHECK_LT(reinterpret_cast<uintptr_t>(found_obj), page_end);
     ptrdiff_t diff = reinterpret_cast<uint8_t*>(found_obj) - pre_compact_addr;
     mirror::Object* dest_obj = reinterpret_cast<mirror::Object*>(dest + diff);
     VerifyObject(dest_obj, verify_obj_callback);
@@ -3916,6 +3967,7 @@ void MarkCompact::MarkingPhase() {
   TimingLogger::ScopedTiming t(__FUNCTION__, GetTimings());
   DCHECK_EQ(thread_running_gc_, Thread::Current());
   WriterMutexLock mu(thread_running_gc_, *Locks::heap_bitmap_lock_);
+  MaybeClampGcStructures();
   PrepareCardTableForMarking(/*clear_alloc_space_cards*/ true);
   MarkZygoteLargeObjects();
   MarkRoots(
