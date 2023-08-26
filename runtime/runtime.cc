@@ -988,6 +988,11 @@ bool Runtime::Start() {
   // recoding profiles. Maybe we should consider changing the name to be more clear it's
   // not only about compiling. b/28295073.
   if (jit_options_->UseJitCompilation() || jit_options_->GetSaveProfilingInfo()) {
+    // Try to load compiler pre zygote to reduce PSS. b/27744947
+    std::string error_msg;
+    if (!jit::Jit::LoadCompilerLibrary(&error_msg)) {
+      LOG(WARNING) << "Failed to load JIT compiler with error " << error_msg;
+    }
     CreateJit();
 #ifdef ADDRESS_SANITIZER
     // (b/238730394): In older implementations of sanitizer + glibc there is a race between
@@ -3061,8 +3066,15 @@ void Runtime::CreateJit() {
     return;
   }
 
-  jit_ = jit::Jit::Create(jit_code_cache_.get(), jit_options_.get());
-  jit_->CreateThreadPool();
+  jit::Jit* jit = jit::Jit::Create(jit_code_cache_.get(), jit_options_.get());
+  jit_.reset(jit);
+  if (jit == nullptr) {
+    LOG(WARNING) << "Failed to allocate JIT";
+    // Release JIT code cache resources (several MB of memory).
+    jit_code_cache_.reset();
+  } else {
+    jit->CreateThreadPool();
+  }
 }
 
 bool Runtime::CanRelocate() const {
@@ -3245,10 +3257,12 @@ RuntimeCallbacks* Runtime::GetRuntimeCallbacks() {
   return callbacks_.get();
 }
 
-// Used to patch boot image method entry point to interpreter bridge.
-class UpdateEntryPointsClassVisitor : public ClassVisitor {
+// Used to update boot image to not use AOT code. This is used when transitioning the runtime to
+// java debuggable. This visitor re-initializes the entry points without using AOT code. This also
+// disables shared hotness counters so the necessary methods can be JITed more efficiently.
+class DeoptimizeBootImageClassVisitor : public ClassVisitor {
  public:
-  explicit UpdateEntryPointsClassVisitor(instrumentation::Instrumentation* instrumentation)
+  explicit DeoptimizeBootImageClassVisitor(instrumentation::Instrumentation* instrumentation)
       : instrumentation_(instrumentation) {}
 
   bool operator()(ObjPtr<mirror::Class> klass) override REQUIRES(Locks::mutator_lock_) {
@@ -3282,6 +3296,9 @@ class UpdateEntryPointsClassVisitor : public ClassVisitor {
         m.ClearPreCompiled();
         instrumentation_->InitializeMethodsCode(&m, /*aot_code=*/ nullptr);
       }
+
+      // Clear MemorySharedAccessFlags so the boot class methods can be JITed better.
+      m.ClearMemorySharedMethod();
     }
     return true;
   }
@@ -3302,7 +3319,7 @@ void Runtime::DeoptimizeBootImage() {
   // If we've already started and we are setting this runtime to debuggable,
   // we patch entry points of methods in boot image to interpreter bridge, as
   // boot image code may be AOT compiled as not debuggable.
-  UpdateEntryPointsClassVisitor visitor(GetInstrumentation());
+  DeoptimizeBootImageClassVisitor visitor(GetInstrumentation());
   GetClassLinker()->VisitClasses(&visitor);
   jit::Jit* jit = GetJit();
   if (jit != nullptr) {
