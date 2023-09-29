@@ -2625,7 +2625,11 @@ ClassLinker::~ClassLinker() {
   for (const ClassLoaderData& data : class_loaders_) {
     // CHA unloading analysis is not needed. No negative consequences are expected because
     // all the classloaders are deleted at the same time.
-    DeleteClassLoader(self, data, /*cleanup_cha=*/ false);
+    PrepareToDeleteClassLoader(self, data, /*cleanup_cha=*/false);
+  }
+  for (const ClassLoaderData& data : class_loaders_) {
+    delete data.allocator;
+    delete data.class_table;
   }
   class_loaders_.clear();
   while (!running_visibly_initialized_callbacks_.empty()) {
@@ -2635,7 +2639,9 @@ ClassLinker::~ClassLinker() {
   }
 }
 
-void ClassLinker::DeleteClassLoader(Thread* self, const ClassLoaderData& data, bool cleanup_cha) {
+void ClassLinker::PrepareToDeleteClassLoader(Thread* self,
+                                             const ClassLoaderData& data,
+                                             bool cleanup_cha) {
   Runtime* const runtime = Runtime::Current();
   JavaVMExt* const vm = runtime->GetJavaVM();
   vm->DeleteWeakGlobalRef(self, data.weak_root);
@@ -2666,9 +2672,6 @@ void ClassLinker::DeleteClassLoader(Thread* self, const ClassLoaderData& data, b
       }
     }
   }
-
-  delete data.allocator;
-  delete data.class_table;
 }
 
 ObjPtr<mirror::PointerArray> ClassLinker::AllocPointerArray(Thread* self, size_t length) {
@@ -7917,9 +7920,9 @@ void ClassLinker::LinkMethodsHelper<kPointerSize>::ReallocMethods(ObjPtr<mirror:
                                                                       kMethodSize,
                                                                       kMethodAlignment);
   const size_t old_methods_ptr_size = (old_methods != nullptr) ? old_size : 0;
-  auto* methods = reinterpret_cast<LengthPrefixedArray<ArtMethod>*>(
-      class_linker_->GetAllocatorForClassLoader(klass->GetClassLoader())->Realloc(
-          self_, old_methods, old_methods_ptr_size, new_size, LinearAllocKind::kArtMethodArray));
+  LinearAlloc* allocator = class_linker_->GetAllocatorForClassLoader(klass->GetClassLoader());
+  auto* methods = reinterpret_cast<LengthPrefixedArray<ArtMethod>*>(allocator->Realloc(
+      self_, old_methods, old_methods_ptr_size, new_size, LinearAllocKind::kArtMethodArray));
   CHECK(methods != nullptr);  // Native allocation failure aborts.
 
   if (methods != old_methods) {
@@ -7932,12 +7935,9 @@ void ClassLinker::LinkMethodsHelper<kPointerSize>::ReallocMethods(ObjPtr<mirror:
         ++out;
       }
     } else if (gUseUserfaultfd) {
-      // Clear the declaring class of the old dangling method array so that GC doesn't
-      // try to update them, which could cause crashes in userfaultfd GC due to
-      // checks in post-compact address computation.
-      for (auto& m : klass->GetMethods(kPointerSize)) {
-        m.SetDeclaringClass(nullptr);
-      }
+      // In order to make compaction code skip updating the declaring_class_ in
+      // old_methods, convert it into a 'no GC-root' array.
+      allocator->ConvertToNoGcRoots(old_methods, LinearAllocKind::kArtMethodArray);
     }
   }
 
@@ -10847,8 +10847,12 @@ void ClassLinker::CleanupClassLoaders() {
     ScopedDebugDisallowReadBarriers sddrb(self);
     for (ClassLoaderData& data : to_delete) {
       // CHA unloading analysis and SingleImplementaion cleanups are required.
-      DeleteClassLoader(self, data, /*cleanup_cha=*/ true);
+      PrepareToDeleteClassLoader(self, data, /*cleanup_cha=*/true);
     }
+  }
+  for (const ClassLoaderData& data : to_delete) {
+    delete data.allocator;
+    delete data.class_table;
   }
   Runtime* runtime = Runtime::Current();
   if (!unregistered_oat_files.empty()) {
