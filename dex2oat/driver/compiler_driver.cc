@@ -1016,7 +1016,7 @@ static void VerifyClassesContainingIntrinsicsAreImageClasses(HashSet<std::string
 #define CHECK_INTRINSIC_OWNER_CLASS(_, __, ___, ____, _____, ClassName, ______, _______) \
   CHECK(image_classes->find(std::string_view(ClassName)) != image_classes->end());
 
-  INTRINSICS_LIST(CHECK_INTRINSIC_OWNER_CLASS)
+  ART_INTRINSICS_LIST(CHECK_INTRINSIC_OWNER_CLASS)
 #undef CHECK_INTRINSIC_OWNER_CLASS
 }
 
@@ -2790,7 +2790,7 @@ std::string CompilerDriver::GetMemoryUsageString(bool extended) const {
   const size_t java_alloc = heap->GetBytesAllocated();
   oss << "arena alloc=" << PrettySize(max_arena_alloc_) << " (" << max_arena_alloc_ << "B)";
   oss << " java alloc=" << PrettySize(java_alloc) << " (" << java_alloc << "B)";
-#if defined(__BIONIC__) || defined(__GLIBC__)
+#if defined(__BIONIC__) || defined(__GLIBC__) || defined(ANDROID_HOST_MUSL)
   const struct mallinfo info = mallinfo();
   const size_t allocated_space = static_cast<size_t>(info.uordblks);
   const size_t free_space = static_cast<size_t>(info.fordblks);

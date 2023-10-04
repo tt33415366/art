@@ -68,6 +68,9 @@ java_sdk_library {
     name: "service-art",
     defaults: ["framework-system-server-module-defaults"],
     permitted_packages: ["com.android.server.art"],
+    dex_preopt: {
+        profile: "art-profile",
+    },
     visibility: [
         "//art:__subpackages__",
         "//frameworks/base/services/core",
@@ -120,6 +123,11 @@ android_test {
     // Include all test java files.
     srcs: [
         "javatests/**/*.java",
+    ],
+
+    // disable the target when prebuilt modules are used
+    defaults: [
+        "art_module_source_build_java_defaults",
     ],
 
     static_libs: [

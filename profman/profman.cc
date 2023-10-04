@@ -610,7 +610,8 @@ class ProfMan final {
       std::vector<std::unique_ptr<const DexFile>> dex_files_for_location;
       // We do not need to verify the apk for processing profiles.
       if (use_apk_fd_list) {
-          ArtDexFileLoader dex_file_loader(apks_fd_[i], dex_locations_[i]);
+          File file(apks_fd_[i], /*check_usage=*/false);
+          ArtDexFileLoader dex_file_loader(&file, dex_locations_[i]);
           if (dex_file_loader.Open(/*verify=*/false,
                                    kVerifyChecksum,
                                    /*allow_no_dex_files=*/true,
@@ -626,7 +627,7 @@ class ProfMan final {
           PLOG(ERROR) << "Unable to open '" << apk_files_[i] << "'";
           return false;
         }
-        ArtDexFileLoader dex_file_loader(file.Release(), dex_locations_[i]);
+        ArtDexFileLoader dex_file_loader(&file, dex_locations_[i]);
         if (dex_file_loader.Open(/*verify=*/false,
                                  kVerifyChecksum,
                                  /*allow_no_dex_files=*/true,
@@ -793,10 +794,10 @@ class ProfMan final {
     return dump_only_;
   }
 
-  // Creates the inline-cache portion of a text-profile line. If there is no
-  // inline-caches this will be and empty string. Otherwise it will be '@'
-  // followed by an IC description matching the format described by ProcessLine
-  // below. Note that this will collapse all ICs with the same receiver type.
+  // Creates the inline-cache portion of a text-profile line. If the class def can't be found, or if
+  // there is no inline-caches this will be and empty string. Otherwise it will be '@' followed by
+  // an IC description matching the format described by ProcessLine below. Note that this will
+  // collapse all ICs with the same receiver type.
   std::string GetInlineCacheLine(const ProfileCompilationInfo& profile_info,
                                  const dex::MethodId& id,
                                  const DexFile* dex_file,
@@ -814,10 +815,14 @@ class ProfMan final {
       std::set<dex::TypeIndex> classes_;
     };
     std::unordered_map<dex::TypeIndex, IcLineInfo> ics;
+    const dex::ClassDef* class_def = dex_file->FindClassDef(id.class_idx_);
+    if (class_def == nullptr) {
+      // No class def found.
+      return "";
+    }
+
     CodeItemInstructionAccessor accessor(
-        *dex_file,
-        dex_file->GetCodeItem(dex_file->FindCodeItemOffset(*dex_file->FindClassDef(id.class_idx_),
-                                                            dex_method_idx)));
+        *dex_file, dex_file->GetCodeItem(dex_file->FindCodeItemOffset(*class_def, dex_method_idx)));
     for (const auto& [pc, ic_data] : *inline_caches) {
       const Instruction& inst = accessor.InstructionAt(pc);
       const dex::MethodId& target = dex_file->GetMethodId(inst.VRegB());
@@ -901,8 +906,13 @@ class ProfMan final {
           }
           std::string inline_cache_string =
               GetInlineCacheLine(profile_info, id, dex_file.get(), dex_method_idx);
-          out_lines->insert(flags_string + type_string + kMethodSep + method_name +
-                            signature_string + inline_cache_string);
+          out_lines->insert(ART_FORMAT("{}{}{}{}{}{}",
+                                       flags_string,
+                                       type_string,
+                                       kMethodSep,
+                                       method_name,
+                                       signature_string,
+                                       inline_cache_string));
         }
       }
     }
@@ -1899,8 +1909,8 @@ class ProfMan final {
       // Open the dex files to look up classes and methods.
       std::vector<std::unique_ptr<const DexFile>> dex_files;
       OpenApkFilesFromLocations(&dex_files);
-      bool updated = false;
-      if (!profile.UpdateProfileKeys(dex_files, &updated)) {
+      bool matched = false;
+      if (!profile.UpdateProfileKeys(dex_files, &matched)) {
         return ProfmanResult::kCopyAndUpdateErrorFailedToUpdateProfile;
       }
       bool result = use_fds
@@ -1909,7 +1919,7 @@ class ProfMan final {
       if (!result) {
         return ProfmanResult::kCopyAndUpdateErrorFailedToSaveProfile;
       }
-      return updated ? ProfmanResult::kCopyAndUpdateSuccess : ProfmanResult::kCopyAndUpdateNoUpdate;
+      return matched ? ProfmanResult::kCopyAndUpdateSuccess : ProfmanResult::kCopyAndUpdateNoMatch;
     } else {
       return ProfmanResult::kCopyAndUpdateErrorFailedToLoadProfile;
     }

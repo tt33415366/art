@@ -1245,6 +1245,9 @@ TEST_F(Dex2oatDeterminism, UnloadCompile) {
 // Test that dexlayout section info is correctly written to the oat file for profile based
 // compilation.
 TEST_F(Dex2oatTest, LayoutSections) {
+  // TODO(b/256664509): Clean this up.
+  GTEST_SKIP() << "Compact dex is disabled";
+#if 0
   using Hotness = ProfileCompilationInfo::MethodHotness;
   std::unique_ptr<const DexFile> dex(OpenTestDexFile("ManyMethods"));
   ScratchFile profile_file;
@@ -1395,10 +1398,14 @@ TEST_F(Dex2oatTest, LayoutSections) {
     EXPECT_GT(startup_count, 0u);
     EXPECT_GT(unused_count, 0u);
   }
+#endif  // 0
 }
 
 // Test that generating compact dex works.
 TEST_F(Dex2oatTest, GenerateCompactDex) {
+  // TODO(b/256664509): Clean this up.
+  GTEST_SKIP() << "Compact dex is disabled";
+#if 0
   // Generate a compact dex based odex.
   const std::string dir = GetScratchDir();
   const std::string oat_filename = dir + "/base.oat";
@@ -1454,6 +1461,7 @@ TEST_F(Dex2oatTest, GenerateCompactDex) {
       }
     }
   }
+#endif  // 0
 }
 
 class Dex2oatVerifierAbort : public Dex2oatTest {};
@@ -1693,8 +1701,7 @@ TEST_F(Dex2oatTest, CompactDexGenerationFailureMultiDex) {
   }
   const std::string& dex_location = apk_file.GetFilename();
   const std::string odex_location = GetOdexDir() + "/output.odex";
-  ASSERT_TRUE(GenerateOdexForTest(
-      dex_location, odex_location, CompilerFilter::kVerify, {"--compact-dex-level=fast"}, true));
+  ASSERT_TRUE(GenerateOdexForTest(dex_location, odex_location, CompilerFilter::kVerify, {}, true));
 }
 
 TEST_F(Dex2oatTest, StderrLoggerOutput) {
@@ -1857,8 +1864,8 @@ TEST_F(Dex2oatTest, CompactDexInvalidSource) {
     ZipWriter writer(file);
     writer.StartEntry("classes.dex", ZipWriter::kAlign32);
     DexFile::Header header = {};
-    StandardDexFile::WriteMagic(header.magic_);
-    StandardDexFile::WriteCurrentVersion(header.magic_);
+    StandardDexFile::WriteMagic(header.magic_.data());
+    StandardDexFile::WriteCurrentVersion(header.magic_.data());
     header.file_size_ = 4 * KB;
     header.data_size_ = 4 * KB;
     header.data_off_ = 10 * MB;
@@ -1873,19 +1880,16 @@ TEST_F(Dex2oatTest, CompactDexInvalidSource) {
   const std::string& dex_location = invalid_dex.GetFilename();
   const std::string odex_location = GetOdexDir() + "/output.odex";
   std::string error_msg;
-  int status = GenerateOdexForTestWithStatus({dex_location},
-                                             odex_location,
-                                             CompilerFilter::kVerify,
-                                             &error_msg,
-                                             {"--compact-dex-level=fast"});
+  int status = GenerateOdexForTestWithStatus(
+      {dex_location}, odex_location, CompilerFilter::kVerify, &error_msg, {});
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) != 0) << status << " " << output_;
 }
 
 // Test that dex2oat with a CompactDex file in the APK fails.
 TEST_F(Dex2oatTest, CompactDexInZip) {
   CompactDexFile::Header header = {};
-  CompactDexFile::WriteMagic(header.magic_);
-  CompactDexFile::WriteCurrentVersion(header.magic_);
+  CompactDexFile::WriteMagic(header.magic_.data());
+  CompactDexFile::WriteCurrentVersion(header.magic_.data());
   header.file_size_ = sizeof(CompactDexFile::Header);
   header.data_off_ = 10 * MB;
   header.map_off_ = 10 * MB;
@@ -1915,14 +1919,14 @@ TEST_F(Dex2oatTest, CompactDexInZip) {
                                          GetOdexDir() + "/output_apk.odex",
                                          CompilerFilter::kVerify,
                                          &error_msg,
-                                         {"--compact-dex-level=fast"});
+                                         {});
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) != 0) << status << " " << output_;
 
   status = GenerateOdexForTestWithStatus({invalid_dex.GetFilename()},
                                          GetOdexDir() + "/output.odex",
                                          CompilerFilter::kVerify,
                                          &error_msg,
-                                         {"--compact-dex-level=fast"});
+                                         {});
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) != 0) << status << " " << output_;
 }
 

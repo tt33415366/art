@@ -403,7 +403,8 @@ class HGraph : public ArenaObject<kArenaAllocGraph> {
         has_bounds_checks_(false),
         has_try_catch_(false),
         has_monitor_operations_(false),
-        has_simd_(false),
+        has_traditional_simd_(false),
+        has_predicated_simd_(false),
         has_loops_(false),
         has_irreducible_loops_(false),
         has_direct_critical_native_call_(false),
@@ -708,8 +709,13 @@ class HGraph : public ArenaObject<kArenaAllocGraph> {
   bool HasMonitorOperations() const { return has_monitor_operations_; }
   void SetHasMonitorOperations(bool value) { has_monitor_operations_ = value; }
 
-  bool HasSIMD() const { return has_simd_; }
-  void SetHasSIMD(bool value) { has_simd_ = value; }
+  bool HasTraditionalSIMD() { return has_traditional_simd_; }
+  void SetHasTraditionalSIMD(bool value) { has_traditional_simd_ = value; }
+
+  bool HasPredicatedSIMD() { return has_predicated_simd_; }
+  void SetHasPredicatedSIMD(bool value) { has_predicated_simd_ = value; }
+
+  bool HasSIMD() const { return has_traditional_simd_ || has_predicated_simd_; }
 
   bool HasLoops() const { return has_loops_; }
   void SetHasLoops(bool value) { has_loops_ = value; }
@@ -822,10 +828,11 @@ class HGraph : public ArenaObject<kArenaAllocGraph> {
   // DexRegisterMap to be present to allow deadlock analysis for non-debuggable code.
   bool has_monitor_operations_;
 
-  // Flag whether SIMD instructions appear in the graph. If true, the
-  // code generators may have to be more careful spilling the wider
+  // Flags whether SIMD (traditional or predicated) instructions appear in the graph.
+  // If either is true, the code generators may have to be more careful spilling the wider
   // contents of SIMD registers.
-  bool has_simd_;
+  bool has_traditional_simd_;
+  bool has_predicated_simd_;
 
   // Flag whether there are any loops in the graph. We can skip loop
   // optimization if it's false.
@@ -1636,7 +1643,9 @@ class HLoopInformationOutwardIterator : public ValueObject {
   M(VecStore, VecMemoryOperation)                                       \
   M(VecPredSetAll, VecPredSetOperation)                                 \
   M(VecPredWhile, VecPredSetOperation)                                  \
-  M(VecPredCondition, VecOperation)                                     \
+  M(VecPredToBoolean, VecOperation)                                     \
+  M(VecCondition, VecPredSetOperation)                                  \
+  M(VecPredNot, VecPredSetOperation)                                    \
 
 #define FOR_EACH_CONCRETE_INSTRUCTION_COMMON(M)                         \
   FOR_EACH_CONCRETE_INSTRUCTION_SCALAR_COMMON(M)                        \
@@ -2064,12 +2073,12 @@ class HEnvironment : public ArenaObject<kArenaAllocEnvironment> {
                              ArtMethod* method,
                              uint32_t dex_pc,
                              HInstruction* holder)
-     : vregs_(number_of_vregs, allocator->Adapter(kArenaAllocEnvironmentVRegs)),
-       locations_(allocator->Adapter(kArenaAllocEnvironmentLocations)),
-       parent_(nullptr),
-       method_(method),
-       dex_pc_(dex_pc),
-       holder_(holder) {
+      : vregs_(number_of_vregs, allocator->Adapter(kArenaAllocEnvironmentVRegs)),
+        locations_(allocator->Adapter(kArenaAllocEnvironmentLocations)),
+        parent_(nullptr),
+        method_(method),
+        dex_pc_(dex_pc),
+        holder_(holder) {
   }
 
   ALWAYS_INLINE HEnvironment(ArenaAllocator* allocator,
@@ -2185,9 +2194,14 @@ class HEnvironment : public ArenaObject<kArenaAllocEnvironment> {
 std::ostream& operator<<(std::ostream& os, const HInstruction& rhs);
 
 // Iterates over the Environments
-class HEnvironmentIterator : public ValueObject,
-                             public std::iterator<std::forward_iterator_tag, HEnvironment*> {
+class HEnvironmentIterator : public ValueObject {
  public:
+  using iterator_category = std::forward_iterator_tag;
+  using value_type = HEnvironment*;
+  using difference_type = ptrdiff_t;
+  using pointer = void;
+  using reference = void;
+
   explicit HEnvironmentIterator(HEnvironment* cur) : cur_(cur) {}
 
   HEnvironment* operator*() const {
@@ -2731,7 +2745,7 @@ class HInstruction : public ArenaObject<kArenaAllocInstruction> {
 
  private:
   using InstructionKindField =
-     BitField<InstructionKind, kFieldInstructionKind, kFieldInstructionKindSize>;
+      BitField<InstructionKind, kFieldInstructionKind, kFieldInstructionKindSize>;
 
   void FixUpUserRecordsAfterUseInsertion(HUseList<HInstruction*>::iterator fixup_end) {
     auto before_use_node = uses_.before_begin();
@@ -2906,9 +2920,14 @@ class HBackwardInstructionIterator : public ValueObject {
 };
 
 template <typename InnerIter>
-struct HSTLInstructionIterator : public ValueObject,
-                                 public std::iterator<std::forward_iterator_tag, HInstruction*> {
+struct HSTLInstructionIterator : public ValueObject {
  public:
+  using iterator_category = std::forward_iterator_tag;
+  using value_type = HInstruction*;
+  using difference_type = ptrdiff_t;
+  using pointer = void;
+  using reference = void;
+
   static_assert(std::is_same_v<InnerIter, HBackwardInstructionIterator> ||
                     std::is_same_v<InnerIter, HInstructionIterator> ||
                     std::is_same_v<InnerIter, HInstructionIteratorHandleChanges>,
@@ -4862,8 +4881,7 @@ class HInvokePolymorphic final : public HInvoke {
                      // to pass intrinsic information to the HInvokePolymorphic node.
                      ArtMethod* resolved_method,
                      MethodReference resolved_method_reference,
-                     dex::ProtoIndex proto_idx,
-                     bool enable_intrinsic_opt)
+                     dex::ProtoIndex proto_idx)
       : HInvoke(kInvokePolymorphic,
                 allocator,
                 number_of_arguments,
@@ -4874,9 +4892,8 @@ class HInvokePolymorphic final : public HInvoke {
                 resolved_method,
                 resolved_method_reference,
                 kPolymorphic,
-                enable_intrinsic_opt),
-        proto_idx_(proto_idx) {
-  }
+                /* enable_intrinsic_opt= */ true),
+        proto_idx_(proto_idx) {}
 
   bool IsClonable() const override { return true; }
 
@@ -6522,12 +6539,12 @@ class HArrayGet final : public HExpression<2> {
             HInstruction* index,
             DataType::Type type,
             uint32_t dex_pc)
-     : HArrayGet(array,
-                 index,
-                 type,
-                 SideEffects::ArrayReadOfType(type),
-                 dex_pc,
-                 /* is_string_char_at= */ false) {
+      : HArrayGet(array,
+                  index,
+                  type,
+                  SideEffects::ArrayReadOfType(type),
+                  dex_pc,
+                  /* is_string_char_at= */ false) {
   }
 
   HArrayGet(HInstruction* array,
@@ -7011,17 +7028,15 @@ class HLoadClass final : public HInstruction {
   bool CanCallRuntime() const {
     return NeedsAccessCheck() ||
            MustGenerateClinitCheck() ||
-           GetLoadKind() == LoadKind::kRuntimeCall ||
-           GetLoadKind() == LoadKind::kBssEntry;
+           NeedsBss() ||
+           GetLoadKind() == LoadKind::kRuntimeCall;
   }
 
   bool CanThrow() const override {
     return NeedsAccessCheck() ||
            MustGenerateClinitCheck() ||
            // If the class is in the boot image, the lookup in the runtime call cannot throw.
-           ((GetLoadKind() == LoadKind::kRuntimeCall ||
-             GetLoadKind() == LoadKind::kBssEntry) &&
-            !IsInBootImage());
+           ((GetLoadKind() == LoadKind::kRuntimeCall || NeedsBss()) && !IsInBootImage());
   }
 
   ReferenceTypeInfo GetLoadedClassRTI() {
@@ -8634,7 +8649,7 @@ class CloneAndReplaceInstructionVisitor final : public HGraphDelegateVisitor {
   DISALLOW_COPY_AND_ASSIGN(CloneAndReplaceInstructionVisitor);
 };
 
-// Iterator over the blocks that art part of the loop. Includes blocks part
+// Iterator over the blocks that are part of the loop; includes blocks which are part
 // of an inner loop. The order in which the blocks are iterated is on their
 // block id.
 class HBlocksInLoopIterator : public ValueObject {
@@ -8667,7 +8682,7 @@ class HBlocksInLoopIterator : public ValueObject {
   DISALLOW_COPY_AND_ASSIGN(HBlocksInLoopIterator);
 };
 
-// Iterator over the blocks that art part of the loop. Includes blocks part
+// Iterator over the blocks that are part of the loop; includes blocks which are part
 // of an inner loop. The order in which the blocks are iterated is reverse
 // post order.
 class HBlocksInLoopReversePostOrderIterator : public ValueObject {
@@ -8698,6 +8713,39 @@ class HBlocksInLoopReversePostOrderIterator : public ValueObject {
   size_t index_;
 
   DISALLOW_COPY_AND_ASSIGN(HBlocksInLoopReversePostOrderIterator);
+};
+
+// Iterator over the blocks that are part of the loop; includes blocks which are part
+// of an inner loop. The order in which the blocks are iterated is post order.
+class HBlocksInLoopPostOrderIterator : public ValueObject {
+ public:
+  explicit HBlocksInLoopPostOrderIterator(const HLoopInformation& info)
+      : blocks_in_loop_(info.GetBlocks()),
+        blocks_(info.GetHeader()->GetGraph()->GetReversePostOrder()),
+        index_(blocks_.size() - 1) {
+    if (!blocks_in_loop_.IsBitSet(blocks_[index_]->GetBlockId())) {
+      Advance();
+    }
+  }
+
+  bool Done() const { return index_ < 0; }
+  HBasicBlock* Current() const { return blocks_[index_]; }
+  void Advance() {
+    --index_;
+    for (; index_ >= 0; --index_) {
+      if (blocks_in_loop_.IsBitSet(blocks_[index_]->GetBlockId())) {
+        break;
+      }
+    }
+  }
+
+ private:
+  const BitVector& blocks_in_loop_;
+  const ArenaVector<HBasicBlock*>& blocks_;
+
+  int32_t index_;
+
+  DISALLOW_COPY_AND_ASSIGN(HBlocksInLoopPostOrderIterator);
 };
 
 // Returns int64_t value of a properly typed constant.

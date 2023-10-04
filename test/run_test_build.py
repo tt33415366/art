@@ -24,6 +24,7 @@ import functools
 import glob
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import subprocess
@@ -31,9 +32,9 @@ import sys
 import zipfile
 
 from argparse import ArgumentParser
+from concurrent.futures import ThreadPoolExecutor
 from fcntl import lockf, LOCK_EX, LOCK_NB
 from importlib.machinery import SourceFileLoader
-from concurrent.futures import ThreadPoolExecutor
 from os import environ, getcwd, chdir, cpu_count, chmod
 from os.path import relpath
 from pathlib import Path
@@ -53,6 +54,9 @@ RBE_D8_DISABLED_FOR = {
   "979-const-method-handle",  # b/228312861: RBE uses wrong inputs.
 }
 
+# Debug option. Report commands that are taking a lot of user CPU time.
+REPORT_SLOW_COMMANDS = False
+
 class BuildTestContext:
   def __init__(self, args, android_build_top, test_dir):
     self.android_build_top = android_build_top.absolute()
@@ -68,7 +72,7 @@ class BuildTestContext:
     self.java_home = Path(os.environ.get("JAVA_HOME")).absolute()
     self.java_path = self.java_home / "bin/java"
     self.javac_path = self.java_home / "bin/javac"
-    self.javac_args = "-g -Xlint:-options -source 1.8 -target 1.8"
+    self.javac_args = "-g -Xlint:-options"
 
     # Helper functions to execute tools.
     self.d8 = functools.partial(self.run, args.d8.absolute())
@@ -114,6 +118,8 @@ class BuildTestContext:
   def run(self, executable: pathlib.Path, args: List[Union[pathlib.Path, str]]):
     assert isinstance(executable, pathlib.Path), executable
     cmd: List[Union[pathlib.Path, str]] = []
+    if REPORT_SLOW_COMMANDS:
+      cmd += ["/usr/bin/time"]
     if executable.suffix == ".sh":
       cmd += ["/bin/bash"]
     cmd += [executable]
@@ -136,6 +142,14 @@ class BuildTestContext:
                        env=self.bash_env,
                        stderr=subprocess.STDOUT,
                        stdout=subprocess.PIPE)
+    if REPORT_SLOW_COMMANDS:
+      m = re.search("([0-9\.]+)user", p.stdout)
+      assert m, p.stdout
+      t = float(m.group(1))
+      if t > 1.0:
+        cmd_text = " ".join(map(str, cmd[1:]))[:100]
+        print(f"[{self.test_name}] Command took {t:.2f}s: {cmd_text}")
+
     if p.returncode != 0:
       raise Exception("Command failed with exit code {}\n$ {}\n{}".format(
                       p.returncode, " ".join(map(str, cmd)), p.stdout))
@@ -201,6 +215,8 @@ class BuildTestContext:
       smali_args=[],
       use_smali=True,
       use_jasmin=True,
+      javac_source_arg="1.8",
+      javac_target_arg="1.8"
     ):
     javac_classpath = javac_classpath.copy()  # Do not modify default value.
 
@@ -225,6 +241,7 @@ class BuildTestContext:
         "agents": 26,
         "method-handles": 26,
         "var-handles": 28,
+        "const-method-type": 28,
       }
       api_level = API_LEVEL[api_level]
     assert isinstance(api_level, int), api_level
@@ -266,7 +283,8 @@ class BuildTestContext:
       dst_dir.mkdir(exist_ok=True)
       args = self.javac_args.split(" ") + javac_args
       args += ["-implicit:none", "-encoding", "utf8", "-d", dst_dir]
-      if not self.jvm:
+      args += ["-source", javac_source_arg, "-target", javac_target_arg]
+      if not self.jvm and float(javac_target_arg) < 17.0:
         args += ["-bootclasspath", self.bootclasspath]
       if javac_classpath:
         args += ["-classpath", javac_classpath]

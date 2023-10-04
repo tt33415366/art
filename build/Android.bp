@@ -44,6 +44,7 @@ art_clang_tidy_errors = [
     "performance-faster-string-find",
     "performance-for-range-copy",
     "performance-implicit-conversion-in-loop",
+    "performance-inefficient-string-concatenation",
     "performance-inefficient-vector-operation",
     "performance-no-automatic-move",
     "performance-noexcept-move-constructor",
@@ -323,7 +324,7 @@ art_debug_defaults {
         art_debug_opt_flag: {
             cflags: ["%s"],
             conditions_default: {
-                cflags: ["-O2"],
+                cflags: ["-Og"],
             },
         },
     },

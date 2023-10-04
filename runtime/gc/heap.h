@@ -17,18 +17,19 @@
 #ifndef ART_RUNTIME_GC_HEAP_H_
 #define ART_RUNTIME_GC_HEAP_H_
 
+#include <android-base/logging.h>
+
 #include <iosfwd>
 #include <string>
 #include <unordered_set>
 #include <vector>
-
-#include <android-base/logging.h>
 
 #include "allocator_type.h"
 #include "base/atomic.h"
 #include "base/histogram.h"
 #include "base/macros.h"
 #include "base/mutex.h"
+#include "base/os.h"
 #include "base/runtime_debug.h"
 #include "base/safe_map.h"
 #include "base/time_utils.h"
@@ -38,12 +39,14 @@
 #include "gc/collector_type.h"
 #include "gc/gc_cause.h"
 #include "gc/space/large_object_space.h"
+#include "gc/space/space.h"
 #include "handle.h"
 #include "obj_ptr.h"
 #include "offsets.h"
 #include "process_state.h"
 #include "read_barrier_config.h"
 #include "runtime_globals.h"
+#include "scoped_thread_state_change.h"
 #include "verify_object.h"
 
 namespace art {
@@ -200,10 +203,10 @@ class Heap {
        size_t non_moving_space_capacity,
        const std::vector<std::string>& boot_class_path,
        const std::vector<std::string>& boot_class_path_locations,
-       const std::vector<int>& boot_class_path_fds,
-       const std::vector<int>& boot_class_path_image_fds,
-       const std::vector<int>& boot_class_path_vdex_fds,
-       const std::vector<int>& boot_class_path_oat_fds,
+       ArrayRef<File> boot_class_path_files,
+       ArrayRef<File> boot_class_path_image_files,
+       ArrayRef<File> boot_class_path_vdex_files,
+       ArrayRef<File> boot_class_path_oat_files,
        const std::vector<std::string>& image_file_names,
        InstructionSet image_instruction_set,
        CollectorType foreground_collector_type,
@@ -562,8 +565,10 @@ class Heap {
   uint64_t GetBytesAllocatedEver() const;
 
   // Returns the total number of bytes freed since the heap was created.
+  // Can decrease over time, and may even be negative, since moving an object to
+  // a space in which it occupies more memory results in negative "freed bytes".
   // With default memory order, this should be viewed only as a hint.
-  uint64_t GetBytesFreedEver(std::memory_order mo = std::memory_order_relaxed) const {
+  int64_t GetBytesFreedEver(std::memory_order mo = std::memory_order_relaxed) const {
     return total_bytes_freed_ever_.load(mo);
   }
 
@@ -785,6 +790,16 @@ class Heap {
   bool IsCompilingBoot() const;
   bool HasBootImageSpace() const {
     return !boot_image_spaces_.empty();
+  }
+  bool HasAppImageSpace() const {
+    ScopedObjectAccess soa(Thread::Current());
+    for (const space::ContinuousSpace* space : continuous_spaces_) {
+      // An image space is either a boot image space or an app image space.
+      if (space->IsImageSpace() && !IsBootImageAddress(space->Begin())) {
+        return true;
+      }
+    }
+    return false;
   }
 
   ReferenceProcessor* GetReferenceProcessor() {
@@ -1037,6 +1052,7 @@ class Heap {
         collector_type == kCollectorTypeSS ||
         collector_type == kCollectorTypeCMC ||
         collector_type == kCollectorTypeCCBackground ||
+        collector_type == kCollectorTypeCMCBackground ||
         collector_type == kCollectorTypeHomogeneousSpaceCompact;
   }
   bool ShouldAllocLargeObject(ObjPtr<mirror::Class> c, size_t byte_count) const
@@ -1220,13 +1236,13 @@ class Heap {
   void ClearPendingTrim(Thread* self) REQUIRES(!*pending_task_lock_);
   void ClearPendingCollectorTransition(Thread* self) REQUIRES(!*pending_task_lock_);
 
-  // What kind of concurrency behavior is the runtime after? Currently true for concurrent mark
-  // sweep GC, false for other GC types.
+  // What kind of concurrency behavior is the runtime after?
   bool IsGcConcurrent() const ALWAYS_INLINE {
     return collector_type_ == kCollectorTypeCC ||
         collector_type_ == kCollectorTypeCMC ||
         collector_type_ == kCollectorTypeCMS ||
-        collector_type_ == kCollectorTypeCCBackground;
+        collector_type_ == kCollectorTypeCCBackground ||
+        collector_type_ == kCollectorTypeCMCBackground;
   }
 
   // Trim the managed and native spaces by releasing unused memory back to the OS.
@@ -1453,7 +1469,7 @@ class Heap {
   size_t concurrent_start_bytes_;
 
   // Since the heap was created, how many bytes have been freed.
-  std::atomic<uint64_t> total_bytes_freed_ever_;
+  std::atomic<int64_t> total_bytes_freed_ever_;
 
   // Since the heap was created, how many objects have been freed.
   std::atomic<uint64_t> total_objects_freed_ever_;

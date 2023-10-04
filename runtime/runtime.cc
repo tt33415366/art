@@ -210,7 +210,7 @@ Runtime* Runtime::instance_ = nullptr;
 
 struct TraceConfig {
   Trace::TraceMode trace_mode;
-  Trace::TraceOutputMode trace_output_mode;
+  TraceOutputMode trace_output_mode;
   std::string trace_file;
   size_t trace_file_size;
   TraceClockSource clock_source;
@@ -250,6 +250,7 @@ Runtime::Runtime()
       must_relocate_(false),
       is_concurrent_gc_enabled_(true),
       is_explicit_gc_disabled_(false),
+      is_eagerly_release_explicit_gc_disabled_(false),
       image_dex2oat_enabled_(true),
       default_stack_size_(0),
       heap_(nullptr),
@@ -423,6 +424,10 @@ Runtime::~Runtime() {
   // Make sure to let the GC complete if it is running.
   heap_->WaitForGcToComplete(gc::kGcCauseBackground, self);
 
+  // Shutdown any trace before SetShuttingDown. Trace uses thread pool workers to flush entries
+  // and we want to make sure they are fully created. Threads cannot attach while shutting down.
+  Trace::Shutdown();
+
   {
     ScopedTrace trace2("Wait for shutdown cond");
     MutexLock mu(self, *Locks::runtime_shutdown_lock_);
@@ -440,9 +445,6 @@ Runtime::~Runtime() {
     ScopedObjectAccess soa(self);
     WellKnownClasses::java_lang_Daemons_stop->InvokeStatic<'V'>(self);
   }
-
-  // Shutdown any trace running.
-  Trace::Shutdown();
 
   // Report death. Clients may require a working thread, still, so do it before GC completes and
   // all non-daemon threads are done.
@@ -1275,26 +1277,31 @@ void Runtime::StartDaemonThreads() {
 
 static size_t OpenBootDexFiles(ArrayRef<const std::string> dex_filenames,
                                ArrayRef<const std::string> dex_locations,
-                               ArrayRef<const int> dex_fds,
-                               std::vector<std::unique_ptr<const DexFile>>* dex_files) {
-  DCHECK(dex_files != nullptr) << "OpenDexFiles: out-param is nullptr";
+                               ArrayRef<File> dex_files,
+                               std::vector<std::unique_ptr<const DexFile>>* out_dex_files) {
+  DCHECK(out_dex_files != nullptr) << "OpenDexFiles: out-param is nullptr";
   size_t failure_count = 0;
   for (size_t i = 0; i < dex_filenames.size(); i++) {
     const char* dex_filename = dex_filenames[i].c_str();
     const char* dex_location = dex_locations[i].c_str();
-    const int dex_fd = i < dex_fds.size() ? dex_fds[i] : -1;
+    File noFile;
+    File* file = i < dex_files.size() ? &dex_files[i] : &noFile;
     static constexpr bool kVerifyChecksum = true;
     std::string error_msg;
-    if (!OS::FileExists(dex_filename) && dex_fd < 0) {
+    if (!OS::FileExists(dex_filename) && file->IsValid()) {
       LOG(WARNING) << "Skipping non-existent dex file '" << dex_filename << "'";
       continue;
     }
     bool verify = Runtime::Current()->IsVerificationEnabled();
-    ArtDexFileLoader dex_file_loader(dex_filename, dex_fd, dex_location);
-    if (!dex_file_loader.Open(verify, kVerifyChecksum, &error_msg, dex_files)) {
-      LOG(WARNING) << "Failed to open .dex from file '" << dex_filename << "' / fd " << dex_fd
+    ArtDexFileLoader dex_file_loader(dex_filename, file, dex_location);
+    if (!dex_file_loader.Open(verify, kVerifyChecksum, &error_msg, out_dex_files)) {
+      LOG(WARNING) << "Failed to open .dex from file '" << dex_filename << "' / fd " << file->Fd()
                    << ": " << error_msg;
       ++failure_count;
+    }
+    if (file->IsValid()) {
+      bool close_ok = file->Close();
+      DCHECK(close_ok) << dex_filename;
     }
   }
   return failure_count;
@@ -1399,6 +1406,15 @@ void Runtime::ReloadAllFlags(const std::string& caller) {
   FlagBase::ReloadAllFlags(caller);
 }
 
+static std::vector<File> FileFdsToFileObjects(std::vector<int>&& fds) {
+  std::vector<File> files;
+  files.reserve(fds.size());
+  for (int fd : fds) {
+    files.push_back(File(fd, /*check_usage=*/false));
+  }
+  return files;
+}
+
 bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   // (b/30160149): protect subprocesses from modifications to LD_LIBRARY_PATH, etc.
   // Take a snapshot of the environment at the time the runtime was created, for use by Exec, etc.
@@ -1479,22 +1495,26 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
     return false;
   }
 
-  boot_class_path_fds_ = runtime_options.ReleaseOrDefault(Opt::BootClassPathFds);
-  if (!boot_class_path_fds_.empty() && boot_class_path_fds_.size() != boot_class_path_.size()) {
+  boot_class_path_files_ =
+      FileFdsToFileObjects(runtime_options.ReleaseOrDefault(Opt::BootClassPathFds));
+  if (!boot_class_path_files_.empty() && boot_class_path_files_.size() != boot_class_path_.size()) {
     LOG(ERROR) << "Number of FDs specified in -Xbootclasspathfds must match the number of JARs in "
                << "-Xbootclasspath.";
     return false;
   }
 
-  boot_class_path_image_fds_ = runtime_options.ReleaseOrDefault(Opt::BootClassPathImageFds);
-  boot_class_path_vdex_fds_ = runtime_options.ReleaseOrDefault(Opt::BootClassPathVdexFds);
-  boot_class_path_oat_fds_ = runtime_options.ReleaseOrDefault(Opt::BootClassPathOatFds);
-  CHECK(boot_class_path_image_fds_.empty() ||
-        boot_class_path_image_fds_.size() == boot_class_path_.size());
-  CHECK(boot_class_path_vdex_fds_.empty() ||
-        boot_class_path_vdex_fds_.size() == boot_class_path_.size());
-  CHECK(boot_class_path_oat_fds_.empty() ||
-        boot_class_path_oat_fds_.size() == boot_class_path_.size());
+  boot_class_path_image_files_ =
+      FileFdsToFileObjects(runtime_options.ReleaseOrDefault(Opt::BootClassPathImageFds));
+  boot_class_path_vdex_files_ =
+      FileFdsToFileObjects(runtime_options.ReleaseOrDefault(Opt::BootClassPathVdexFds));
+  boot_class_path_oat_files_ =
+      FileFdsToFileObjects(runtime_options.ReleaseOrDefault(Opt::BootClassPathOatFds));
+  CHECK(boot_class_path_image_files_.empty() ||
+        boot_class_path_image_files_.size() == boot_class_path_.size());
+  CHECK(boot_class_path_vdex_files_.empty() ||
+        boot_class_path_vdex_files_.size() == boot_class_path_.size());
+  CHECK(boot_class_path_oat_files_.empty() ||
+        boot_class_path_oat_files_.size() == boot_class_path_.size());
 
   class_path_string_ = runtime_options.ReleaseOrDefault(Opt::ClassPath);
   properties_ = runtime_options.ReleaseOrDefault(Opt::PropertiesList);
@@ -1504,6 +1524,8 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   is_zygote_ = runtime_options.Exists(Opt::Zygote);
   is_primary_zygote_ = runtime_options.Exists(Opt::PrimaryZygote);
   is_explicit_gc_disabled_ = runtime_options.Exists(Opt::DisableExplicitGC);
+  is_eagerly_release_explicit_gc_disabled_ =
+      runtime_options.Exists(Opt::DisableEagerlyReleaseExplicitGC);
   image_dex2oat_enabled_ = runtime_options.GetOrDefault(Opt::ImageDex2Oat);
   dump_native_stack_on_sig_quit_ = runtime_options.GetOrDefault(Opt::DumpNativeStackOnSigQuit);
   allow_in_memory_compilation_ = runtime_options.Exists(Opt::AllowInMemoryCompilation);
@@ -1620,9 +1642,9 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   InitializeApexVersions();
 
   BackgroundGcOption background_gc =
-      gUseReadBarrier ? BackgroundGcOption(gc::kCollectorTypeCCBackground)
-                      : (gUseUserfaultfd ? BackgroundGcOption(xgc_option.collector_type_)
-                                         : runtime_options.GetOrDefault(Opt::BackgroundGc));
+      gUseReadBarrier ? BackgroundGcOption(gc::kCollectorTypeCCBackground) :
+                        (gUseUserfaultfd ? BackgroundGcOption(gc::kCollectorTypeCMCBackground) :
+                                           runtime_options.GetOrDefault(Opt::BackgroundGc));
 
   heap_ = new gc::Heap(runtime_options.GetOrDefault(Opt::MemoryInitialSize),
                        runtime_options.GetOrDefault(Opt::HeapGrowthLimit),
@@ -1635,10 +1657,10 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
                        runtime_options.GetOrDefault(Opt::NonMovingSpaceCapacity),
                        GetBootClassPath(),
                        GetBootClassPathLocations(),
-                       GetBootClassPathFds(),
-                       GetBootClassPathImageFds(),
-                       GetBootClassPathVdexFds(),
-                       GetBootClassPathOatFds(),
+                       GetBootClassPathFiles(),
+                       GetBootClassPathImageFiles(),
+                       GetBootClassPathVdexFiles(),
+                       GetBootClassPathOatFiles(),
                        image_locations_,
                        instruction_set_,
                        // Override the collector type to CC if the read barrier config.
@@ -1748,6 +1770,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
       FALLTHROUGH_INTENDED;
     case InstructionSet::kArm:
     case InstructionSet::kThumb2:
+    case InstructionSet::kRiscv64:
     case InstructionSet::kX86:
     case InstructionSet::kX86_64:
       implicit_null_checks_ = true;
@@ -1859,12 +1882,12 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
       if (runtime_options.Exists(Opt::BootClassPathDexList)) {
         extra_boot_class_path.swap(*runtime_options.GetOrDefault(Opt::BootClassPathDexList));
       } else {
-        ArrayRef<const int> bcp_fds = start < GetBootClassPathFds().size()
-            ? ArrayRef<const int>(GetBootClassPathFds()).SubArray(start)
-            : ArrayRef<const int>();
+        ArrayRef<File> bcp_files = start < GetBootClassPathFiles().size() ?
+                                       ArrayRef<File>(GetBootClassPathFiles()).SubArray(start) :
+                                       ArrayRef<File>();
         OpenBootDexFiles(ArrayRef<const std::string>(GetBootClassPath()).SubArray(start),
                          ArrayRef<const std::string>(GetBootClassPathLocations()).SubArray(start),
-                         bcp_fds,
+                         bcp_files,
                          &extra_boot_class_path);
       }
       class_linker_->AddExtraBootDexFiles(self, std::move(extra_boot_class_path));
@@ -1883,7 +1906,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
     } else {
       OpenBootDexFiles(ArrayRef<const std::string>(GetBootClassPath()),
                        ArrayRef<const std::string>(GetBootClassPathLocations()),
-                       ArrayRef<const int>(GetBootClassPathFds()),
+                       ArrayRef<File>(GetBootClassPathFiles()),
                        &boot_class_path);
     }
     if (!class_linker_->InitWithoutImage(std::move(boot_class_path), &error_msg)) {
@@ -1916,8 +1939,8 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
     trace_config_->trace_file_size = runtime_options.ReleaseOrDefault(Opt::MethodTraceFileSize);
     trace_config_->trace_mode = Trace::TraceMode::kMethodTracing;
     trace_config_->trace_output_mode = runtime_options.Exists(Opt::MethodTraceStreaming) ?
-        Trace::TraceOutputMode::kStreaming :
-        Trace::TraceOutputMode::kFile;
+                                           TraceOutputMode::kStreaming :
+                                           TraceOutputMode::kFile;
     trace_config_->clock_source = runtime_options.GetOrDefault(Opt::MethodTraceClock);
   }
 

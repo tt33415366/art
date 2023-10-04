@@ -36,6 +36,11 @@ namespace riscv64 {
 
 class ScratchRegisterScope;
 
+static constexpr size_t kRiscv64HalfwordSize = 2;
+static constexpr size_t kRiscv64WordSize = 4;
+static constexpr size_t kRiscv64DoublewordSize = 8;
+static constexpr size_t kRiscv64FloatRegSizeInBytes = 8;
+
 enum class FPRoundingMode : uint32_t {
   kRNE = 0x0,  // Round to Nearest, ties to Even
   kRTZ = 0x1,  // Round towards Zero
@@ -50,9 +55,12 @@ enum class FPRoundingMode : uint32_t {
   kIgnored = 0
 };
 
-static constexpr size_t kRiscv64HalfwordSize = 2;
-static constexpr size_t kRiscv64WordSize = 4;
-static constexpr size_t kRiscv64DoublewordSize = 8;
+enum class AqRl : uint32_t {
+  kNone    = 0x0,
+  kRelease = 0x1,
+  kAcquire = 0x2,
+  kAqRl    = kRelease | kAcquire
+};
 
 // the type for fence
 enum FenceType {
@@ -62,6 +70,20 @@ enum FenceType {
   kFenceOutput = 4,
   kFenceInput = 8,
   kFenceDefault = 0xf,
+};
+
+// Used to test the values returned by FClassS/FClassD.
+enum FPClassMaskType {
+  kNegativeInfinity  = 0x001,
+  kNegativeNormal    = 0x002,
+  kNegativeSubnormal = 0x004,
+  kNegativeZero      = 0x008,
+  kPositiveZero      = 0x010,
+  kPositiveSubnormal = 0x020,
+  kPositiveNormal    = 0x040,
+  kPositiveInfinity  = 0x080,
+  kSignalingNaN      = 0x100,
+  kQuietNaN          = 0x200,
 };
 
 class Riscv64Label : public Label {
@@ -141,6 +163,7 @@ class Riscv64Assembler final : public Assembler {
                             const Riscv64InstructionSetFeatures* instruction_set_features = nullptr)
       : Assembler(allocator),
         branches_(allocator->Adapter(kArenaAllocAssembler)),
+        finalized_(false),
         overwriting_(false),
         overwrite_location_(0),
         literals_(allocator->Adapter(kArenaAllocAssembler)),
@@ -264,28 +287,28 @@ class Riscv64Assembler final : public Assembler {
   void Remuw(XRegister rd, XRegister rs1, XRegister rs2);
 
   // RV32A/RV64A Standard Extension
-  void LrW(XRegister rd, XRegister rs1, uint32_t aqrl);
-  void LrD(XRegister rd, XRegister rs1, uint32_t aqrl);
-  void ScW(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void ScD(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoSwapW(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoSwapD(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoAddW(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoAddD(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoXorW(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoXorD(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoAndW(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoAndD(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoOrW(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoOrD(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoMinW(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoMinD(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoMaxW(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoMaxD(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoMinuW(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoMinuD(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoMaxuW(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
-  void AmoMaxuD(XRegister rd, XRegister rs2, XRegister rs1, uint32_t aqrl);
+  void LrW(XRegister rd, XRegister rs1, AqRl aqrl);
+  void LrD(XRegister rd, XRegister rs1, AqRl aqrl);
+  void ScW(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void ScD(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoSwapW(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoSwapD(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoAddW(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoAddD(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoXorW(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoXorD(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoAndW(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoAndD(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoOrW(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoOrD(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoMinW(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoMinD(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoMaxW(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoMaxD(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoMinuW(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoMinuD(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoMaxuW(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
+  void AmoMaxuD(XRegister rd, XRegister rs2, XRegister rs1, AqRl aqrl);
 
   // "Zicsr" Standard Extension, opcode = 0x73, funct3 from 0x1 ~ 0x3 and 0x5 ~ 0x7
   void Csrrw(XRegister rd, uint32_t csr, XRegister rs1);
@@ -452,6 +475,41 @@ class Riscv64Assembler final : public Assembler {
   // FP classify instructions (RV32F+RV32D): opcode = 0x53, funct3 = 0x1, funct7 = 0b111X00D
   void FClassS(XRegister rd, FRegister rs1);
   void FClassD(XRegister rd, FRegister rs1);
+
+  // "Zba" Standard Extension, opcode = 0x1b, 0x33 or 0x3b, funct3 and funct7 varies.
+  void AddUw(XRegister rd, XRegister rs1, XRegister rs2);
+  void Sh1Add(XRegister rd, XRegister rs1, XRegister rs2);
+  void Sh1AddUw(XRegister rd, XRegister rs1, XRegister rs2);
+  void Sh2Add(XRegister rd, XRegister rs1, XRegister rs2);
+  void Sh2AddUw(XRegister rd, XRegister rs1, XRegister rs2);
+  void Sh3Add(XRegister rd, XRegister rs1, XRegister rs2);
+  void Sh3AddUw(XRegister rd, XRegister rs1, XRegister rs2);
+  void SlliUw(XRegister rd, XRegister rs1, int32_t shamt);
+
+  // "Zbb" Standard Extension, opcode = 0x13, 0x1b or 0x33, funct3 and funct7 varies.
+  // Note: We do not support 32-bit sext.b, sext.h and zext.h from the Zbb extension.
+  // (Neither does the clang-r498229's assembler which we currently test against.)
+  void Andn(XRegister rd, XRegister rs1, XRegister rs2);
+  void Orn(XRegister rd, XRegister rs1, XRegister rs2);
+  void Xnor(XRegister rd, XRegister rs1, XRegister rs2);
+  void Clz(XRegister rd, XRegister rs1);
+  void Clzw(XRegister rd, XRegister rs1);
+  void Ctz(XRegister rd, XRegister rs1);
+  void Ctzw(XRegister rd, XRegister rs1);
+  void Cpop(XRegister rd, XRegister rs1);
+  void Cpopw(XRegister rd, XRegister rs1);
+  void Min(XRegister rd, XRegister rs1, XRegister rs2);
+  void Minu(XRegister rd, XRegister rs1, XRegister rs2);
+  void Max(XRegister rd, XRegister rs1, XRegister rs2);
+  void Maxu(XRegister rd, XRegister rs1, XRegister rs2);
+  void Rol(XRegister rd, XRegister rs1, XRegister rs2);
+  void Rolw(XRegister rd, XRegister rs1, XRegister rs2);
+  void Ror(XRegister rd, XRegister rs1, XRegister rs2);
+  void Rorw(XRegister rd, XRegister rs1, XRegister rs2);
+  void Rori(XRegister rd, XRegister rs1, int32_t shamt);
+  void Roriw(XRegister rd, XRegister rs1, int32_t shamt);
+  void OrcB(XRegister rd, XRegister rs1);
+  void Rev8(XRegister rd, XRegister rs1);
 
   ////////////////////////////// RV64 MACRO Instructions  START ///////////////////////////////
   // These pseudo instructions are from "RISC-V Assembly Programmer's Manual".
@@ -984,6 +1042,9 @@ class Riscv64Assembler final : public Assembler {
   }
 
   ArenaVector<Branch> branches_;
+
+  // For checking that we finalize the code only once.
+  bool finalized_;
 
   // Whether appending instructions at the end of the buffer or overwriting the existing ones.
   bool overwriting_;

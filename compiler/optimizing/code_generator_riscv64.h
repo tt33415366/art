@@ -22,11 +22,12 @@
 #include "base/macros.h"
 #include "code_generator.h"
 #include "driver/compiler_options.h"
+#include "intrinsics_list.h"
 #include "optimizing/locations.h"
+#include "parallel_move_resolver.h"
 #include "utils/riscv64/assembler_riscv64.h"
 
-namespace art {
-
+namespace art HIDDEN {
 namespace riscv64 {
 
 // InvokeDexCallingConvention registers
@@ -47,12 +48,196 @@ static constexpr FRegister kRuntimeParameterFpuRegisters[] = {
 static constexpr size_t kRuntimeParameterFpuRegistersLength =
     arraysize(kRuntimeParameterFpuRegisters);
 
-#define UNIMPLEMENTED_INTRINSIC_LIST_RISCV64(V) INTRINSICS_LIST(V)
+#define UNIMPLEMENTED_INTRINSIC_LIST_RISCV64(V) \
+  V(IntegerReverse)                             \
+  V(IntegerDivideUnsigned)                      \
+  V(LongReverse)                                \
+  V(LongDivideUnsigned)                         \
+  V(MathFmaDouble)                              \
+  V(MathFmaFloat)                               \
+  V(MathCos)                                    \
+  V(MathSin)                                    \
+  V(MathAcos)                                   \
+  V(MathAsin)                                   \
+  V(MathAtan)                                   \
+  V(MathAtan2)                                  \
+  V(MathPow)                                    \
+  V(MathCbrt)                                   \
+  V(MathCosh)                                   \
+  V(MathExp)                                    \
+  V(MathExpm1)                                  \
+  V(MathHypot)                                  \
+  V(MathLog)                                    \
+  V(MathLog10)                                  \
+  V(MathNextAfter)                              \
+  V(MathSinh)                                   \
+  V(MathTan)                                    \
+  V(MathTanh)                                   \
+  V(MathSqrt)                                   \
+  V(MathCeil)                                   \
+  V(MathFloor)                                  \
+  V(MathRint)                                   \
+  V(MathRoundDouble)                            \
+  V(MathRoundFloat)                             \
+  V(MathMultiplyHigh)                           \
+  V(SystemArrayCopyByte)                        \
+  V(SystemArrayCopyChar)                        \
+  V(SystemArrayCopyInt)                         \
+  V(SystemArrayCopy)                            \
+  V(ThreadCurrentThread)                        \
+  V(FP16Ceil)                                   \
+  V(FP16Compare)                                \
+  V(FP16Floor)                                  \
+  V(FP16Rint)                                   \
+  V(FP16ToFloat)                                \
+  V(FP16ToHalf)                                 \
+  V(FP16Greater)                                \
+  V(FP16GreaterEquals)                          \
+  V(FP16Less)                                   \
+  V(FP16LessEquals)                             \
+  V(FP16Min)                                    \
+  V(FP16Max)                                    \
+  V(StringCompareTo)                            \
+  V(StringEquals)                               \
+  V(StringGetCharsNoCheck)                      \
+  V(StringIndexOf)                              \
+  V(StringIndexOfAfter)                         \
+  V(StringStringIndexOf)                        \
+  V(StringStringIndexOfAfter)                   \
+  V(StringNewStringFromBytes)                   \
+  V(StringNewStringFromChars)                   \
+  V(StringNewStringFromString)                  \
+  V(StringBufferAppend)                         \
+  V(StringBufferLength)                         \
+  V(StringBufferToString)                       \
+  V(StringBuilderAppendObject)                  \
+  V(StringBuilderAppendString)                  \
+  V(StringBuilderAppendCharSequence)            \
+  V(StringBuilderAppendCharArray)               \
+  V(StringBuilderAppendBoolean)                 \
+  V(StringBuilderAppendChar)                    \
+  V(StringBuilderAppendInt)                     \
+  V(StringBuilderAppendLong)                    \
+  V(StringBuilderAppendFloat)                   \
+  V(StringBuilderAppendDouble)                  \
+  V(StringBuilderLength)                        \
+  V(StringBuilderToString)                      \
+  V(UnsafeCASInt)                               \
+  V(UnsafeCASLong)                              \
+  V(UnsafeCASObject)                            \
+  V(UnsafeGet)                                  \
+  V(UnsafeGetVolatile)                          \
+  V(UnsafeGetObject)                            \
+  V(UnsafeGetObjectVolatile)                    \
+  V(UnsafeGetLong)                              \
+  V(UnsafeGetLongVolatile)                      \
+  V(UnsafePut)                                  \
+  V(UnsafePutOrdered)                           \
+  V(UnsafePutVolatile)                          \
+  V(UnsafePutObject)                            \
+  V(UnsafePutObjectOrdered)                     \
+  V(UnsafePutObjectVolatile)                    \
+  V(UnsafePutLong)                              \
+  V(UnsafePutLongOrdered)                       \
+  V(UnsafePutLongVolatile)                      \
+  V(UnsafeGetAndAddInt)                         \
+  V(UnsafeGetAndAddLong)                        \
+  V(UnsafeGetAndSetInt)                         \
+  V(UnsafeGetAndSetLong)                        \
+  V(UnsafeGetAndSetObject)                      \
+  V(JdkUnsafeCASInt)                            \
+  V(JdkUnsafeCASLong)                           \
+  V(JdkUnsafeCASObject)                         \
+  V(JdkUnsafeCompareAndSetInt)                  \
+  V(JdkUnsafeCompareAndSetLong)                 \
+  V(JdkUnsafeCompareAndSetObject)               \
+  V(JdkUnsafeGet)                               \
+  V(JdkUnsafeGetVolatile)                       \
+  V(JdkUnsafeGetAcquire)                        \
+  V(JdkUnsafeGetObject)                         \
+  V(JdkUnsafeGetObjectVolatile)                 \
+  V(JdkUnsafeGetObjectAcquire)                  \
+  V(JdkUnsafeGetLong)                           \
+  V(JdkUnsafeGetLongVolatile)                   \
+  V(JdkUnsafeGetLongAcquire)                    \
+  V(JdkUnsafePut)                               \
+  V(JdkUnsafePutOrdered)                        \
+  V(JdkUnsafePutRelease)                        \
+  V(JdkUnsafePutVolatile)                       \
+  V(JdkUnsafePutObject)                         \
+  V(JdkUnsafePutObjectOrdered)                  \
+  V(JdkUnsafePutObjectVolatile)                 \
+  V(JdkUnsafePutObjectRelease)                  \
+  V(JdkUnsafePutLong)                           \
+  V(JdkUnsafePutLongOrdered)                    \
+  V(JdkUnsafePutLongVolatile)                   \
+  V(JdkUnsafePutLongRelease)                    \
+  V(JdkUnsafeGetAndAddInt)                      \
+  V(JdkUnsafeGetAndAddLong)                     \
+  V(JdkUnsafeGetAndSetInt)                      \
+  V(JdkUnsafeGetAndSetLong)                     \
+  V(JdkUnsafeGetAndSetObject)                   \
+  V(ReferenceGetReferent)                       \
+  V(ReferenceRefersTo)                          \
+  V(IntegerValueOf)                             \
+  V(ThreadInterrupted)                          \
+  V(ReachabilityFence)                          \
+  V(CRC32Update)                                \
+  V(CRC32UpdateBytes)                           \
+  V(CRC32UpdateByteBuffer)                      \
+  V(MethodHandleInvokeExact)                    \
+  V(MethodHandleInvoke)                         \
+  V(VarHandleCompareAndExchange)                \
+  V(VarHandleCompareAndExchangeAcquire)         \
+  V(VarHandleCompareAndExchangeRelease)         \
+  V(VarHandleCompareAndSet)                     \
+  V(VarHandleGet)                               \
+  V(VarHandleGetAcquire)                        \
+  V(VarHandleGetAndAdd)                         \
+  V(VarHandleGetAndAddAcquire)                  \
+  V(VarHandleGetAndAddRelease)                  \
+  V(VarHandleGetAndBitwiseAnd)                  \
+  V(VarHandleGetAndBitwiseAndAcquire)           \
+  V(VarHandleGetAndBitwiseAndRelease)           \
+  V(VarHandleGetAndBitwiseOr)                   \
+  V(VarHandleGetAndBitwiseOrAcquire)            \
+  V(VarHandleGetAndBitwiseOrRelease)            \
+  V(VarHandleGetAndBitwiseXor)                  \
+  V(VarHandleGetAndBitwiseXorAcquire)           \
+  V(VarHandleGetAndBitwiseXorRelease)           \
+  V(VarHandleGetAndSet)                         \
+  V(VarHandleGetAndSetAcquire)                  \
+  V(VarHandleGetAndSetRelease)                  \
+  V(VarHandleGetOpaque)                         \
+  V(VarHandleGetVolatile)                       \
+  V(VarHandleSet)                               \
+  V(VarHandleSetOpaque)                         \
+  V(VarHandleSetRelease)                        \
+  V(VarHandleSetVolatile)                       \
+  V(VarHandleWeakCompareAndSet)                 \
+  V(VarHandleWeakCompareAndSetAcquire)          \
+  V(VarHandleWeakCompareAndSetPlain)            \
+  V(VarHandleWeakCompareAndSetRelease)
 
 // Method register on invoke.
 static const XRegister kArtMethodRegister = A0;
 
 class CodeGeneratorRISCV64;
+
+class InvokeRuntimeCallingConvention : public CallingConvention<XRegister, FRegister> {
+ public:
+  InvokeRuntimeCallingConvention()
+      : CallingConvention(kRuntimeParameterCoreRegisters,
+                          kRuntimeParameterCoreRegistersLength,
+                          kRuntimeParameterFpuRegisters,
+                          kRuntimeParameterFpuRegistersLength,
+                          kRiscv64PointerSize) {}
+
+  Location GetReturnLocation(DataType::Type return_type);
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(InvokeRuntimeCallingConvention);
+};
 
 class InvokeDexCallingConvention : public CallingConvention<XRegister, FRegister> {
  public:
@@ -82,6 +267,31 @@ class InvokeDexCallingConventionVisitorRISCV64 : public InvokeDexCallingConventi
   DISALLOW_COPY_AND_ASSIGN(InvokeDexCallingConventionVisitorRISCV64);
 };
 
+class CriticalNativeCallingConventionVisitorRiscv64 : public InvokeDexCallingConventionVisitor {
+ public:
+  explicit CriticalNativeCallingConventionVisitorRiscv64(bool for_register_allocation)
+      : for_register_allocation_(for_register_allocation) {}
+
+  virtual ~CriticalNativeCallingConventionVisitorRiscv64() {}
+
+  Location GetNextLocation(DataType::Type type) override;
+  Location GetReturnLocation(DataType::Type type) const override;
+  Location GetMethodLocation() const override;
+
+  size_t GetStackOffset() const { return stack_offset_; }
+
+ private:
+  // Register allocator does not support adjusting frame size, so we cannot provide final locations
+  // of stack arguments for register allocation. We ask the register allocator for any location and
+  // move these arguments to the right place after adjusting the SP when generating the call.
+  const bool for_register_allocation_;
+  size_t gpr_index_ = 0u;
+  size_t fpr_index_ = 0u;
+  size_t stack_offset_ = 0u;
+
+  DISALLOW_COPY_AND_ASSIGN(CriticalNativeCallingConventionVisitorRiscv64);
+};
+
 class SlowPathCodeRISCV64 : public SlowPathCode {
  public:
   explicit SlowPathCodeRISCV64(HInstruction* instruction)
@@ -95,6 +305,53 @@ class SlowPathCodeRISCV64 : public SlowPathCode {
   Riscv64Label exit_label_;
 
   DISALLOW_COPY_AND_ASSIGN(SlowPathCodeRISCV64);
+};
+
+class ParallelMoveResolverRISCV64 : public ParallelMoveResolverWithSwap {
+ public:
+  ParallelMoveResolverRISCV64(ArenaAllocator* allocator, CodeGeneratorRISCV64* codegen)
+      : ParallelMoveResolverWithSwap(allocator), codegen_(codegen) {}
+
+  void EmitMove(size_t index) override;
+  void EmitSwap(size_t index) override;
+  void SpillScratch(int reg) override;
+  void RestoreScratch(int reg) override;
+
+  void Exchange(int index1, int index2, bool double_slot);
+
+  Riscv64Assembler* GetAssembler() const;
+
+ private:
+  CodeGeneratorRISCV64* const codegen_;
+
+  DISALLOW_COPY_AND_ASSIGN(ParallelMoveResolverRISCV64);
+};
+
+class FieldAccessCallingConventionRISCV64 : public FieldAccessCallingConvention {
+ public:
+  FieldAccessCallingConventionRISCV64() {}
+
+  Location GetObjectLocation() const override {
+    return Location::RegisterLocation(A1);
+  }
+  Location GetFieldIndexLocation() const override {
+    return Location::RegisterLocation(A0);
+  }
+  Location GetReturnLocation(DataType::Type type ATTRIBUTE_UNUSED) const override {
+    return Location::RegisterLocation(A0);
+  }
+  Location GetSetValueLocation(DataType::Type type ATTRIBUTE_UNUSED,
+                               bool is_instance) const override {
+    return is_instance
+        ? Location::RegisterLocation(A2)
+        : Location::RegisterLocation(A1);
+  }
+  Location GetFpuLocation(DataType::Type type ATTRIBUTE_UNUSED) const override {
+    return Location::FpuRegisterLocation(FA0);
+  }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(FieldAccessCallingConventionRISCV64);
 };
 
 class LocationsBuilderRISCV64 : public HGraphVisitor {
@@ -119,10 +376,8 @@ class LocationsBuilderRISCV64 : public HGraphVisitor {
   void HandleBinaryOp(HBinaryOperation* operation);
   void HandleCondition(HCondition* instruction);
   void HandleShift(HBinaryOperation* operation);
-  void HandleFieldSet(HInstruction* instruction, const FieldInfo& field_info);
-  void HandleFieldGet(HInstruction* instruction, const FieldInfo& field_info);
-  Location RegisterOrZeroConstant(HInstruction* instruction);
-  Location FpuRegisterOrConstantForStore(HInstruction* instruction);
+  void HandleFieldSet(HInstruction* instruction);
+  void HandleFieldGet(HInstruction* instruction);
 
   InvokeDexCallingConventionVisitorRISCV64 parameter_visitor_;
 
@@ -151,6 +406,8 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
 
   void GenerateMemoryBarrier(MemBarrierKind kind);
 
+  void ShNAdd(XRegister rd, XRegister rs1, XRegister rs2, DataType::Type type);
+
  protected:
   void GenerateClassInitializationCheck(SlowPathCodeRISCV64* slow_path, XRegister class_reg);
   void GenerateBitstringTypeCheckCompare(HTypeCheckInstruction* check, XRegister temp);
@@ -160,12 +417,9 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
   void HandleShift(HBinaryOperation* operation);
   void HandleFieldSet(HInstruction* instruction,
                       const FieldInfo& field_info,
-                      bool value_can_be_null);
+                      bool value_can_be_null,
+                      WriteBarrierKind write_barrier_kind);
   void HandleFieldGet(HInstruction* instruction, const FieldInfo& field_info);
-
-  void GenerateMinMaxInt(LocationSummary* locations, bool is_min);
-  void GenerateMinMaxFP(LocationSummary* locations, bool is_min, DataType::Type type);
-  void GenerateMinMax(HBinaryOperation* minmax, bool is_min);
 
   // Generate a heap reference load using one register `out`:
   //
@@ -218,50 +472,54 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
   void DivRemByPowerOfTwo(HBinaryOperation* instruction);
   void GenerateDivRemWithAnyConstant(HBinaryOperation* instruction);
   void GenerateDivRemIntegral(HBinaryOperation* instruction);
-  void GenerateIntLongCompare(IfCondition cond, bool is64bit, LocationSummary* locations);
-  // When the function returns `false` it means that the condition holds if `dst` is non-zero
-  // and doesn't hold if `dst` is zero. If it returns `true`, the roles of zero and non-zero
-  // `dst` are exchanged.
-  bool MaterializeIntLongCompare(IfCondition cond,
-                                 bool is64bit,
-                                 LocationSummary* input_locations,
-                                 XRegister dst);
+  void GenerateIntLongCondition(IfCondition cond, LocationSummary* locations);
   void GenerateIntLongCompareAndBranch(IfCondition cond,
-                                       bool is64bit,
                                        LocationSummary* locations,
                                        Riscv64Label* label);
-  void GenerateFpCompare(IfCondition cond,
-                         bool gt_bias,
-                         DataType::Type type,
-                         LocationSummary* locations);
-  // When the function returns `false` it means that the condition holds if `dst` is non-zero
-  // and doesn't hold if `dst` is zero. If it returns `true`, the roles of zero and non-zero
-  // `dst` are exchanged.
-  bool MaterializeFpCompare(IfCondition cond,
-                            bool gt_bias,
-                            DataType::Type type,
-                            LocationSummary* input_locations,
-                            XRegister dst);
-  void GenerateFpCompareAndBranch(IfCondition cond,
-                                  bool gt_bias,
-                                  DataType::Type type,
-                                  LocationSummary* locations,
-                                  Riscv64Label* label);
+  void GenerateFpCondition(IfCondition cond,
+                           bool gt_bias,
+                           DataType::Type type,
+                           LocationSummary* locations,
+                           Riscv64Label* label = nullptr);
   void HandleGoto(HInstruction* got, HBasicBlock* successor);
-  void GenPackedSwitchWithCompares(XRegister value_reg,
-                                   int32_t lower_bound,
+  void GenPackedSwitchWithCompares(XRegister adjusted,
+                                   XRegister temp,
                                    uint32_t num_entries,
-                                   HBasicBlock* switch_block,
-                                   HBasicBlock* default_block);
-  void GenTableBasedPackedSwitch(XRegister value_reg,
-                                 int32_t lower_bound,
+                                   HBasicBlock* switch_block);
+  void GenTableBasedPackedSwitch(XRegister adjusted,
+                                 XRegister temp,
                                  uint32_t num_entries,
-                                 HBasicBlock* switch_block,
-                                 HBasicBlock* default_block);
+                                 HBasicBlock* switch_block);
   int32_t VecAddress(LocationSummary* locations,
                      size_t size,
                      /*out*/ XRegister* adjusted_base);
   void GenConditionalMove(HSelect* select);
+
+  template <typename Reg,
+            void (Riscv64Assembler::*opS)(Reg, FRegister, FRegister),
+            void (Riscv64Assembler::*opD)(Reg, FRegister, FRegister)>
+  void FpBinOp(Reg rd, FRegister rs1, FRegister rs2, DataType::Type type);
+  void FAdd(FRegister rd, FRegister rs1, FRegister rs2, DataType::Type type);
+  void FSub(FRegister rd, FRegister rs1, FRegister rs2, DataType::Type type);
+  void FDiv(FRegister rd, FRegister rs1, FRegister rs2, DataType::Type type);
+  void FMul(FRegister rd, FRegister rs1, FRegister rs2, DataType::Type type);
+  void FMin(FRegister rd, FRegister rs1, FRegister rs2, DataType::Type type);
+  void FMax(FRegister rd, FRegister rs1, FRegister rs2, DataType::Type type);
+  void FEq(XRegister rd, FRegister rs1, FRegister rs2, DataType::Type type);
+  void FLt(XRegister rd, FRegister rs1, FRegister rs2, DataType::Type type);
+  void FLe(XRegister rd, FRegister rs1, FRegister rs2, DataType::Type type);
+
+  template <typename Reg,
+            void (Riscv64Assembler::*opS)(Reg, FRegister),
+            void (Riscv64Assembler::*opD)(Reg, FRegister)>
+  void FpUnOp(Reg rd, FRegister rs1, DataType::Type type);
+  void FAbs(FRegister rd, FRegister rs1, DataType::Type type);
+  void FNeg(FRegister rd, FRegister rs1, DataType::Type type);
+  void FMv(FRegister rd, FRegister rs1, DataType::Type type);
+  void FClass(XRegister rd, FRegister rs1, DataType::Type type);
+
+  void Load(Location out, XRegister rs1, int32_t offset, DataType::Type type);
+  void Store(Location value, XRegister rs1, int32_t offset, DataType::Type type);
 
   Riscv64Assembler* const assembler_;
   CodeGeneratorRISCV64* const codegen_;
@@ -281,46 +539,57 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
 
   void Bind(HBasicBlock* block) override;
 
-  size_t GetWordSize() const override { return kRiscv64WordSize; }
+  size_t GetWordSize() const override {
+    // The "word" for the compiler is the core register size (64-bit for riscv64) while the
+    // riscv64 assembler uses "word" for 32-bit values and "double word" for 64-bit values.
+    return kRiscv64DoublewordSize;
+  }
 
   bool SupportsPredicatedSIMD() const override {
     // TODO(riscv64): Check the vector extension.
     return false;
   }
 
+  // Get FP register width in bytes for spilling/restoring in the slow paths.
+  //
+  // Note: In SIMD graphs this should return SIMD register width as all FP and SIMD registers
+  // alias and live SIMD registers are forced to be spilled in full size in the slow paths.
   size_t GetSlowPathFPWidth() const override {
-    LOG(FATAL) << "CodeGeneratorRISCV64::GetSlowPathFPWidth is unimplemented";
-    UNREACHABLE();
+    // Default implementation.
+    return GetCalleePreservedFPWidth();
   }
 
   size_t GetCalleePreservedFPWidth() const override {
-    LOG(FATAL) << "CodeGeneratorRISCV64::GetCalleePreservedFPWidth is unimplemented";
-    UNREACHABLE();
+    return kRiscv64FloatRegSizeInBytes;
   };
 
-  size_t GetSIMDRegisterWidth() const override;
+  size_t GetSIMDRegisterWidth() const override {
+    // TODO(riscv64): Implement SIMD with the Vector extension.
+    // Note: HLoopOptimization calls this function even for an ISA without SIMD support.
+    return kRiscv64FloatRegSizeInBytes;
+  };
 
   uintptr_t GetAddressOf(HBasicBlock* block) override {
-    UNUSED(block);
-    LOG(FATAL) << "CodeGeneratorRISCV64::GetAddressOf is unimplemented";
-    UNREACHABLE();
+    return assembler_.GetLabelLocation(GetLabelOf(block));
   };
 
-  void Initialize() override { LOG(FATAL) << "unimplemented"; }
+  Riscv64Label* GetLabelOf(HBasicBlock* block) const {
+    return CommonGetLabelOf<Riscv64Label>(block_labels_, block);
+  }
+
+  void Initialize() override { block_labels_ = CommonInitializeLabels<Riscv64Label>(); }
 
   void MoveConstant(Location destination, int32_t value) override;
-  void MoveLocation(Location dst, Location src, DataType::Type dst_type) override;
+  void MoveLocation(Location destination, Location source, DataType::Type dst_type) override;
   void AddLocationAsTemp(Location location, LocationSummary* locations) override;
-
-  HGraphVisitor* GetInstructionVisitor() override {
-    LOG(FATAL) << "unimplemented";
-    UNREACHABLE();
-  }
 
   Riscv64Assembler* GetAssembler() override { return &assembler_; }
   const Riscv64Assembler& GetAssembler() const override { return assembler_; }
 
   HGraphVisitor* GetLocationBuilder() override { return &location_builder_; }
+  HGraphVisitor* GetInstructionVisitor() override { return &instruction_visitor_; }
+
+  void MaybeGenerateInlineCacheCheck(HInstruction* instruction, XRegister klass);
 
   void SetupBlockedRegisters() const override;
 
@@ -335,8 +604,7 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
   InstructionSet GetInstructionSet() const override { return InstructionSet::kRiscv64; }
 
   uint32_t GetPreferredSlotsAlignment() const override {
-    LOG(FATAL) << "Unimplemented";
-    UNREACHABLE();
+    return static_cast<uint32_t>(kRiscv64PointerSize);
   }
 
   void Finalize() override;
@@ -353,11 +621,7 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
                                            HInstruction* instruction,
                                            SlowPathCode* slow_path);
 
-  // TODO(riscv64): Add ParallelMoveResolverRISCV64 Later
-  ParallelMoveResolver* GetMoveResolver() override {
-    LOG(FATAL) << "Unimplemented";
-    UNREACHABLE();
-  }
+  ParallelMoveResolver* GetMoveResolver() override { return &move_resolver_; }
 
   bool NeedsTwoRegisters([[maybe_unused]] DataType::Type type) const override { return false; }
 
@@ -384,6 +648,82 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
   HInvokeStaticOrDirect::DispatchInfo GetSupportedInvokeStaticOrDirectDispatch(
       const HInvokeStaticOrDirect::DispatchInfo& desired_dispatch_info, ArtMethod* method) override;
 
+  // The PcRelativePatchInfo is used for PC-relative addressing of methods/strings/types,
+  // whether through .data.bimg.rel.ro, .bss, or directly in the boot image.
+  //
+  // The 20-bit and 12-bit parts of the 32-bit PC-relative offset are patched separately,
+  // necessitating two patches/infos. There can be more than two patches/infos if the
+  // instruction supplying the high part is shared with e.g. a slow path, while the low
+  // part is supplied by separate instructions, e.g.:
+  //     auipc r1, high       // patch
+  //     lwu   r2, low(r1)    // patch
+  //     beqz  r2, slow_path
+  //   back:
+  //     ...
+  //   slow_path:
+  //     ...
+  //     sw    r2, low(r1)    // patch
+  //     j     back
+  struct PcRelativePatchInfo : PatchInfo<Riscv64Label> {
+    PcRelativePatchInfo(const DexFile* dex_file,
+                        uint32_t off_or_idx,
+                        const PcRelativePatchInfo* info_high)
+        : PatchInfo<Riscv64Label>(dex_file, off_or_idx),
+          pc_insn_label(info_high != nullptr ? &info_high->label : &label) {
+      DCHECK_IMPLIES(info_high != nullptr, info_high->pc_insn_label == &info_high->label);
+    }
+
+    // Pointer to the info for the high part patch or nullptr if this is the high part patch info.
+    const Riscv64Label* pc_insn_label;
+
+   private:
+    PcRelativePatchInfo(PcRelativePatchInfo&& other) = delete;
+    DISALLOW_COPY_AND_ASSIGN(PcRelativePatchInfo);
+  };
+
+  PcRelativePatchInfo* NewBootImageIntrinsicPatch(uint32_t intrinsic_data,
+                                                  const PcRelativePatchInfo* info_high = nullptr);
+  PcRelativePatchInfo* NewBootImageRelRoPatch(uint32_t boot_image_offset,
+                                              const PcRelativePatchInfo* info_high = nullptr);
+  PcRelativePatchInfo* NewBootImageMethodPatch(MethodReference target_method,
+                                               const PcRelativePatchInfo* info_high = nullptr);
+  PcRelativePatchInfo* NewMethodBssEntryPatch(MethodReference target_method,
+                                              const PcRelativePatchInfo* info_high = nullptr);
+  PcRelativePatchInfo* NewBootImageJniEntrypointPatch(
+      MethodReference target_method, const PcRelativePatchInfo* info_high = nullptr);
+
+  PcRelativePatchInfo* NewBootImageTypePatch(const DexFile& dex_file,
+                                             dex::TypeIndex type_index,
+                                             const PcRelativePatchInfo* info_high = nullptr);
+  PcRelativePatchInfo* NewTypeBssEntryPatch(HLoadClass* load_class,
+                                            const PcRelativePatchInfo* info_high = nullptr);
+  PcRelativePatchInfo* NewBootImageStringPatch(const DexFile& dex_file,
+                                               dex::StringIndex string_index,
+                                               const PcRelativePatchInfo* info_high = nullptr);
+  PcRelativePatchInfo* NewStringBssEntryPatch(const DexFile& dex_file,
+                                              dex::StringIndex string_index,
+                                              const PcRelativePatchInfo* info_high = nullptr);
+
+  void EmitPcRelativeAuipcPlaceholder(PcRelativePatchInfo* info_high, XRegister out);
+  void EmitPcRelativeAddiPlaceholder(PcRelativePatchInfo* info_low, XRegister rd, XRegister rs1);
+  void EmitPcRelativeLwuPlaceholder(PcRelativePatchInfo* info_low, XRegister rd, XRegister rs1);
+  void EmitPcRelativeLdPlaceholder(PcRelativePatchInfo* info_low, XRegister rd, XRegister rs1);
+
+  void EmitLinkerPatches(ArenaVector<linker::LinkerPatch>* linker_patches) override;
+
+  Literal* DeduplicateBootImageAddressLiteral(uint64_t address);
+  void PatchJitRootUse(uint8_t* code,
+                       const uint8_t* roots_data,
+                       const Literal* literal,
+                       uint64_t index_in_table) const;
+  Literal* DeduplicateJitStringLiteral(const DexFile& dex_file,
+                                       dex::StringIndex string_index,
+                                       Handle<mirror::String> handle);
+  Literal* DeduplicateJitClassLiteral(const DexFile& dex_file,
+                                      dex::TypeIndex type_index,
+                                      Handle<mirror::Class> handle);
+  void EmitJitRootPatches(uint8_t* code, const uint8_t* roots_data) override;
+
   void LoadMethod(MethodLoadKind load_kind, Location temp, HInvoke* invoke);
   void GenerateStaticOrDirectCall(HInvokeStaticOrDirect* invoke,
                                   Location temp,
@@ -393,9 +733,169 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
                            SlowPathCode* slow_path = nullptr) override;
   void MoveFromReturnRegister(Location trg, DataType::Type type) override;
 
+  void GenerateMemoryBarrier(MemBarrierKind kind);
+
+  void MaybeIncrementHotness(bool is_frame_entry);
+
+  bool CanUseImplicitSuspendCheck() const;
+
+
+  // Fast path implementation of ReadBarrier::Barrier for a heap
+  // reference field load when Baker's read barriers are used.
+  void GenerateFieldLoadWithBakerReadBarrier(HInstruction* instruction,
+                                             Location ref,
+                                             XRegister obj,
+                                             uint32_t offset,
+                                             Location temp,
+                                             bool needs_null_check);
+  // Fast path implementation of ReadBarrier::Barrier for a heap
+  // reference array load when Baker's read barriers are used.
+  void GenerateArrayLoadWithBakerReadBarrier(HInstruction* instruction,
+                                             Location ref,
+                                             XRegister obj,
+                                             uint32_t data_offset,
+                                             Location index,
+                                             Location temp,
+                                             bool needs_null_check);
+  // Factored implementation, used by GenerateFieldLoadWithBakerReadBarrier
+  // and GenerateArrayLoadWithBakerReadBarrier.
+  void GenerateReferenceLoadWithBakerReadBarrier(HInstruction* instruction,
+                                                 Location ref,
+                                                 XRegister obj,
+                                                 uint32_t offset,
+                                                 Location index,
+                                                 Location temp,
+                                                 bool needs_null_check);
+
+  // Generate a read barrier for a heap reference within `instruction`
+  // using a slow path.
+  //
+  // A read barrier for an object reference read from the heap is
+  // implemented as a call to the artReadBarrierSlow runtime entry
+  // point, which is passed the values in locations `ref`, `obj`, and
+  // `offset`:
+  //
+  //   mirror::Object* artReadBarrierSlow(mirror::Object* ref,
+  //                                      mirror::Object* obj,
+  //                                      uint32_t offset);
+  //
+  // The `out` location contains the value returned by
+  // artReadBarrierSlow.
+  //
+  // When `index` is provided (i.e. for array accesses), the offset
+  // value passed to artReadBarrierSlow is adjusted to take `index`
+  // into account.
+  void GenerateReadBarrierSlow(HInstruction* instruction,
+                               Location out,
+                               Location ref,
+                               Location obj,
+                               uint32_t offset,
+                               Location index = Location::NoLocation());
+
+  // If read barriers are enabled, generate a read barrier for a heap
+  // reference using a slow path. If heap poisoning is enabled, also
+  // unpoison the reference in `out`.
+  void MaybeGenerateReadBarrierSlow(HInstruction* instruction,
+                                    Location out,
+                                    Location ref,
+                                    Location obj,
+                                    uint32_t offset,
+                                    Location index = Location::NoLocation());
+
+  // Generate a read barrier for a GC root within `instruction` using
+  // a slow path.
+  //
+  // A read barrier for an object reference GC root is implemented as
+  // a call to the artReadBarrierForRootSlow runtime entry point,
+  // which is passed the value in location `root`:
+  //
+  //   mirror::Object* artReadBarrierForRootSlow(GcRoot<mirror::Object>* root);
+  //
+  // The `out` location contains the value returned by
+  // artReadBarrierForRootSlow.
+  void GenerateReadBarrierForRootSlow(HInstruction* instruction, Location out, Location root);
+
+  void MarkGCCard(XRegister object, XRegister value, bool value_can_be_null);
+
+  //
+  // Heap poisoning.
+  //
+
+  // Poison a heap reference contained in `reg`.
+  void PoisonHeapReference(XRegister reg);
+
+  // Unpoison a heap reference contained in `reg`.
+  void UnpoisonHeapReference(XRegister reg);
+
+  // Poison a heap reference contained in `reg` if heap poisoning is enabled.
+  void MaybePoisonHeapReference(XRegister reg);
+
+  // Unpoison a heap reference contained in `reg` if heap poisoning is enabled.
+  void MaybeUnpoisonHeapReference(XRegister reg);
+
+  void SwapLocations(Location loc1, Location loc2, DataType::Type type);
+
  private:
+  using Uint32ToLiteralMap = ArenaSafeMap<uint32_t, Literal*>;
+  using Uint64ToLiteralMap = ArenaSafeMap<uint64_t, Literal*>;
+  using StringToLiteralMap =
+      ArenaSafeMap<StringReference, Literal*, StringReferenceValueComparator>;
+  using TypeToLiteralMap = ArenaSafeMap<TypeReference, Literal*, TypeReferenceValueComparator>;
+
+  Literal* DeduplicateUint32Literal(uint32_t value);
+  Literal* DeduplicateUint64Literal(uint64_t value);
+
+  PcRelativePatchInfo* NewPcRelativePatch(const DexFile* dex_file,
+                                          uint32_t offset_or_index,
+                                          const PcRelativePatchInfo* info_high,
+                                          ArenaDeque<PcRelativePatchInfo>* patches);
+
+  template <linker::LinkerPatch (*Factory)(size_t, const DexFile*, uint32_t, uint32_t)>
+  void EmitPcRelativeLinkerPatches(const ArenaDeque<PcRelativePatchInfo>& infos,
+                                   ArenaVector<linker::LinkerPatch>* linker_patches);
+
   Riscv64Assembler assembler_;
   LocationsBuilderRISCV64 location_builder_;
+  InstructionCodeGeneratorRISCV64 instruction_visitor_;
+  Riscv64Label frame_entry_label_;
+
+  // Labels for each block that will be compiled.
+  Riscv64Label* block_labels_;  // Indexed by block id.
+
+  ParallelMoveResolverRISCV64 move_resolver_;
+
+  // Deduplication map for 32-bit literals, used for non-patchable boot image addresses.
+  Uint32ToLiteralMap uint32_literals_;
+  // Deduplication map for 64-bit literals, used for non-patchable method address or method code
+  // address.
+  Uint64ToLiteralMap uint64_literals_;
+
+  // PC-relative method patch info for kBootImageLinkTimePcRelative.
+  ArenaDeque<PcRelativePatchInfo> boot_image_method_patches_;
+  // PC-relative method patch info for kBssEntry.
+  ArenaDeque<PcRelativePatchInfo> method_bss_entry_patches_;
+  // PC-relative type patch info for kBootImageLinkTimePcRelative.
+  ArenaDeque<PcRelativePatchInfo> boot_image_type_patches_;
+  // PC-relative type patch info for kBssEntry.
+  ArenaDeque<PcRelativePatchInfo> type_bss_entry_patches_;
+  // PC-relative public type patch info for kBssEntryPublic.
+  ArenaDeque<PcRelativePatchInfo> public_type_bss_entry_patches_;
+  // PC-relative package type patch info for kBssEntryPackage.
+  ArenaDeque<PcRelativePatchInfo> package_type_bss_entry_patches_;
+  // PC-relative String patch info for kBootImageLinkTimePcRelative.
+  ArenaDeque<PcRelativePatchInfo> boot_image_string_patches_;
+  // PC-relative String patch info for kBssEntry.
+  ArenaDeque<PcRelativePatchInfo> string_bss_entry_patches_;
+  // PC-relative method patch info for kBootImageLinkTimePcRelative+kCallCriticalNative.
+  ArenaDeque<PcRelativePatchInfo> boot_image_jni_entrypoint_patches_;
+  // PC-relative patch info for IntrinsicObjects for the boot image,
+  // and for method/type/string patches for kBootImageRelRo otherwise.
+  ArenaDeque<PcRelativePatchInfo> boot_image_other_patches_;
+
+  // Patches for string root accesses in JIT compiled code.
+  StringToLiteralMap jit_string_patches_;
+  // Patches for class root accesses in JIT compiled code.
+  TypeToLiteralMap jit_class_patches_;
 };
 
 }  // namespace riscv64

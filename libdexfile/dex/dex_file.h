@@ -19,6 +19,7 @@
 
 #include <android-base/logging.h>
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -124,11 +125,19 @@ class DexFile {
   static constexpr uint16_t kDexNoIndex16 = 0xFFFF;
   static constexpr uint32_t kDexNoIndex32 = 0xFFFFFFFF;
 
+  using Magic = std::array<uint8_t, 8>;
+
+  struct Sha1 : public std::array<uint8_t, kSha1DigestSize> {
+    std::string ToString() const;
+  };
+
+  static_assert(std::is_standard_layout_v<Sha1>);
+
   // Raw header_item.
   struct Header {
-    uint8_t magic_[8] = {};
+    Magic magic_ = {};
     uint32_t checksum_ = 0;  // See also location_checksum_
-    uint8_t signature_[kSha1DigestSize] = {};
+    Sha1 signature_ = {};
     uint32_t file_size_ = 0;  // size of entire file
     uint32_t header_size_ = 0;  // offset to start of next section
     uint32_t endian_tag_ = 0;
@@ -244,6 +253,8 @@ class DexFile {
   uint32_t GetLocationChecksum() const {
     return location_checksum_;
   }
+
+  Sha1 GetSha1() const { return header_->signature_; }
 
   const Header& GetHeader() const {
     DCHECK(header_ != nullptr) << GetLocation();
@@ -453,6 +464,7 @@ class DexFile {
   // Returns the shorty of a method id.
   const char* GetMethodShorty(const dex::MethodId& method_id) const;
   const char* GetMethodShorty(const dex::MethodId& method_id, uint32_t* length) const;
+  std::string_view GetMethodShortyView(const dex::MethodId& method_id) const;
 
   // Returns the number of class definitions in the .dex file.
   uint32_t NumClassDefs() const {
@@ -547,6 +559,7 @@ class DexFile {
 
   // Returns the short form method descriptor for the given prototype.
   const char* GetShorty(dex::ProtoIndex proto_idx) const;
+  std::string_view GetShortyView(dex::ProtoIndex proto_idx) const;
   std::string_view GetShortyView(const dex::ProtoId& proto_id) const;
 
   const dex::TypeList* GetProtoParameters(const dex::ProtoId& proto_id) const {
