@@ -1642,9 +1642,9 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   InitializeApexVersions();
 
   BackgroundGcOption background_gc =
-      gUseReadBarrier ? BackgroundGcOption(gc::kCollectorTypeCCBackground)
-                      : (gUseUserfaultfd ? BackgroundGcOption(xgc_option.collector_type_)
-                                         : runtime_options.GetOrDefault(Opt::BackgroundGc));
+      gUseReadBarrier ? BackgroundGcOption(gc::kCollectorTypeCCBackground) :
+                        (gUseUserfaultfd ? BackgroundGcOption(gc::kCollectorTypeCMCBackground) :
+                                           runtime_options.GetOrDefault(Opt::BackgroundGc));
 
   heap_ = new gc::Heap(runtime_options.GetOrDefault(Opt::MemoryInitialSize),
                        runtime_options.GetOrDefault(Opt::HeapGrowthLimit),
@@ -1770,6 +1770,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
       FALLTHROUGH_INTENDED;
     case InstructionSet::kArm:
     case InstructionSet::kThumb2:
+    case InstructionSet::kRiscv64:
     case InstructionSet::kX86:
     case InstructionSet::kX86_64:
       implicit_null_checks_ = true;
