@@ -88,6 +88,8 @@ class DisassemblerRiscv64::Printer {
   void Print32Atomic(uint32_t insn32);
   void Print32FpOp(uint32_t insn32);
   void Print32FpFma(uint32_t insn32);
+  void Print32Zicsr(uint32_t insn32);
+  void Print32Fence(uint32_t insn32);
 
   DisassemblerRiscv64* const disassembler_;
   std::ostream& os_;
@@ -391,15 +393,28 @@ void DisassemblerRiscv64::Printer::Print32BinOpImm(uint32_t insn32) {
     os_ << "zextb " << XRegName(rd) << ", " << XRegName(rs1);
   } else if (!narrow && funct3 == /*SLTIU*/ 3u && imm == 1) {
     os_ << "seqz " << XRegName(rd) << ", " << XRegName(rs1);
+  } else if ((insn32 & 0xfc00707fu) == 0x0800101bu) {
+    os_ << "slli.uw " << XRegName(rd) << ", " << XRegName(rs1) << ", " << (imm & 0x3fu);
+  } else if ((imm ^ 0x600u) < 3u && funct3 == 1u) {
+    static const char* const kBitOpcodes[] = { "clz", "ctz", "cpop" };
+    os_ << kBitOpcodes[imm ^ 0x600u] << (narrow ? "w " : " ")
+        << XRegName(rd) << ", " << XRegName(rs1);
+  } else if ((imm ^ 0x600u) < (narrow ? 32 : 64) && funct3 == 5u) {
+    os_ << "rori" << (narrow ? "w " : " ")
+        << XRegName(rd) << ", " << XRegName(rs1) << ", " << (imm ^ 0x600u);
+  } else if (imm == 0x287u && !narrow && funct3 == 5u) {
+    os_ << "orc.b " << XRegName(rd) << ", " << XRegName(rs1);
+  } else if (imm == 0x6b8u && !narrow && funct3 == 5u) {
+    os_ << "rev8 " << XRegName(rd) << ", " << XRegName(rs1);
   } else {
     bool bad_high_bits = false;
     if (funct3 == /*SLLI*/ 1u || funct3 == /*SRLI/SRAI*/ 5u) {
+      imm &= (narrow ? 0x1fu : 0x3fu);
       uint32_t high_bits = insn32 & (narrow ? 0xfe000000u : 0xfc000000u);
       if (high_bits == 0x40000000u && funct3 == /*SRAI*/ 5u) {
         os_ << "srai";
       } else {
         os_ << ((funct3 == /*SRLI*/ 5u) ? "srli" : "slli");
-        imm &= (narrow ? 0x1fu : 0x3fu);
         bad_high_bits = (high_bits != 0u);
       }
     } else if (!narrow || funct3 == /*ADDI*/ 0u) {
@@ -437,16 +452,34 @@ void DisassemblerRiscv64::Printer::Print32BinOp(uint32_t insn32) {
     os_ << "sgtz " << XRegName(rd) << ", " << XRegName(rs2);
   } else if (!narrow && funct3 == /*SLTU*/ 3u && rs1 == Zero) {
     os_ << "snez " << XRegName(rd) << ", " << XRegName(rs2);
+  } else if (narrow && high_bits == 0x08000000u && funct3 == /*ADD.UW*/ 0u && rs2 == Zero) {
+    os_ << "zext.w " << XRegName(rd) << ", " << XRegName(rs1);
   } else {
     bool bad_high_bits = false;
     if (high_bits == 0x40000000u && (funct3 == /*SUB*/ 0u || funct3 == /*SRA*/ 5u)) {
       os_ << ((funct3 == /*SUB*/ 0u) ? "sub" : "sra");
-    } else if (high_bits == 0x02000000 &&
+    } else if (high_bits == 0x02000000u &&
                (!narrow || (funct3 == /*MUL*/ 0u || funct3 >= /*DIV/DIVU/REM/REMU*/ 4u))) {
       static const char* const kOpcodes[] = {
           "mul", "mulh", "mulhsu", "mulhu", "div", "divu", "rem", "remu"
       };
       os_ << kOpcodes[funct3];
+    } else if (high_bits == 0x08000000u && narrow && funct3 == /*ADD.UW*/ 0u) {
+      os_ << "add.u";  // "w" is added below.
+    } else if (high_bits == 0x20000000u && (funct3 & 1u) == 0u && funct3 != 0u) {
+      static const char* const kZbaOpcodes[] = { nullptr, "sh1add", "sh2add", "sh3add" };
+      DCHECK(kZbaOpcodes[funct3 >> 1] != nullptr);
+      os_ << kZbaOpcodes[funct3 >> 1] << (narrow ? ".u" /* "w" is added below. */ : "");
+    } else if (high_bits == 0x40000000u && !narrow && funct3 >= 4u && funct3 != 5u) {
+      static const char* const kZbbNegOpcodes[] = { "xnor", nullptr, "orn", "andn" };
+      DCHECK(kZbbNegOpcodes[funct3 - 4u] != nullptr);
+      os_ << kZbbNegOpcodes[funct3 - 4u];
+    } else if (high_bits == 0x0a000000u && !narrow && funct3 >= 4u) {
+      static const char* const kZbbMinMaxOpcodes[] = { "min", "minu", "max", "maxu" };
+      DCHECK(kZbbMinMaxOpcodes[funct3 - 4u] != nullptr);
+      os_ << kZbbMinMaxOpcodes[funct3 - 4u];
+    } else if (high_bits == 0x60000000u && (funct3 == /*ROL*/ 1u || funct3 == /*ROL*/ 5u)) {
+      os_ << (funct3 == /*ROL*/ 1u ? "rol" : "ror");
     } else if (!narrow || (funct3 == /*ADD*/ 0u || funct3 == /*SLL*/ 1u || funct3 == /*SRL*/ 5u)) {
       static const char* const kOpcodes[] = {
           "add", "sll", "slt", "sltu", "xor", "srl", "or", "and"
@@ -499,7 +532,7 @@ void DisassemblerRiscv64::Printer::Print32Atomic(uint32_t insn32) {
 }
 
 void DisassemblerRiscv64::Printer::Print32FpOp(uint32_t insn32) {
-  DCHECK_EQ(insn32 & 0x7fu, 0x4fu);
+  DCHECK_EQ(insn32 & 0x7fu, 0x53u);
   uint32_t rd = GetRd(insn32);
   uint32_t rs1 = GetRs1(insn32);
   uint32_t rs2 = GetRs2(insn32);  // Sometimes used to to differentiate opcodes.
@@ -507,7 +540,7 @@ void DisassemblerRiscv64::Printer::Print32FpOp(uint32_t insn32) {
   uint32_t funct7 = insn32 >> 25;
   const char* type = ((funct7 & 1u) != 0u) ? ".d" : ".s";
   if ((funct7 & 2u) != 0u) {
-    os_ << "<unknown32>";  // Note: This includes the "Q" extension (`(funct7 & 3) == 3`).
+    os_ << "<unknown32>";  // Note: This includes the "H" and "Q" extensions.
     return;
   }
   switch (funct7 >> 2) {
@@ -612,7 +645,7 @@ void DisassemblerRiscv64::Printer::Print32FpFma(uint32_t insn32) {
   DCHECK_EQ(insn32 & 0x73u, 0x43u);  // Note: Bits 0xc select the FMA opcode.
   uint32_t funct2 = (insn32 >> 25) & 3u;
   if (funct2 >= 2u) {
-    os_ << "<unknown32>";  // Note: This includes the "Q" extension (`funct2 == 3`).
+    os_ << "<unknown32>";  // Note: This includes the "H" and "Q" extensions.
     return;
   }
   static const char* const kOpcodes[] = { "fmadd", "fmsub", "fnmsub", "fnmadd" };
@@ -620,6 +653,82 @@ void DisassemblerRiscv64::Printer::Print32FpFma(uint32_t insn32) {
       << RoundingModeName(GetRoundingMode(insn32)) << " "
       << FRegName(GetRd(insn32)) << ", " << FRegName(GetRs1(insn32)) << ", "
       << FRegName(GetRs2(insn32)) << ", " << FRegName(GetRs3(insn32));
+}
+
+void DisassemblerRiscv64::Printer::Print32Zicsr(uint32_t insn32) {
+  DCHECK_EQ(insn32 & 0x7fu, 0x73u);
+  uint32_t funct3 = (insn32 >> 12) & 7u;
+  static const char* const kOpcodes[] = {
+      nullptr, "csrrw", "csrrs", "csrrc", nullptr, "csrrwi", "csrrsi", "csrrci"
+  };
+  const char* opcode = kOpcodes[funct3];
+  if (opcode == nullptr) {
+    os_ << "<unknown32>";
+    return;
+  }
+  uint32_t rd = GetRd(insn32);
+  uint32_t rs1_or_uimm = GetRs1(insn32);
+  uint32_t csr = insn32 >> 20;
+  // Print shorter macro instruction notation if available.
+  if (funct3 == /*CSRRW*/ 1u && rd == 0u && rs1_or_uimm == 0u && csr == 0xc00u) {
+    os_ << "unimp";
+    return;
+  } else if (funct3 == /*CSRRS*/ 2u && rs1_or_uimm == 0u) {
+    if (csr == 0xc00u) {
+      os_ << "rdcycle " << XRegName(rd);
+    } else if (csr == 0xc01u) {
+      os_ << "rdtime " << XRegName(rd);
+    } else if (csr == 0xc02u) {
+      os_ << "rdinstret " << XRegName(rd);
+    } else {
+      os_ << "csrr " << XRegName(rd) << ", " << csr;
+    }
+    return;
+  }
+
+  if (rd == 0u) {
+    static const char* const kAltOpcodes[] = {
+        nullptr, "csrw", "csrs", "csrc", nullptr, "csrwi", "csrsi", "csrci"
+    };
+    DCHECK(kAltOpcodes[funct3] != nullptr);
+    os_ << kAltOpcodes[funct3] << " " << csr << ", ";
+  } else {
+    os_ << opcode << " " << XRegName(rd) << ", " << csr << ", ";
+  }
+  if (funct3 >= /*CSRRWI/CSRRSI/CSRRCI*/ 4u) {
+    os_ << rs1_or_uimm;
+  } else {
+    os_ << XRegName(rs1_or_uimm);
+  }
+}
+
+void DisassemblerRiscv64::Printer::Print32Fence(uint32_t insn32) {
+  DCHECK_EQ(insn32 & 0x7fu, 0x0fu);
+  if ((insn32 & 0xf00fffffu) == 0x0000000fu) {
+    auto print_flags = [&](uint32_t flags) {
+      if (flags == 0u) {
+        os_ << "0";
+      } else {
+        DCHECK_LT(flags, 0x10u);
+        static const char kFlagNames[] = "wroi";
+        for (size_t bit : { 3u, 2u, 1u, 0u }) {  // Print in the "iorw" order.
+          if ((flags & (1u << bit)) != 0u) {
+            os_ << kFlagNames[bit];
+          }
+        }
+      }
+    };
+    os_ << "fence.";
+    print_flags((insn32 >> 24) & 0xfu);
+    os_ << ".";
+    print_flags((insn32 >> 20) & 0xfu);
+  } else if (insn32 == 0x8330000fu) {
+    os_ << "fence.tso";
+  } else if (insn32 == 0x0000100fu) {
+    os_ << "fence.i";
+  } else {
+    os_ << "<unknown32>";
+  }
 }
 
 void DisassemblerRiscv64::Printer::Dump32(const uint8_t* insn) {
@@ -683,6 +792,16 @@ void DisassemblerRiscv64::Printer::Dump32(const uint8_t* insn) {
     case 0x4bu:
     case 0x4fu:
       Print32FpFma(insn32);
+      break;
+    case 0x73u:
+      if ((insn32 & 0xffefffffu) == 0x00000073u) {
+        os_ << ((insn32 == 0x00000073u) ? "ecall" : "ebreak");
+      } else {
+        Print32Zicsr(insn32);
+      }
+      break;
+    case 0x0fu:
+      Print32Fence(insn32);
       break;
     default:
       // TODO(riscv64): Disassemble more instructions.

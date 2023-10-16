@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-#include "jni.h"
-
 #include <android-base/logging.h>
 #include <android-base/macros.h>
 #include <sys/resource.h>
@@ -25,10 +23,12 @@
 #include "base/enums.h"
 #include "common_throws.h"
 #include "dex/dex_file-inl.h"
+#include "gc/heap.h"
 #include "instrumentation.h"
 #include "jit/jit.h"
 #include "jit/jit_code_cache.h"
 #include "jit/profiling_info.h"
+#include "jni.h"
 #include "jni/jni_internal.h"
 #include "mirror/class-inl.h"
 #include "mirror/class.h"
@@ -276,7 +276,9 @@ static void ForceJitCompiled(Thread* self,
     // Will either ensure it's compiled or do the compilation itself. We do
     // this before checking if we will execute JIT code in case the request
     // is for an 'optimized' compilation.
-    jit->CompileMethod(method, self, kind, /*prejit=*/ false);
+    if (jit->CompileMethod(method, self, kind, /*prejit=*/ false)) {
+      return;
+    }
     const void* entry_point = method->GetEntryPointFromQuickCompiledCode();
     if (code_cache->ContainsPc(entry_point)) {
       // If we're running baseline or not requesting optimized, we're good to go.
@@ -467,6 +469,20 @@ extern "C" JNIEXPORT void JNICALL Java_Main_setAsyncExceptionsThrown([[maybe_unu
 extern "C" JNIEXPORT void JNICALL Java_Main_setRlimitNoFile(JNIEnv*, jclass, jint value) {
   rlimit limit { static_cast<rlim_t>(value), static_cast<rlim_t>(value) };
   setrlimit(RLIMIT_NOFILE, &limit);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL Java_Main_isInImageSpace(JNIEnv* env,
+                                                               [[maybe_unused]] jclass caller,
+                                                               jclass cls) {
+  ScopedObjectAccess soa(env);
+
+  ObjPtr<mirror::Class> klass = soa.Decode<mirror::Class>(cls);
+  gc::space::Space* space =
+      Runtime::Current()->GetHeap()->FindSpaceFromObject(klass, /*fail_ok=*/true);
+  if (space == nullptr) {
+    return JNI_FALSE;
+  }
+  return space->IsImageSpace() ? JNI_TRUE : JNI_FALSE;
 }
 
 }  // namespace art

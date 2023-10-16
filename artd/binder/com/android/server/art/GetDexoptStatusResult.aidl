@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,18 +14,16 @@
  * limitations under the License.
  */
 
-#ifndef ART_LIBARTBASE_BASE_SAFE_COPY_H_
-#define ART_LIBARTBASE_BASE_SAFE_COPY_H_
+package com.android.server.art;
 
-#include <sys/types.h>
-
-namespace art {
-
-// Safely dereference a pointer.
-// Returns -1 if safe copy isn't implemented on the platform, or if the transfer is too large.
-// Returns 0 if src is unreadable.
-ssize_t SafeCopy(void *dst, const void *src, size_t len);
-
-}  // namespace art
-
-#endif  // ART_LIBARTBASE_BASE_SAFE_COPY_H_
+/**
+ * The result of {@code IArtd.getDexoptStatus}. Each field corresponds to a field in
+ * {@code com.android.server.art.model.DexoptStatus.DexFileDexoptStatus}.
+ *
+ * @hide
+ */
+parcelable GetDexoptStatusResult {
+    @utf8InCpp String compilerFilter;
+    @utf8InCpp String compilationReason;
+    @utf8InCpp String locationDebugString;
+}

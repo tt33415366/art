@@ -1257,24 +1257,26 @@ void InstructionCodeGeneratorX86::GenerateMethodEntryExitHook(HInstruction* inst
   // If yes, just take the slow path.
   __ j(kGreater, slow_path->GetEntryLabel());
 
-  // Check if there is place in the buffer for a new entry, if no, take slow path.
-  uint64_t trace_buffer_index_addr = Thread::TraceBufferIndexOffset<kX86PointerSize>().Int32Value();
-  __ fs()->cmpl(Address::Absolute(trace_buffer_index_addr), Immediate(kNumEntriesForWallClock));
-  __ j(kLess, slow_path->GetEntryLabel());
-
-  // Just update the buffer and advance the offset
   // For entry_addr use the first temp that isn't EAX or EDX. We need this after
   // rdtsc which returns values in EAX + EDX.
   Register entry_addr = locations->GetTemp(2).AsRegister<Register>();
   Register index = locations->GetTemp(1).AsRegister<Register>();
+
+  // Check if there is place in the buffer for a new entry, if no, take slow path.
   uint32_t trace_buffer_ptr = Thread::TraceBufferPtrOffset<kX86PointerSize>().Int32Value();
+  uint64_t trace_buffer_index_offset =
+      Thread::TraceBufferIndexOffset<kX86PointerSize>().Int32Value();
+
+  __ fs()->movl(index, Address::Absolute(trace_buffer_index_offset));
+  __ subl(index, Immediate(kNumEntriesForWallClock));
+  __ j(kLess, slow_path->GetEntryLabel());
+
+  // Update the index in the `Thread`.
+  __ fs()->movl(Address::Absolute(trace_buffer_index_offset), index);
+  // Calculate the entry address in the buffer.
   // entry_addr = base_addr + sizeof(void*) * index
-  __ fs()->movl(index, Address::Absolute(trace_buffer_index_addr));
   __ fs()->movl(entry_addr, Address::Absolute(trace_buffer_ptr));
   __ leal(entry_addr, Address(entry_addr, index, TIMES_4, 0));
-  // Advance the index in the buffer
-  __ subl(index, Immediate(kNumEntriesForWallClock));
-  __ fs()->movl(Address::Absolute(trace_buffer_index_addr), index);
 
   // Record method pointer and trace action.
   Register method = index;
@@ -1283,14 +1285,15 @@ void InstructionCodeGeneratorX86::GenerateMethodEntryExitHook(HInstruction* inst
   // so no need to set the bits since they are 0 already.
   if (instruction->IsMethodExitHook()) {
     DCHECK_GE(ArtMethod::Alignment(kRuntimePointerSize), static_cast<size_t>(4));
-    uint32_t trace_action = 1;
-    __ orl(method, Immediate(trace_action));
+    static_assert(enum_cast<int32_t>(TraceAction::kTraceMethodEnter) == 0);
+    static_assert(enum_cast<int32_t>(TraceAction::kTraceMethodExit) == 1);
+    __ orl(method, Immediate(enum_cast<int32_t>(TraceAction::kTraceMethodExit)));
   }
   __ movl(Address(entry_addr, kMethodOffsetInBytes), method);
   // Get the timestamp. rdtsc returns timestamp in EAX + EDX.
   __ rdtsc();
-  __ movl(Address(entry_addr, kTimestampOffsetInBytes), EDX);
-  __ movl(Address(entry_addr, kLowTimestampOffsetInBytes), EAX);
+  __ movl(Address(entry_addr, kTimestampOffsetInBytes), EAX);
+  __ movl(Address(entry_addr, kHighTimestampOffsetInBytes), EDX);
   __ Bind(slow_path->GetExitLabel());
 }
 
@@ -3006,10 +3009,10 @@ void InstructionCodeGeneratorX86::VisitX86FPNeg(HX86FPNeg* neg) {
                                                  constant_area));
     __ xorps(out.AsFpuRegister<XmmRegister>(), mask);
   } else {
-     __ movsd(mask, codegen_->LiteralInt64Address(INT64_C(0x8000000000000000),
-                                                  neg->GetBaseMethodAddress(),
-                                                  constant_area));
-     __ xorpd(out.AsFpuRegister<XmmRegister>(), mask);
+    __ movsd(mask, codegen_->LiteralInt64Address(INT64_C(0x8000000000000000),
+                                                 neg->GetBaseMethodAddress(),
+                                                 constant_area));
+    __ xorpd(out.AsFpuRegister<XmmRegister>(), mask);
   }
 }
 
@@ -7522,7 +7525,6 @@ void InstructionCodeGeneratorX86::VisitLoadString(HLoadString* load) NO_THREAD_S
       break;
   }
 
-  // TODO: Re-add the compiler code to do string dex cache lookup again.
   InvokeRuntimeCallingConvention calling_convention;
   DCHECK_EQ(calling_convention.GetRegisterAt(0), out);
   __ movl(calling_convention.GetRegisterAt(0), Immediate(load->GetStringIndex().index_));
@@ -7890,7 +7892,6 @@ void LocationsBuilderX86::VisitCheckCast(HCheckCast* instruction) {
   } else {
     locations->SetInAt(1, Location::Any());
   }
-  // Add temps for read barriers and other uses. One is used by TypeCheckSlowPathX86.
   locations->AddRegisterTemps(NumberOfCheckCastTemps(type_check_kind));
 }
 
@@ -8078,11 +8079,11 @@ void InstructionCodeGeneratorX86::VisitCheckCast(HCheckCast* instruction) {
                                         kWithoutReadBarrier);
 
       // /* HeapReference<Class> */ temp = temp->iftable_
-      GenerateReferenceLoadTwoRegisters(instruction,
-                                        temp_loc,
-                                        temp_loc,
-                                        iftable_offset,
-                                        kWithoutReadBarrier);
+      GenerateReferenceLoadOneRegister(instruction,
+                                       temp_loc,
+                                       iftable_offset,
+                                       maybe_temp2_loc,
+                                       kWithoutReadBarrier);
       // Iftable is never null.
       __ movl(maybe_temp2_loc.AsRegister<Register>(), Address(temp, array_length_offset));
       // Maybe poison the `cls` for direct comparison with memory.
@@ -9077,7 +9078,7 @@ void CodeGeneratorX86::PatchJitRootUse(uint8_t* code,
       reinterpret_cast<uintptr_t>(roots_data) + index_in_table * sizeof(GcRoot<mirror::Object>);
   using unaligned_uint32_t __attribute__((__aligned__(1))) = uint32_t;
   reinterpret_cast<unaligned_uint32_t*>(code + code_offset)[0] =
-     dchecked_integral_cast<uint32_t>(address);
+      dchecked_integral_cast<uint32_t>(address);
 }
 
 void CodeGeneratorX86::EmitJitRootPatches(uint8_t* code, const uint8_t* roots_data) {
