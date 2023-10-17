@@ -882,6 +882,8 @@ class DexFile {
   // The base address of the memory mapping.
   const uint8_t* const begin_;
 
+  size_t unused_size_ = 0;  // Preserve layout for DRM (b/305203031).
+
   // Data memory range: Most dex offsets are relative to this memory range.
   // Standard dex: same as (begin_, size_).
   // Compact: shared data which is located after all non-shared data.
