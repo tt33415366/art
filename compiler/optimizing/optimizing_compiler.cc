@@ -461,6 +461,18 @@ bool OptimizingCompiler::RunBaselineOptimizations(HGraph* graph,
                               arm_optimizations);
     }
 #endif
+#if defined(ART_ENABLE_CODEGEN_riscv64)
+    case InstructionSet::kRiscv64: {
+      OptimizationDef riscv64_optimizations[] = {
+          OptDef(OptimizationPass::kCriticalNativeAbiFixupRiscv64),
+      };
+      return RunOptimizations(graph,
+                              codegen,
+                              dex_compilation_unit,
+                              pass_observer,
+                              riscv64_optimizations);
+    }
+#endif
 #ifdef ART_ENABLE_CODEGEN_x86
     case InstructionSet::kX86: {
       OptimizationDef x86_optimizations[] = {
@@ -517,6 +529,18 @@ bool OptimizingCompiler::RunArchOptimizations(HGraph* graph,
                               dex_compilation_unit,
                               pass_observer,
                               arm64_optimizations);
+    }
+#endif
+#if defined(ART_ENABLE_CODEGEN_riscv64)
+    case InstructionSet::kRiscv64: {
+      OptimizationDef riscv64_optimizations[] = {
+          OptDef(OptimizationPass::kCriticalNativeAbiFixupRiscv64)
+      };
+      return RunOptimizations(graph,
+                              codegen,
+                              dex_compilation_unit,
+                              pass_observer,
+                              riscv64_optimizations);
     }
 #endif
 #ifdef ART_ENABLE_CODEGEN_x86
@@ -741,8 +765,14 @@ static bool CanAssembleGraphForRiscv64(HGraph* graph) {
           // and this check is done before register allocation.
           LOG(FATAL) << "Unexpected ParallelMove before register allocation!";
           UNREACHABLE();
+        case HInstruction::kMethodEntryHook:
+        case HInstruction::kMethodExitHook:
         case HInstruction::kExit:
         case HInstruction::kGoto:
+        case HInstruction::kPackedSwitch:
+        case HInstruction::kTryBoundary:
+        case HInstruction::kClearException:
+        case HInstruction::kLoadException:
         case HInstruction::kParameterValue:
         case HInstruction::kReturn:
         case HInstruction::kReturnVoid:
@@ -753,12 +783,20 @@ static bool CanAssembleGraphForRiscv64(HGraph* graph) {
         case HInstruction::kLongConstant:
         case HInstruction::kNullConstant:
         case HInstruction::kLoadClass:
+        case HInstruction::kClinitCheck:
         case HInstruction::kLoadString:
         case HInstruction::kLoadMethodHandle:
         case HInstruction::kLoadMethodType:
+        case HInstruction::kNewArray:
+        case HInstruction::kNewInstance:
         case HInstruction::kInstanceFieldGet:
+        case HInstruction::kInstanceFieldSet:
         case HInstruction::kStaticFieldGet:
+        case HInstruction::kStaticFieldSet:
         case HInstruction::kArrayGet:
+        case HInstruction::kArrayLength:
+        case HInstruction::kArraySet:
+        case HInstruction::kBoundsCheck:
         case HInstruction::kAbove:
         case HInstruction::kAboveOrEqual:
         case HInstruction::kBelow:
@@ -787,21 +825,11 @@ static bool CanAssembleGraphForRiscv64(HGraph* graph) {
         case HInstruction::kNot:
         case HInstruction::kMin:
         case HInstruction::kMax:
+        case HInstruction::kInvokeStaticOrDirect:
         case HInstruction::kInvokeVirtual:
         case HInstruction::kInvokeInterface:
         case HInstruction::kCurrentMethod:
         case HInstruction::kNullCheck:
-          break;
-        case HInstruction::kInvokeStaticOrDirect:
-          if (it.Current()->AsInvokeStaticOrDirect()->GetCodePtrLocation() ==
-                  CodePtrLocation::kCallCriticalNative &&
-              it.Current()->AsInvokeStaticOrDirect()->GetNumberOfArguments() >= 8u) {
-            // TODO(riscv64): If there are more than 8 FP args, some may be passed in GPRs
-            // and this requires a `CriticalNativeAbiFixupRiscv64` pass similar to the one
-            // we have for ARM. This is not yet implemented. For simplicity, we reject all
-            // direct @CriticalNative calls with more than 8 args.
-            return false;
-          }
           break;
         default:
           // Unimplemented instruction.

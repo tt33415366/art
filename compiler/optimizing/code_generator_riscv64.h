@@ -481,6 +481,7 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
                            DataType::Type type,
                            LocationSummary* locations,
                            Riscv64Label* label = nullptr);
+  void GenerateMethodEntryExitHook(HInstruction* instruction);
   void HandleGoto(HInstruction* got, HBasicBlock* successor);
   void GenPackedSwitchWithCompares(XRegister adjusted,
                                    XRegister temp,
@@ -493,7 +494,6 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
   int32_t VecAddress(LocationSummary* locations,
                      size_t size,
                      /*out*/ XRegister* adjusted_base);
-  void GenConditionalMove(HSelect* select);
 
   template <typename Reg,
             void (Riscv64Assembler::*opS)(Reg, FRegister, FRegister),

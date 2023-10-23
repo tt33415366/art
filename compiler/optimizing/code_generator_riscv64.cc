@@ -32,6 +32,7 @@
 #include "mirror/class-inl.h"
 #include "optimizing/nodes.h"
 #include "stack_map_stream.h"
+#include "trace.h"
 #include "utils/label.h"
 #include "utils/riscv64/assembler_riscv64.h"
 #include "utils/stack_checks.h"
@@ -136,6 +137,18 @@ static constexpr int64_t ShiftedSignExtendedClassStatusValue() {
   return static_cast<int64_t>(kShiftedStatusValue) - (INT64_C(1) << 32);
 }
 
+// Split a 64-bit address used by JIT to the nearest 4KiB-aligned base address and a 12-bit
+// signed offset. It is usually cheaper to materialize the aligned address than the full address.
+std::pair<uint64_t, int32_t> SplitJitAddress(uint64_t address) {
+  uint64_t bits0_11 = address & UINT64_C(0xfff);
+  uint64_t bit11 = address & UINT64_C(0x800);
+  // Round the address to nearest 4KiB address because the `imm12` has range [-0x800, 0x800).
+  uint64_t base_address = (address & ~UINT64_C(0xfff)) + (bit11 << 1);
+  int32_t imm12 = dchecked_integral_cast<int32_t>(bits0_11) -
+                  dchecked_integral_cast<int32_t>(bit11 << 1);
+  return {base_address, imm12};
+}
+
 int32_t ReadBarrierMarkEntrypointOffset(Location ref) {
   DCHECK(ref.IsRegister());
   int reg = ref.reg();
@@ -194,11 +207,13 @@ Location CriticalNativeCallingConventionVisitorRiscv64::GetNextLocation(DataType
     if (fpr_index_ < kParameterFpuRegistersLength) {
       location = Location::FpuRegisterLocation(kParameterFpuRegisters[fpr_index_]);
       ++fpr_index_;
+    } else {
+      // Native ABI allows passing excessive FP args in GPRs. This is facilitated by
+      // inserting fake conversion intrinsic calls (`Double.doubleToRawLongBits()`
+      // or `Float.floatToRawIntBits()`) by `CriticalNativeAbiFixupRiscv64`.
+      // Remaining FP args shall be passed on the stack.
+      CHECK_EQ(gpr_index_, kRuntimeParameterCoreRegistersLength);
     }
-    // Native ABI allows passing excessive FP args in GPRs. This is facilitated by
-    // inserting fake conversion intrinsic calls (`Double.doubleToRawLongBits()`
-    // or `Float.floatToRawIntBits()`) by `CriticalNativeAbiFixupRiscv64`.
-    // TODO(riscv64): Implement these  intrinsics and `CriticalNativeAbiFixupRiscv64`.
   } else {
     // Native ABI uses the same core registers as a runtime call.
     if (gpr_index_ < kRuntimeParameterCoreRegistersLength) {
@@ -207,10 +222,11 @@ Location CriticalNativeCallingConventionVisitorRiscv64::GetNextLocation(DataType
     }
   }
   if (location.IsInvalid()) {
-    if (DataType::Is64BitType(type)) {
-      location = Location::DoubleStackSlot(stack_offset_);
-    } else {
+    // Only a `float` gets a single slot. Integral args need to be sign-extended to 64 bits.
+    if (type == DataType::Type::kFloat32) {
       location = Location::StackSlot(stack_offset_);
+    } else {
+      location = Location::DoubleStackSlot(stack_offset_);
     }
     stack_offset_ += kFramePointerSize;
 
@@ -499,6 +515,34 @@ class ReadBarrierForRootSlowPathRISCV64 : public SlowPathCodeRISCV64 {
   const Location root_;
 
   DISALLOW_COPY_AND_ASSIGN(ReadBarrierForRootSlowPathRISCV64);
+};
+
+class MethodEntryExitHooksSlowPathRISCV64 : public SlowPathCodeRISCV64 {
+ public:
+  explicit MethodEntryExitHooksSlowPathRISCV64(HInstruction* instruction)
+      : SlowPathCodeRISCV64(instruction) {}
+
+  void EmitNativeCode(CodeGenerator* codegen) override {
+    LocationSummary* locations = instruction_->GetLocations();
+    QuickEntrypointEnum entry_point =
+        (instruction_->IsMethodEntryHook()) ? kQuickMethodEntryHook : kQuickMethodExitHook;
+    CodeGeneratorRISCV64* riscv64_codegen = down_cast<CodeGeneratorRISCV64*>(codegen);
+    __ Bind(GetEntryLabel());
+    SaveLiveRegisters(codegen, locations);
+    if (instruction_->IsMethodExitHook()) {
+      __ Li(A4, riscv64_codegen->GetFrameSize());
+    }
+    riscv64_codegen->InvokeRuntime(entry_point, instruction_, instruction_->GetDexPc(), this);
+    RestoreLiveRegisters(codegen, locations);
+    __ J(GetExitLabel());
+  }
+
+  const char* GetDescription() const override {
+    return "MethodEntryExitHooksSlowPathRISCV";
+  }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(MethodEntryExitHooksSlowPathRISCV64);
 };
 
 class ArraySetSlowPathRISCV64 : public SlowPathCodeRISCV64 {
@@ -1927,11 +1971,6 @@ int32_t InstructionCodeGeneratorRISCV64::VecAddress(LocationSummary* locations,
   UNREACHABLE();
 }
 
-void InstructionCodeGeneratorRISCV64::GenConditionalMove(HSelect* select) {
-  UNUSED(select);
-  LOG(FATAL) << "Unimplemented";
-}
-
 void LocationsBuilderRISCV64::HandleBinaryOp(HBinaryOperation* instruction) {
   DCHECK_EQ(instruction->InputCount(), 2u);
   LocationSummary* locations = new (GetGraph()->GetAllocator()) LocationSummary(instruction);
@@ -2286,7 +2325,7 @@ void CodeGeneratorRISCV64::MarkGCCard(XRegister object,
   // This dual use of the value in register `card` (1. to calculate the location
   // of the card to mark; and 2. to load the `kCardDirty` value) saves a load
   // (no need to explicitly load `kCardDirty` as an immediate value).
-  __ Storeb(card, temp, 0);
+  __ Sb(card, temp, 0);  // No scratch register left for `Storeb()`.
   if (value_can_be_null) {
     __ Bind(&done);
   }
@@ -2343,14 +2382,17 @@ void InstructionCodeGeneratorRISCV64::HandleFieldSet(HInstruction* instruction,
       } else {
         __ AmoSwapW(Zero, swap_src, addr, AqRl::kRelease);
       }
+      codegen_->MaybeRecordImplicitNullCheck(instruction);
     } else {
       // Use fences for smaller data types.
       codegen_->GenerateMemoryBarrier(MemBarrierKind::kAnyStore);
       Store(value, obj, offset, type);
+      codegen_->MaybeRecordImplicitNullCheck(instruction);
       codegen_->GenerateMemoryBarrier(MemBarrierKind::kAnyAny);
     }
   } else {
     Store(value, obj, offset, type);
+    codegen_->MaybeRecordImplicitNullCheck(instruction);
   }
 
   if (CodeGenerator::StoreNeedsWriteBarrier(type, instruction->InputAt(1)) &&
@@ -2444,6 +2486,7 @@ void InstructionCodeGeneratorRISCV64::HandleFieldGet(HInstruction* instruction,
                                                     /* needs_null_check= */ true);
   } else {
     Load(dst_loc, obj, offset, type);
+    codegen_->MaybeRecordImplicitNullCheck(instruction);
   }
 
   if (is_volatile) {
@@ -2456,6 +2499,79 @@ void InstructionCodeGeneratorRISCV64::HandleFieldGet(HInstruction* instruction,
     // reference, if heap poisoning is enabled).
     codegen_->MaybeGenerateReadBarrierSlow(instruction, dst_loc, dst_loc, obj_loc, offset);
   }
+}
+
+void InstructionCodeGeneratorRISCV64::GenerateMethodEntryExitHook(HInstruction* instruction) {
+  SlowPathCodeRISCV64* slow_path =
+      new (codegen_->GetScopedAllocator()) MethodEntryExitHooksSlowPathRISCV64(instruction);
+  codegen_->AddSlowPath(slow_path);
+
+  ScratchRegisterScope temps(GetAssembler());
+  XRegister tmp = temps.AllocateXRegister();
+
+  if (instruction->IsMethodExitHook()) {
+    // Check if we are required to check if the caller needs a deoptimization. Strictly speaking it
+    // would be sufficient to check if CheckCallerForDeopt bit is set. Though it is faster to check
+    // if it is just non-zero. kCHA bit isn't used in debuggable runtimes as cha optimization is
+    // disabled in debuggable runtime. The other bit is used when this method itself requires a
+    // deoptimization due to redefinition. So it is safe to just check for non-zero value here.
+    __ Loadwu(tmp, SP, codegen_->GetStackOffsetOfShouldDeoptimizeFlag());
+    __ Bnez(tmp, slow_path->GetEntryLabel());
+  }
+
+  uint64_t hook_offset = instruction->IsMethodExitHook() ?
+      instrumentation::Instrumentation::HaveMethodExitListenersOffset().SizeValue() :
+      instrumentation::Instrumentation::HaveMethodEntryListenersOffset().SizeValue();
+  auto [base_hook_address, hook_imm12] = SplitJitAddress(
+      reinterpret_cast64<uint64_t>(Runtime::Current()->GetInstrumentation()) + hook_offset);
+  __ LoadConst64(tmp, base_hook_address);
+  __ Lbu(tmp, tmp, hook_imm12);
+  // Check if there are any method entry / exit listeners. If no, continue.
+  __ Beqz(tmp, slow_path->GetExitLabel());
+  // Check if there are any slow (jvmti / trace with thread cpu time) method entry / exit listeners.
+  // If yes, just take the slow path.
+  static_assert(instrumentation::Instrumentation::kFastTraceListeners == 1u);
+  __ Addi(tmp, tmp, -1);
+  __ Bnez(tmp, slow_path->GetEntryLabel());
+
+  // Check if there is place in the buffer to store a new entry, if no, take the slow path.
+  int32_t trace_buffer_index_offset =
+      Thread::TraceBufferIndexOffset<kArm64PointerSize>().Int32Value();
+  __ Loadd(tmp, TR, trace_buffer_index_offset);
+  __ Addi(tmp, tmp, -dchecked_integral_cast<int32_t>(kNumEntriesForWallClock));
+  __ Bltz(tmp, slow_path->GetEntryLabel());
+
+  // Update the index in the `Thread`.
+  __ Stored(tmp, TR, trace_buffer_index_offset);
+
+  // Allocate second core scratch register. We can no longer use `Stored()`
+  // and similar macro instructions because there is no core scratch register left.
+  XRegister tmp2 = temps.AllocateXRegister();
+
+  // Calculate the entry address in the buffer.
+  // /*addr*/ tmp = TR->GetMethodTraceBuffer() + sizeof(void*) * /*index*/ tmp;
+  __ Loadd(tmp2, TR, Thread::TraceBufferPtrOffset<kArm64PointerSize>().SizeValue());
+  __ Sh3Add(tmp, tmp, tmp2);
+
+  // Record method pointer and trace action.
+  __ Ld(tmp2, SP, 0);
+  // Use last two bits to encode trace method action. For MethodEntry it is 0
+  // so no need to set the bits since they are 0 already.
+  DCHECK_GE(ArtMethod::Alignment(kRuntimePointerSize), static_cast<size_t>(4));
+  static_assert(enum_cast<int32_t>(TraceAction::kTraceMethodEnter) == 0);
+  static_assert(enum_cast<int32_t>(TraceAction::kTraceMethodExit) == 1);
+  if (instruction->IsMethodExitHook()) {
+    __ Ori(tmp2, tmp2, enum_cast<int32_t>(TraceAction::kTraceMethodExit));
+  }
+  static_assert(IsInt<12>(kMethodOffsetInBytes));  // No free scratch register for `Stored()`.
+  __ Sd(tmp2, tmp, kMethodOffsetInBytes);
+
+  // Record the timestamp.
+  __ RdTime(tmp2);
+  static_assert(IsInt<12>(kTimestampOffsetInBytes));  // No free scratch register for `Stored()`.
+  __ Sd(tmp2, tmp, kTimestampOffsetInBytes);
+
+  __ Bind(slow_path->GetExitLabel());
 }
 
 void LocationsBuilderRISCV64::VisitAbove(HAbove* instruction) {
@@ -2589,6 +2705,7 @@ void InstructionCodeGeneratorRISCV64::VisitArrayGet(HArrayGet* instruction) {
       ScratchRegisterScope srs(GetAssembler());
       XRegister tmp = srs.AllocateXRegister();
       __ Loadw(tmp, obj, count_offset);
+      codegen_->MaybeRecordImplicitNullCheck(instruction);
       __ Andi(tmp, tmp, 0x1);
       static_assert(static_cast<uint32_t>(mirror::StringCompressionFlag::kCompressed) == 0u,
                     "Expecting 0=compressed, 1=uncompressed");
@@ -2640,6 +2757,9 @@ void InstructionCodeGeneratorRISCV64::VisitArrayGet(HArrayGet* instruction) {
     int32_t const_index = index.GetConstant()->AsIntConstant()->GetValue();
     int32_t offset = data_offset + (const_index << DataType::SizeShift(type));
     Load(out_loc, obj, offset, type);
+    if (!maybe_compressed_char_at) {
+      codegen_->MaybeRecordImplicitNullCheck(instruction);
+    }
     if (type == DataType::Type::kReference) {
       DCHECK(!(gUseReadBarrier && kUseBakerReadBarrier));
       // If read barriers are enabled, emit read barriers other than Baker's using
@@ -2651,6 +2771,9 @@ void InstructionCodeGeneratorRISCV64::VisitArrayGet(HArrayGet* instruction) {
     XRegister tmp = srs.AllocateXRegister();
     ShNAdd(tmp, index.AsRegister<XRegister>(), obj, type);
     Load(out_loc, tmp, data_offset, type);
+    if (!maybe_compressed_char_at) {
+      codegen_->MaybeRecordImplicitNullCheck(instruction);
+    }
     if (type == DataType::Type::kReference) {
       DCHECK(!(gUseReadBarrier && kUseBakerReadBarrier));
       // If read barriers are enabled, emit read barriers other than Baker's using
@@ -4239,23 +4362,26 @@ void InstructionCodeGeneratorRISCV64::VisitMemoryBarrier(HMemoryBarrier* instruc
 }
 
 void LocationsBuilderRISCV64::VisitMethodEntryHook(HMethodEntryHook* instruction) {
-  UNUSED(instruction);
-  LOG(FATAL) << "Unimplemented";
+  new (GetGraph()->GetAllocator()) LocationSummary(instruction, LocationSummary::kCallOnSlowPath);
 }
 
 void InstructionCodeGeneratorRISCV64::VisitMethodEntryHook(HMethodEntryHook* instruction) {
-  UNUSED(instruction);
-  LOG(FATAL) << "Unimplemented";
+  DCHECK(codegen_->GetCompilerOptions().IsJitCompiler() && GetGraph()->IsDebuggable());
+  DCHECK(codegen_->RequiresCurrentMethod());
+  GenerateMethodEntryExitHook(instruction);
 }
 
 void LocationsBuilderRISCV64::VisitMethodExitHook(HMethodExitHook* instruction) {
-  UNUSED(instruction);
-  LOG(FATAL) << "Unimplemented";
+  LocationSummary* locations = new (GetGraph()->GetAllocator())
+      LocationSummary(instruction, LocationSummary::kCallOnSlowPath);
+  DataType::Type return_type = instruction->InputAt(0)->GetType();
+  locations->SetInAt(0, Riscv64ReturnLocation(return_type));
 }
 
 void InstructionCodeGeneratorRISCV64::VisitMethodExitHook(HMethodExitHook* instruction) {
-  UNUSED(instruction);
-  LOG(FATAL) << "Unimplemented";
+  DCHECK(codegen_->GetCompilerOptions().IsJitCompiler() && GetGraph()->IsDebuggable());
+  DCHECK(codegen_->RequiresCurrentMethod());
+  GenerateMethodEntryExitHook(instruction);
 }
 
 void LocationsBuilderRISCV64::VisitMin(HMin* instruction) {
@@ -4768,13 +4894,163 @@ void InstructionCodeGeneratorRISCV64::VisitUnresolvedStaticFieldSet(
 }
 
 void LocationsBuilderRISCV64::VisitSelect(HSelect* instruction) {
-  UNUSED(instruction);
-  LOG(FATAL) << "Unimplemented";
+  LocationSummary* locations = new (GetGraph()->GetAllocator()) LocationSummary(instruction);
+  if (DataType::IsFloatingPointType(instruction->GetType())) {
+    locations->SetInAt(0, Location::RequiresFpuRegister());
+    locations->SetInAt(1, Location::RequiresFpuRegister());
+    locations->SetOut(Location::RequiresFpuRegister(), Location::kNoOutputOverlap);
+  }  else {
+    HConstant* cst_true_value = instruction->GetTrueValue()->AsConstantOrNull();
+    HConstant* cst_false_value = instruction->GetFalseValue()->AsConstantOrNull();
+    bool is_true_value_constant = cst_true_value != nullptr;
+    bool is_false_value_constant = cst_false_value != nullptr;
+    bool true_value_in_register = !is_true_value_constant;
+    bool false_value_in_register = !is_false_value_constant;
+
+    locations->SetInAt(1, true_value_in_register ? Location::RequiresRegister()
+                                                 : Location::ConstantLocation(cst_true_value));
+    locations->SetInAt(0, false_value_in_register ? Location::RequiresRegister()
+                                                  : Location::ConstantLocation(cst_false_value));
+    locations->SetOut(Location::RequiresRegister(), Location::kOutputOverlap);
+  }
+
+  if (IsBooleanValueOrMaterializedCondition(instruction->GetCondition())) {
+    locations->SetInAt(2, Location::RequiresRegister());
+  }
 }
 
 void InstructionCodeGeneratorRISCV64::VisitSelect(HSelect* instruction) {
-  UNUSED(instruction);
-  LOG(FATAL) << "Unimplemented";
+  LocationSummary* locations = instruction->GetLocations();
+  HCondition* cond = instruction->GetCondition()->AsCondition();
+  if (!IsBooleanValueOrMaterializedCondition(cond)) {
+    if (DataType::IsFloatingPointType(cond->InputAt(0)->GetType())) {
+      // compare left and right
+      //    ...
+      //   beq/bne/... true_label
+      //   FMv dst, false_value
+      //   J done
+      // true_label:
+      //   FMv dst, true_value
+      // done:
+      // FIXME(riscv64): The type of the select can differ from the type of the condition.
+      FRegister true_register = locations->InAt(0).AsRegister<FRegister>();
+      FRegister false_register = locations->InAt(1).AsRegister<FRegister>();
+      FRegister dst = locations->Out().AsRegister<FRegister>();
+      Riscv64Label true_label;
+      Riscv64Label done_label;
+      DataType::Type type = cond->InputAt(0)->GetType();
+      GenerateFpCondition(
+          cond->GetCondition(), cond->IsGtBias(), type, cond->GetLocations(), &true_label);
+      FMv(dst, false_register, type);
+      __ J(&done_label);
+      __ Bind(&true_label);
+      FMv(dst, true_register, type);
+      __ Bind(&done_label);
+    } else {
+      // compare left and right
+      //   ...
+      //   beq/bne/... true_label
+      //   mv dst, false_register/LoadConst64 dst, false_constant
+      //   J done
+      // true_label:
+      //   mv dst, true_register/LoadConst64 dst, false_constant
+      // done
+      Riscv64Label true_label;
+      Riscv64Label done_label;
+      Location true_location = locations->InAt(0);
+      Location false_location = locations->InAt(1);
+      XRegister dst = locations->Out().AsRegister<XRegister>();
+
+      GenerateIntLongCompareAndBranch(cond->GetCondition(), cond->GetLocations(), &true_label);
+      if (false_location.IsConstant()) {
+        __ LoadConst64(dst, codegen_->GetInt64ValueOf(false_location.GetConstant()->AsConstant()));
+      } else {
+        __ Mv(dst, locations->InAt(1).AsRegister<XRegister>());
+      }
+      __ J(&done_label);
+
+      __ Bind(&true_label);
+      if (true_location.IsConstant()) {
+        __ LoadConst64(dst, codegen_->GetInt64ValueOf(true_location.GetConstant()->AsConstant()));
+      } else {
+        __ Mv(dst, locations->InAt(0).AsRegister<XRegister>());
+      }
+      __ Bind(&done_label);
+    }
+  } else {
+    XRegister cond_register = locations->InAt(2).AsRegister<XRegister>();
+
+    if (DataType::IsFloatingPointType(instruction->GetType())) {
+      // fmv.x.d/w tmp0, true_value
+      // fmv.x.d/w tmp1, false_value
+      // neg tmp2, cond
+      // xor tmp3, tmp0, tmp1
+      // and tmp3, tmp3, tmp2
+      // xor tmp2, tmp0, tmp3
+      // fmv.d/w.x fd, tmp2
+      FRegister true_register = locations->InAt(0).AsRegister<FRegister>();
+      FRegister false_register = locations->InAt(1).AsRegister<FRegister>();
+      FRegister dst = locations->Out().AsRegister<FRegister>();
+      ScratchRegisterScope srs(GetAssembler());
+      // FIXME(riscv64): We have only two scratch registers.
+      XRegister tmp0 = srs.AllocateXRegister();
+      XRegister tmp1 = srs.AllocateXRegister();
+      XRegister tmp2 = srs.AllocateXRegister();
+      XRegister tmp3 = srs.AllocateXRegister();
+      if (DataType::Is64BitType(instruction->GetType())) {
+        __ FMvXD(tmp0, true_register);
+      } else {
+        __ FMvXW(tmp0, true_register);
+      }
+      if (DataType::Is64BitType(instruction->GetType())) {
+        __ FMvXD(tmp1, false_register);
+      } else {
+        __ FMvXW(tmp1, false_register);
+      }
+      __ Neg(tmp2, cond_register);
+      __ Xor(tmp3, tmp0, tmp1);
+      __ And(tmp3, tmp3, tmp2);
+      __ Xor(tmp2, tmp0, tmp3);
+      if (DataType::Is64BitType(instruction->GetType())) {
+        __ FMvDX(dst, tmp2);
+      } else {
+        __ FMvWX(dst, tmp2);
+      }
+    } else {
+      // li rs1, true_value, if needed
+      // li rs2, false_value, if needed
+      // neg tmp1, cond
+      // xor tmp2, rs1, rs2
+      // and tmp2, tmp2, tmp1
+      // xor rd, rs1, tmp2
+      Location true_location = locations->InAt(0);
+      Location false_location = locations->InAt(1);
+      XRegister dst = locations->Out().AsRegister<XRegister>();
+      ScratchRegisterScope srs(GetAssembler());
+      XRegister true_register;
+      XRegister false_register;
+      XRegister tmp1 = srs.AllocateXRegister();
+      XRegister tmp2 = srs.AllocateXRegister();
+      if (true_location.IsConstant()) {
+        true_register = srs.AllocateXRegister();
+        __ LoadConst64(true_register,
+                       codegen_->GetInt64ValueOf(true_location.GetConstant()->AsConstant()));
+      } else {
+        true_register = locations->InAt(0).AsRegister<XRegister>();
+      }
+      if (false_location.IsConstant()) {
+        false_register = srs.AllocateXRegister();
+        __ LoadConst64(false_register,
+                       codegen_->GetInt64ValueOf(false_location.GetConstant()->AsConstant()));
+      } else {
+        false_register = locations->InAt(1).AsRegister<XRegister>();
+      }
+      __ Neg(tmp1, cond_register);
+      __ Xor(tmp2, true_register, false_register);
+      __ And(tmp2, tmp2, tmp1);
+      __ Xor(dst, true_register, tmp2);
+    }
+  }
 }
 
 void LocationsBuilderRISCV64::VisitSub(HSub* instruction) {
@@ -5395,18 +5671,17 @@ void CodeGeneratorRISCV64::MaybeIncrementHotness(bool is_frame_entry) {
     ProfilingInfo* info = GetGraph()->GetProfilingInfo();
     DCHECK(info != nullptr);
     DCHECK(!HasEmptyFrame());
-    uint64_t address = reinterpret_cast64<uint64_t>(info);
+    uint64_t address = reinterpret_cast64<uint64_t>(info) +
+                       ProfilingInfo::BaselineHotnessCountOffset().SizeValue();
+    auto [base_address, imm12] = SplitJitAddress(address);
     ScratchRegisterScope srs(GetAssembler());
     XRegister tmp = srs.AllocateXRegister();
-    __ LoadConst64(tmp, address);
+    __ LoadConst64(tmp, base_address);
     XRegister counter = srs.AllocateXRegister();
-    __ Loadhu(counter, tmp, ProfilingInfo::BaselineHotnessCountOffset().Int32Value());
+    __ Lhu(counter, tmp, imm12);
     __ Beqz(counter, slow_path->GetEntryLabel());  // Can clobber `TMP` if taken.
     __ Addi(counter, counter, -1);
-    // We do not have another scratch register available for `Storeh`()`,
-    // so we must use the `Sh()` function directly.
-    static_assert(IsInt<12>(ProfilingInfo::BaselineHotnessCountOffset().Int32Value()));
-    __ Sh(counter, tmp, ProfilingInfo::BaselineHotnessCountOffset().Int32Value());
+    __ Sh(counter, tmp, imm12);
     __ Bind(slow_path->GetExitLabel());
   }
 }
@@ -5713,10 +5988,13 @@ void CodeGeneratorRISCV64::MoveLocation(Location destination,
               destination.IsStackSlot() ? DataType::Type::kFloat32 : DataType::Type::kFloat64;
         }
       }
-      DCHECK((destination.IsDoubleStackSlot() == DataType::Is64BitType(dst_type)) &&
-             (source.IsFpuRegister() == DataType::IsFloatingPointType(dst_type)));
+      DCHECK_EQ(source.IsFpuRegister(), DataType::IsFloatingPointType(dst_type));
+      // For direct @CriticalNative calls, we need to sign-extend narrow integral args
+      // to 64 bits, so widening integral values is allowed. Narrowing is forbidden.
+      DCHECK_IMPLIES(DataType::IsFloatingPointType(dst_type) || destination.IsStackSlot(),
+                     destination.IsDoubleStackSlot() == DataType::Is64BitType(dst_type));
       // Move to stack from GPR/FPR
-      if (DataType::Is64BitType(dst_type)) {
+      if (destination.IsDoubleStackSlot()) {
         if (source.IsRegister()) {
           __ Stored(source.AsRegister<XRegister>(), SP, destination.GetStackIndex());
         } else {
@@ -5745,15 +6023,20 @@ void CodeGeneratorRISCV64::MoveLocation(Location destination,
       }
     } else {
       DCHECK(source.IsStackSlot() || source.IsDoubleStackSlot());
-      DCHECK_EQ(source.IsDoubleStackSlot(), destination.IsDoubleStackSlot());
+      // For direct @CriticalNative calls, we need to sign-extend narrow integral args
+      // to 64 bits, so widening move is allowed. Narrowing move is forbidden.
+      DCHECK_IMPLIES(destination.IsStackSlot(), source.IsStackSlot());
       // Move to stack from stack
       ScratchRegisterScope srs(GetAssembler());
       XRegister tmp = srs.AllocateXRegister();
-      if (destination.IsStackSlot()) {
+      if (source.IsStackSlot()) {
         __ Loadw(tmp, SP, source.GetStackIndex());
-        __ Storew(tmp, SP, destination.GetStackIndex());
       } else {
         __ Loadd(tmp, SP, source.GetStackIndex());
+      }
+      if (destination.IsStackSlot()) {
+        __ Storew(tmp, SP, destination.GetStackIndex());
+      } else {
         __ Stored(tmp, SP, destination.GetStackIndex());
       }
     }

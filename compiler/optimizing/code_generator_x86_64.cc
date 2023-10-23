@@ -1625,22 +1625,23 @@ void InstructionCodeGeneratorX86_64::GenerateMethodEntryExitHook(HInstruction* i
   // Check if there is place in the buffer for a new entry, if no, take slow path.
   CpuRegister index = locations->GetTemp(0).AsRegister<CpuRegister>();
   CpuRegister entry_addr = CpuRegister(TMP);
-  uint64_t trace_buffer_index_addr =
+  uint64_t trace_buffer_index_offset =
       Thread::TraceBufferIndexOffset<kX86_64PointerSize>().SizeValue();
-  __ gs()->movq(CpuRegister(index), Address::Absolute(trace_buffer_index_addr, /* no_rip= */ true));
-  __ cmpq(CpuRegister(index), Immediate(kNumEntriesForWallClock));
+  __ gs()->movq(CpuRegister(index),
+                Address::Absolute(trace_buffer_index_offset, /* no_rip= */ true));
+  __ subq(CpuRegister(index), Immediate(kNumEntriesForWallClock));
   __ j(kLess, slow_path->GetEntryLabel());
 
-  // Just update the buffer and advance the offset
+  // Update the index in the `Thread`.
+  __ gs()->movq(Address::Absolute(trace_buffer_index_offset, /* no_rip= */ true),
+                CpuRegister(index));
+  // Calculate the entry address in the buffer.
   // entry_addr = base_addr + sizeof(void*) * index
   __ gs()->movq(entry_addr,
                 Address::Absolute(Thread::TraceBufferPtrOffset<kX86_64PointerSize>().SizeValue(),
                                   /* no_rip= */ true));
   __ leaq(CpuRegister(entry_addr),
           Address(CpuRegister(entry_addr), CpuRegister(index), TIMES_8, 0));
-  // Advance the index in the buffer
-  __ subq(CpuRegister(index), Immediate(kNumEntriesForWallClock));
-  __ gs()->movq(Address::Absolute(trace_buffer_index_addr, /* no_rip= */ true), CpuRegister(index));
 
   // Record method pointer and action.
   CpuRegister method = index;
@@ -1649,8 +1650,9 @@ void InstructionCodeGeneratorX86_64::GenerateMethodEntryExitHook(HInstruction* i
   // so no need to set the bits since they are 0 already.
   if (instruction->IsMethodExitHook()) {
     DCHECK_GE(ArtMethod::Alignment(kRuntimePointerSize), static_cast<size_t>(4));
-    uint32_t trace_action = 1;
-    __ orq(method, Immediate(trace_action));
+    static_assert(enum_cast<int32_t>(TraceAction::kTraceMethodEnter) == 0);
+    static_assert(enum_cast<int32_t>(TraceAction::kTraceMethodExit) == 1);
+    __ orq(method, Immediate(enum_cast<int32_t>(TraceAction::kTraceMethodExit)));
   }
   __ movq(Address(entry_addr, kMethodOffsetInBytes), CpuRegister(method));
   // Get the timestamp. rdtsc returns timestamp in RAX + RDX even in 64-bit architectures.
@@ -2176,7 +2178,8 @@ static bool AreEflagsSetFrom(HInstruction* cond, HInstruction* branch) {
   // conditions if they are materialized due to the complex branching.
   return cond->IsCondition() &&
          cond->GetNext() == branch &&
-         !DataType::IsFloatingPointType(cond->InputAt(0)->GetType());
+         !DataType::IsFloatingPointType(cond->InputAt(0)->GetType()) &&
+         !cond->GetBlock()->GetGraph()->IsCompilingBaseline();
 }
 
 template<class LabelType>
@@ -2266,7 +2269,12 @@ void InstructionCodeGeneratorX86_64::GenerateTestAndBranch(HInstruction* instruc
 void LocationsBuilderX86_64::VisitIf(HIf* if_instr) {
   LocationSummary* locations = new (GetGraph()->GetAllocator()) LocationSummary(if_instr);
   if (IsBooleanValueOrMaterializedCondition(if_instr->InputAt(0))) {
-    locations->SetInAt(0, Location::Any());
+    if (GetGraph()->IsCompilingBaseline() && !Runtime::Current()->IsAotCompiler()) {
+      locations->SetInAt(0, Location::RequiresRegister());
+      locations->AddTemp(Location::RequiresRegister());
+    } else {
+      locations->SetInAt(0, Location::Any());
+    }
   }
 }
 
@@ -2277,6 +2285,33 @@ void InstructionCodeGeneratorX86_64::VisitIf(HIf* if_instr) {
       nullptr : codegen_->GetLabelOf(true_successor);
   Label* false_target = codegen_->GoesToNextBlock(if_instr->GetBlock(), false_successor) ?
       nullptr : codegen_->GetLabelOf(false_successor);
+  if (IsBooleanValueOrMaterializedCondition(if_instr->InputAt(0))) {
+    if (GetGraph()->IsCompilingBaseline() && !Runtime::Current()->IsAotCompiler()) {
+      DCHECK(if_instr->InputAt(0)->IsCondition());
+      CpuRegister temp = if_instr->GetLocations()->GetTemp(0).AsRegister<CpuRegister>();
+      ProfilingInfo* info = GetGraph()->GetProfilingInfo();
+      DCHECK(info != nullptr);
+      BranchCache* cache = info->GetBranchCache(if_instr->GetDexPc());
+      // Currently, not all If branches are profiled.
+      if (cache != nullptr) {
+        uint64_t address =
+            reinterpret_cast64<uint64_t>(cache) + BranchCache::FalseOffset().Int32Value();
+        static_assert(
+            BranchCache::TrueOffset().Int32Value() - BranchCache::FalseOffset().Int32Value() == 2,
+            "Unexpected offsets for BranchCache");
+        NearLabel done;
+        Location lhs = if_instr->GetLocations()->InAt(0);
+        __ movq(CpuRegister(TMP), Immediate(address));
+        __ movzxw(temp, Address(CpuRegister(TMP), lhs.AsRegister<CpuRegister>(), TIMES_2, 0));
+        __ addw(temp, Immediate(1));
+        __ j(kZero, &done);
+        __ movw(Address(CpuRegister(TMP), lhs.AsRegister<CpuRegister>(), TIMES_2, 0), temp);
+        __ Bind(&done);
+      }
+    }
+  } else {
+    DCHECK(!GetGraph()->IsCompilingBaseline()) << if_instr->InputAt(0)->DebugName();
+  }
   GenerateTestAndBranch(if_instr, /* condition_input_index= */ 0, true_target, false_target);
 }
 

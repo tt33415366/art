@@ -1221,19 +1221,18 @@ void InstructionCodeGeneratorARM64::GenerateMethodEntryExitHook(HInstruction* in
   __ B(gt, slow_path->GetEntryLabel());
 
   // Check if there is place in the buffer to store a new entry, if no, take slow path.
-  uint32_t trace_buffer_index_addr =
+  uint32_t trace_buffer_index_offset =
       Thread::TraceBufferIndexOffset<kArm64PointerSize>().Int32Value();
-  __ Ldr(index, MemOperand(tr, trace_buffer_index_addr));
-  __ Cmp(index, Operand(kNumEntriesForWallClock));
+  __ Ldr(index, MemOperand(tr, trace_buffer_index_offset));
+  __ Subs(index, index, kNumEntriesForWallClock);
   __ B(lt, slow_path->GetEntryLabel());
 
-  // Just update the buffer and advance the offset
+  // Update the index in the `Thread`.
+  __ Str(index, MemOperand(tr, trace_buffer_index_offset));
+  // Calculate the entry address in the buffer.
   // addr = base_addr + sizeof(void*) * index;
   __ Ldr(addr, MemOperand(tr, Thread::TraceBufferPtrOffset<kArm64PointerSize>().SizeValue()));
   __ ComputeAddress(addr, MemOperand(addr, index, LSL, TIMES_8));
-  // Advance the index
-  __ Sub(index, index, kNumEntriesForWallClock);
-  __ Str(index, MemOperand(tr, trace_buffer_index_addr));
 
   Register tmp = index;
   // Record method pointer and trace action.
@@ -1242,8 +1241,9 @@ void InstructionCodeGeneratorARM64::GenerateMethodEntryExitHook(HInstruction* in
   // so no need to set the bits since they are 0 already.
   if (instruction->IsMethodExitHook()) {
     DCHECK_GE(ArtMethod::Alignment(kRuntimePointerSize), static_cast<size_t>(4));
-    uint32_t trace_action = 1;
-    __ Orr(tmp, tmp, Operand(trace_action));
+    static_assert(enum_cast<int32_t>(TraceAction::kTraceMethodEnter) == 0);
+    static_assert(enum_cast<int32_t>(TraceAction::kTraceMethodExit) == 1);
+    __ Orr(tmp, tmp, Operand(enum_cast<int32_t>(TraceAction::kTraceMethodExit)));
   }
   __ Str(tmp, MemOperand(addr, kMethodOffsetInBytes));
   // Record the timestamp.
@@ -3866,6 +3866,35 @@ void InstructionCodeGeneratorARM64::VisitIf(HIf* if_instr) {
   vixl::aarch64::Label* false_target = codegen_->GetLabelOf(false_successor);
   if (codegen_->GoesToNextBlock(if_instr->GetBlock(), false_successor)) {
     false_target = nullptr;
+  }
+  if (IsBooleanValueOrMaterializedCondition(if_instr->InputAt(0))) {
+    if (GetGraph()->IsCompilingBaseline() && !Runtime::Current()->IsAotCompiler()) {
+      DCHECK(if_instr->InputAt(0)->IsCondition());
+      ProfilingInfo* info = GetGraph()->GetProfilingInfo();
+      DCHECK(info != nullptr);
+      BranchCache* cache = info->GetBranchCache(if_instr->GetDexPc());
+      // Currently, not all If branches are profiled.
+      if (cache != nullptr) {
+        uint64_t address =
+            reinterpret_cast64<uint64_t>(cache) + BranchCache::FalseOffset().Int32Value();
+        static_assert(
+            BranchCache::TrueOffset().Int32Value() - BranchCache::FalseOffset().Int32Value() == 2,
+            "Unexpected offsets for BranchCache");
+        vixl::aarch64::Label done;
+        UseScratchRegisterScope temps(GetVIXLAssembler());
+        Register temp = temps.AcquireX();
+        Register counter = temps.AcquireW();
+        Register condition = InputRegisterAt(if_instr, 0).X();
+        __ Mov(temp, address);
+        __ Ldrh(counter, MemOperand(temp, condition, LSL, 1));
+        __ Add(counter, counter, 1);
+        __ Tbnz(counter, 16, &done);
+        __ Strh(counter, MemOperand(temp, condition, LSL, 1));
+        __ Bind(&done);
+      }
+    }
+  } else {
+    DCHECK(!GetGraph()->IsCompilingBaseline()) << if_instr->InputAt(0)->DebugName();
   }
   GenerateTestAndBranch(if_instr, /* condition_input_index= */ 0, true_target, false_target);
 }
