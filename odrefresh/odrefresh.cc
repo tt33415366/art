@@ -107,6 +107,7 @@ using ::android::base::Split;
 using ::android::base::StartsWith;
 using ::android::base::StringPrintf;
 using ::android::base::Timer;
+using ::android::modules::sdklevel::IsAtLeastT;
 using ::android::modules::sdklevel::IsAtLeastU;
 using ::art::tools::CmdlineBuilder;
 
@@ -1099,17 +1100,19 @@ WARN_UNUSED bool OnDeviceRefresh::CheckSystemPropertiesHaveNotChanged(
 WARN_UNUSED bool OnDeviceRefresh::CheckBuildUserfaultFdGc() const {
   bool build_enable_uffd_gc =
       config_.GetSystemProperties().GetBool("ro.dalvik.vm.enable_uffd_gc", /*default_value=*/false);
-  bool is_at_least_u = IsAtLeastU();
+  bool is_at_least_t = IsAtLeastT();
   bool kernel_supports_uffd = KernelSupportsUffd();
   if (!art::odrefresh::CheckBuildUserfaultFdGc(
-          build_enable_uffd_gc, is_at_least_u, kernel_supports_uffd)) {
-    // Normally, this should not happen. If this happens, the system image was probably built with a
-    // wrong PRODUCT_ENABLE_UFFD_GC flag.
-    LOG(WARNING) << ART_FORMAT(
-        "Userfaultfd GC check failed (build_enable_uffd_gc: {}, is_at_least_u: {}, "
+          build_enable_uffd_gc, is_at_least_t, kernel_supports_uffd)) {
+    // Assuming the system property reflects how the dexpreopted boot image was
+    // compiled, and it doesn't agree with runtime support, we need to recompile
+    // it. This happens if we're running on S, T or U, or if the system image
+    // was built with a wrong PRODUCT_ENABLE_UFFD_GC flag.
+    LOG(INFO) << ART_FORMAT(
+        "Userfaultfd GC check failed (build_enable_uffd_gc: {}, is_at_least_t: {}, "
         "kernel_supports_uffd: {}).",
         build_enable_uffd_gc,
-        is_at_least_u,
+        is_at_least_t,
         kernel_supports_uffd);
     return false;
   }

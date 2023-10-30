@@ -100,8 +100,6 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(StringCompareTo)                            \
   V(StringEquals)                               \
   V(StringGetCharsNoCheck)                      \
-  V(StringIndexOf)                              \
-  V(StringIndexOfAfter)                         \
   V(StringStringIndexOf)                        \
   V(StringStringIndexOfAfter)                   \
   V(StringNewStringFromBytes)                   \
@@ -191,8 +189,6 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(VarHandleCompareAndExchangeAcquire)         \
   V(VarHandleCompareAndExchangeRelease)         \
   V(VarHandleCompareAndSet)                     \
-  V(VarHandleGet)                               \
-  V(VarHandleGetAcquire)                        \
   V(VarHandleGetAndAdd)                         \
   V(VarHandleGetAndAddAcquire)                  \
   V(VarHandleGetAndAddRelease)                  \
@@ -208,12 +204,6 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(VarHandleGetAndSet)                         \
   V(VarHandleGetAndSetAcquire)                  \
   V(VarHandleGetAndSetRelease)                  \
-  V(VarHandleGetOpaque)                         \
-  V(VarHandleGetVolatile)                       \
-  V(VarHandleSet)                               \
-  V(VarHandleSetOpaque)                         \
-  V(VarHandleSetRelease)                        \
-  V(VarHandleSetVolatile)                       \
   V(VarHandleWeakCompareAndSet)                 \
   V(VarHandleWeakCompareAndSetAcquire)          \
   V(VarHandleWeakCompareAndSetPlain)            \
@@ -408,6 +398,30 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
 
   void ShNAdd(XRegister rd, XRegister rs1, XRegister rs2, DataType::Type type);
 
+  // Generate a GC root reference load:
+  //
+  //   root <- *(obj + offset)
+  //
+  // while honoring read barriers (if any).
+  void GenerateGcRootFieldLoad(HInstruction* instruction,
+                               Location root,
+                               XRegister obj,
+                               uint32_t offset,
+                               ReadBarrierOption read_barrier_option,
+                               Riscv64Label* label_low = nullptr);
+
+  void Load(Location out, XRegister rs1, int32_t offset, DataType::Type type);
+  void Store(Location value, XRegister rs1, int32_t offset, DataType::Type type);
+
+  // Sequentially consistent store. Used for volatile fields and intrinsics.
+  // The `instruction` argument is for recording an implicit null check stack map with the
+  // store instruction which may not be the last instruction emitted by `StoreSeqCst()`.
+  void StoreSeqCst(Location value,
+                   XRegister rs1,
+                   int32_t offset,
+                   DataType::Type type,
+                   HInstruction* instruction = nullptr);
+
  protected:
   void GenerateClassInitializationCheck(SlowPathCodeRISCV64* slow_path, XRegister class_reg);
   void GenerateBitstringTypeCheckCompare(HTypeCheckInstruction* check, XRegister temp);
@@ -452,18 +466,6 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
                                          Location maybe_temp,
                                          ReadBarrierOption read_barrier_option);
 
-  // Generate a GC root reference load:
-  //
-  //   root <- *(obj + offset)
-  //
-  // while honoring read barriers (if any).
-  void GenerateGcRootFieldLoad(HInstruction* instruction,
-                               Location root,
-                               XRegister obj,
-                               uint32_t offset,
-                               ReadBarrierOption read_barrier_option,
-                               Riscv64Label* label_low = nullptr);
-
   void GenerateTestAndBranch(HInstruction* instruction,
                              size_t condition_input_index,
                              Riscv64Label* true_target,
@@ -473,6 +475,10 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
   void GenerateDivRemWithAnyConstant(HBinaryOperation* instruction);
   void GenerateDivRemIntegral(HBinaryOperation* instruction);
   void GenerateIntLongCondition(IfCondition cond, LocationSummary* locations);
+  void GenerateIntLongCondition(IfCondition cond,
+                                LocationSummary* locations,
+                                XRegister rd,
+                                bool to_all_bits);
   void GenerateIntLongCompareAndBranch(IfCondition cond,
                                        LocationSummary* locations,
                                        Riscv64Label* label);
@@ -481,6 +487,13 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
                            DataType::Type type,
                            LocationSummary* locations,
                            Riscv64Label* label = nullptr);
+  void GenerateFpCondition(IfCondition cond,
+                           bool gt_bias,
+                           DataType::Type type,
+                           LocationSummary* locations,
+                           Riscv64Label* label,
+                           XRegister rd,
+                           bool to_all_bits);
   void GenerateMethodEntryExitHook(HInstruction* instruction);
   void HandleGoto(HInstruction* got, HBasicBlock* successor);
   void GenPackedSwitchWithCompares(XRegister adjusted,
@@ -494,7 +507,6 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
   int32_t VecAddress(LocationSummary* locations,
                      size_t size,
                      /*out*/ XRegister* adjusted_base);
-  void GenConditionalMove(HSelect* select);
 
   template <typename Reg,
             void (Riscv64Assembler::*opS)(Reg, FRegister, FRegister),
@@ -517,10 +529,8 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
   void FAbs(FRegister rd, FRegister rs1, DataType::Type type);
   void FNeg(FRegister rd, FRegister rs1, DataType::Type type);
   void FMv(FRegister rd, FRegister rs1, DataType::Type type);
+  void FMvX(XRegister rd, FRegister rs1, DataType::Type type);
   void FClass(XRegister rd, FRegister rs1, DataType::Type type);
-
-  void Load(Location out, XRegister rs1, int32_t offset, DataType::Type type);
-  void Store(Location value, XRegister rs1, int32_t offset, DataType::Type type);
 
   Riscv64Assembler* const assembler_;
   CodeGeneratorRISCV64* const codegen_;
@@ -588,7 +598,10 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
   const Riscv64Assembler& GetAssembler() const override { return assembler_; }
 
   HGraphVisitor* GetLocationBuilder() override { return &location_builder_; }
-  HGraphVisitor* GetInstructionVisitor() override { return &instruction_visitor_; }
+
+  InstructionCodeGeneratorRISCV64* GetInstructionVisitor() override {
+    return &instruction_visitor_;
+  }
 
   void MaybeGenerateInlineCacheCheck(HInstruction* instruction, XRegister klass);
 
@@ -603,6 +616,8 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
   void DumpFloatingPointRegister(std::ostream& stream, int reg) const override;
 
   InstructionSet GetInstructionSet() const override { return InstructionSet::kRiscv64; }
+
+  const Riscv64InstructionSetFeatures& GetInstructionSetFeatures() const;
 
   uint32_t GetPreferredSlotsAlignment() const override {
     return static_cast<uint32_t>(kRiscv64PointerSize);
@@ -725,6 +740,10 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
                                       Handle<mirror::Class> handle);
   void EmitJitRootPatches(uint8_t* code, const uint8_t* roots_data) override;
 
+  void LoadTypeForBootImageIntrinsic(XRegister dest, TypeReference target_type);
+  void LoadBootImageRelRoEntry(XRegister dest, uint32_t boot_image_offset);
+  void LoadClassRootForIntrinsic(XRegister dest, ClassRoot class_root);
+
   void LoadMethod(MethodLoadKind load_kind, Location temp, HInvoke* invoke);
   void GenerateStaticOrDirectCall(HInvokeStaticOrDirect* invoke,
                                   Location temp,
@@ -758,8 +777,8 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
                                              Location index,
                                              Location temp,
                                              bool needs_null_check);
-  // Factored implementation, used by GenerateFieldLoadWithBakerReadBarrier
-  // and GenerateArrayLoadWithBakerReadBarrier.
+  // Factored implementation, used by GenerateFieldLoadWithBakerReadBarrier,
+  // GenerateArrayLoadWithBakerReadBarrier and intrinsics.
   void GenerateReferenceLoadWithBakerReadBarrier(HInstruction* instruction,
                                                  Location ref,
                                                  XRegister obj,
