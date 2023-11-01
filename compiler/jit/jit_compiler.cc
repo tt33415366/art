@@ -17,7 +17,6 @@
 #include "jit_compiler.h"
 
 #include "android-base/stringprintf.h"
-
 #include "arch/instruction_set.h"
 #include "arch/instruction_set_features.h"
 #include "art_method-inl.h"
@@ -29,6 +28,7 @@
 #include "compiler.h"
 #include "debug/elf_debug_writer.h"
 #include "driver/compiler_options.h"
+#include "export/jit_create.h"
 #include "jit/debugger_interface.h"
 #include "jit/jit.h"
 #include "jit/jit_code_cache.h"
@@ -65,6 +65,9 @@ void JitCompiler::ParseCompilerOptions() {
       : CompilerOptions::CompilerType::kJitCompiler;
   // JIT is never PIC, no matter what the runtime compiler options specify.
   compiler_options_->SetNonPic();
+
+  // Set the appropriate read barrier option.
+  compiler_options_->emit_read_barrier_ = gUseReadBarrier;
 
   // If the options don't provide whether we generate debuggable code, set
   // debuggability based on the runtime value.
@@ -125,7 +128,7 @@ void JitCompiler::ParseCompilerOptions() {
   }
 }
 
-EXPORT extern "C" JitCompilerInterface* jit_load() {
+JitCompilerInterface* jit_create() {
   VLOG(jit) << "Create jit compiler";
   auto* const jit_compiler = JitCompiler::Create();
   CHECK(jit_compiler != nullptr);

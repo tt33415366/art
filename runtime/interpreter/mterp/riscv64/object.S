@@ -109,7 +109,7 @@
     // Fast path: NterpGetStaticField's resolved_field from thread-local cache.
     // Stores cache value in a0 to match slow path's return from NterpGetStaticField.
     // Slow path: updates s7 if is_object, for possible GC movement.
-    FETCH_FROM_THREAD_CACHE /*resolved_field*/a0, .L${opcode}_slow
+    FETCH_FROM_THREAD_CACHE /*resolved_field*/a0, .L${opcode}_slow, t0, t1
 
 .L${opcode}_regular_resume:
     lw t0, ART_FIELD_OFFSET_OFFSET(a0)
@@ -186,9 +186,11 @@
       sh $value_reg, (t0)
       fence rw, rw
     .elseif $width == 32
-      amoswap.w.rl $value_reg, $value_reg, (t0)
+      // value_reg must NOT be the destination register, the destination gets clobbered!
+      // For refs, value_reg's original value is used in the write barrier below.
+      amoswap.w.rl zero, $value_reg, (t0)
     .else  // width == 64
-      amoswap.d.rl $value_reg, $value_reg, (t0)
+      amoswap.d.rl zero, $value_reg, (t0)
     .endif  // width
     WRITE_BARRIER_IF_OBJECT $is_object, $value_reg, /*holder*/a0, /*uniq*/slow_${opcode}
 

@@ -415,7 +415,7 @@ void OptimizingCompiler::DumpInstructionSetFeaturesToCfg() const {
       std::string("isa:") + GetInstructionSetString(features->GetInstructionSet());
   std::string features_string = "isa_features:" + features->GetFeatureString();
   std::string read_barrier_type = "none";
-  if (gUseReadBarrier) {
+  if (compiler_options.EmitReadBarrier()) {
     if (art::kUseBakerReadBarrier)
       read_barrier_type = "baker";
     else if (art::kUseTableLookupReadBarrier)
@@ -459,6 +459,18 @@ bool OptimizingCompiler::RunBaselineOptimizations(HGraph* graph,
                               dex_compilation_unit,
                               pass_observer,
                               arm_optimizations);
+    }
+#endif
+#if defined(ART_ENABLE_CODEGEN_riscv64)
+    case InstructionSet::kRiscv64: {
+      OptimizationDef riscv64_optimizations[] = {
+          OptDef(OptimizationPass::kCriticalNativeAbiFixupRiscv64),
+      };
+      return RunOptimizations(graph,
+                              codegen,
+                              dex_compilation_unit,
+                              pass_observer,
+                              riscv64_optimizations);
     }
 #endif
 #ifdef ART_ENABLE_CODEGEN_x86
@@ -517,6 +529,20 @@ bool OptimizingCompiler::RunArchOptimizations(HGraph* graph,
                               dex_compilation_unit,
                               pass_observer,
                               arm64_optimizations);
+    }
+#endif
+#if defined(ART_ENABLE_CODEGEN_riscv64)
+    case InstructionSet::kRiscv64: {
+      OptimizationDef riscv64_optimizations[] = {
+          OptDef(OptimizationPass::kSideEffectsAnalysis),
+          OptDef(OptimizationPass::kGlobalValueNumbering, "GVN$after_arch"),
+          OptDef(OptimizationPass::kCriticalNativeAbiFixupRiscv64)
+      };
+      return RunOptimizations(graph,
+                              codegen,
+                              dex_compilation_unit,
+                              pass_observer,
+                              riscv64_optimizations);
     }
 #endif
 #ifdef ART_ENABLE_CODEGEN_x86
@@ -729,90 +755,6 @@ CompiledMethod* OptimizingCompiler::Emit(ArenaAllocator* allocator,
   return compiled_method;
 }
 
-// TODO(riscv64): Remove this check when codegen is complete.
-#ifdef ART_ENABLE_CODEGEN_riscv64
-static bool CanAssembleGraphForRiscv64(HGraph* graph) {
-  for (HBasicBlock* block : graph->GetPostOrder()) {
-    // Phis are implemented (and they have no code to emit), so check only non-Phi instructions.
-    for (HInstructionIterator it(block->GetInstructions()); !it.Done(); it.Advance()) {
-      switch (it.Current()->GetKind()) {
-        case HInstruction::kParallelMove:
-          // ParallelMove is supported but it is inserted by the register allocator
-          // and this check is done before register allocation.
-          LOG(FATAL) << "Unexpected ParallelMove before register allocation!";
-          UNREACHABLE();
-        case HInstruction::kExit:
-        case HInstruction::kGoto:
-        case HInstruction::kParameterValue:
-        case HInstruction::kReturn:
-        case HInstruction::kReturnVoid:
-        case HInstruction::kSuspendCheck:
-        case HInstruction::kDoubleConstant:
-        case HInstruction::kFloatConstant:
-        case HInstruction::kIntConstant:
-        case HInstruction::kLongConstant:
-        case HInstruction::kNullConstant:
-        case HInstruction::kLoadClass:
-        case HInstruction::kLoadString:
-        case HInstruction::kLoadMethodHandle:
-        case HInstruction::kLoadMethodType:
-        case HInstruction::kInstanceFieldGet:
-        case HInstruction::kStaticFieldGet:
-        case HInstruction::kArrayGet:
-        case HInstruction::kAbove:
-        case HInstruction::kAboveOrEqual:
-        case HInstruction::kBelow:
-        case HInstruction::kBelowOrEqual:
-        case HInstruction::kEqual:
-        case HInstruction::kGreaterThan:
-        case HInstruction::kGreaterThanOrEqual:
-        case HInstruction::kLessThan:
-        case HInstruction::kLessThanOrEqual:
-        case HInstruction::kNotEqual:
-        case HInstruction::kCompare:
-        case HInstruction::kIf:
-        case HInstruction::kAdd:
-        case HInstruction::kAnd:
-        case HInstruction::kOr:
-        case HInstruction::kSub:
-        case HInstruction::kXor:
-        case HInstruction::kRor:
-        case HInstruction::kShl:
-        case HInstruction::kShr:
-        case HInstruction::kUShr:
-        case HInstruction::kAbs:
-        case HInstruction::kBooleanNot:
-        case HInstruction::kMul:
-        case HInstruction::kNeg:
-        case HInstruction::kNot:
-        case HInstruction::kMin:
-        case HInstruction::kMax:
-        case HInstruction::kInvokeVirtual:
-        case HInstruction::kInvokeInterface:
-        case HInstruction::kCurrentMethod:
-        case HInstruction::kNullCheck:
-          break;
-        case HInstruction::kInvokeStaticOrDirect:
-          if (it.Current()->AsInvokeStaticOrDirect()->GetCodePtrLocation() ==
-                  CodePtrLocation::kCallCriticalNative &&
-              it.Current()->AsInvokeStaticOrDirect()->GetNumberOfArguments() >= 8u) {
-            // TODO(riscv64): If there are more than 8 FP args, some may be passed in GPRs
-            // and this requires a `CriticalNativeAbiFixupRiscv64` pass similar to the one
-            // we have for ARM. This is not yet implemented. For simplicity, we reject all
-            // direct @CriticalNative calls with more than 8 args.
-            return false;
-          }
-          break;
-        default:
-          // Unimplemented instruction.
-          return false;
-      }
-    }
-  }
-  return true;
-}
-#endif
-
 CodeGenerator* OptimizingCompiler::TryCompile(ArenaAllocator* allocator,
                                               ArenaStack* arena_stack,
                                               const DexCompilationUnit& dex_compilation_unit,
@@ -971,15 +913,6 @@ CodeGenerator* OptimizingCompiler::TryCompile(ArenaAllocator* allocator,
     WriteBarrierElimination(graph, compilation_stats_.get()).Run();
   }
 
-  // TODO(riscv64): Remove this check when codegen is complete.
-#ifdef ART_ENABLE_CODEGEN_riscv64
-  if (instruction_set == InstructionSet::kRiscv64 && !CanAssembleGraphForRiscv64(graph)) {
-    MaybeRecordStat(compilation_stats_.get(),
-                    MethodCompilationStat::kNotCompiledUnsupportedIsa);
-    return nullptr;
-  }
-#endif
-
   RegisterAllocator::Strategy regalloc_strategy =
     compiler_options.GetRegisterAllocationStrategy();
   AllocateRegisters(graph,
@@ -1074,15 +1007,6 @@ CodeGenerator* OptimizingCompiler::TryCompileIntrinsic(
     PassScope scope(WriteBarrierElimination::kWBEPassName, &pass_observer);
     WriteBarrierElimination(graph, compilation_stats_.get()).Run();
   }
-
-  // TODO(riscv64): Remove this check when codegen is complete.
-#ifdef ART_ENABLE_CODEGEN_riscv64
-  if (instruction_set == InstructionSet::kRiscv64 && !CanAssembleGraphForRiscv64(graph)) {
-    MaybeRecordStat(compilation_stats_.get(),
-                    MethodCompilationStat::kNotCompiledUnsupportedIsa);
-    return nullptr;
-  }
-#endif
 
   AllocateRegisters(graph,
                     codegen.get(),
@@ -1193,9 +1117,7 @@ CompiledMethod* OptimizingCompiler::Compile(const dex::CodeItem* code_item,
 
   if (kIsDebugBuild &&
       compiler_options.CompileArtTest() &&
-      IsInstructionSetSupported(compiler_options.GetInstructionSet()) &&
-      // TODO(riscv64): Enable this check when codegen is complete.
-      compiler_options.GetInstructionSet() != InstructionSet::kRiscv64) {
+      IsInstructionSetSupported(compiler_options.GetInstructionSet())) {
     // For testing purposes, we put a special marker on method names
     // that should be compiled with this compiler (when the
     // instruction set is supported). This makes sure we're not

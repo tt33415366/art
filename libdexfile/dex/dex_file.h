@@ -57,8 +57,9 @@ enum class Domain : char;
 // Owns the physical storage that backs one or more DexFiles (that is, it can be shared).
 // It frees the storage (e.g. closes file) when all DexFiles that use it are all closed.
 //
-// The Begin()-End() range represents exactly one DexFile (with the size from the header).
-// In particular, the End() does NOT include any shared cdex data from other DexFiles.
+// The memory range must include all data used by the DexFiles including any shared data.
+//
+// It might also include surrounding non-dex data (e.g. it might represent vdex file).
 class DexFileContainer {
  public:
   DexFileContainer() { }
@@ -768,13 +769,9 @@ class DexFile {
     return begin_;
   }
 
-  size_t Size() const {
-    return size_;
-  }
+  size_t Size() const { return header_->file_size_; }
 
-  static ArrayRef<const uint8_t> GetDataRange(const uint8_t* data,
-                                              size_t size,
-                                              DexFileContainer* container);
+  static ArrayRef<const uint8_t> GetDataRange(const uint8_t* data, DexFileContainer* container);
 
   const uint8_t* DataBegin() const { return data_.data(); }
 
@@ -849,9 +846,7 @@ class DexFile {
     return DataBegin() <= addr && addr < DataBegin() + DataSize();
   }
 
-  DexFileContainer* GetContainer() const {
-    return container_.get();
-  }
+  const std::shared_ptr<DexFileContainer>& GetContainer() const { return container_; }
 
   IterationRange<ClassIterator> GetClasses() const;
 
@@ -867,13 +862,15 @@ class DexFile {
   static constexpr uint32_t kDefaultMethodsVersion = 37;
 
   DexFile(const uint8_t* base,
-          size_t size,
           const std::string& location,
           uint32_t location_checksum,
           const OatDexFile* oat_dex_file,
           // Shared since several dex files may be stored in the same logical container.
           std::shared_ptr<DexFileContainer> container,
           bool is_compact_dex);
+
+  template <typename T>
+  const T* GetSection(const uint32_t* offset, DexFileContainer* container);
 
   // Top-level initializer that calls other Init methods.
   bool Init(std::string* error_msg);
@@ -887,8 +884,7 @@ class DexFile {
   // The base address of the memory mapping.
   const uint8_t* const begin_;
 
-  // The size of the underlying memory allocation in bytes.
-  const size_t size_;
+  size_t unused_size_ = 0;  // Preserve layout for DRM (b/305203031).
 
   // Data memory range: Most dex offsets are relative to this memory range.
   // Standard dex: same as (begin_, size_).
@@ -998,7 +994,12 @@ class EncodedArrayValueIterator {
 
   bool HasNext() const { return pos_ < array_size_; }
 
-  void Next();
+  WARN_UNUSED bool MaybeNext();
+
+  ALWAYS_INLINE void Next() {
+    bool ok = MaybeNext();
+    DCHECK(ok) << "Unknown type: " << GetValueType();
+  }
 
   enum ValueType {
     kByte         = 0x00,
@@ -1019,6 +1020,7 @@ class EncodedArrayValueIterator {
     kAnnotation   = 0x1d,
     kNull         = 0x1e,
     kBoolean      = 0x1f,
+    kEndOfInput   = 0xff,
   };
 
   ValueType GetValueType() const { return type_; }

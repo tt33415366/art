@@ -388,6 +388,7 @@ size_t ThreadList::RunCheckpoint(Closure* checkpoint_function, Closure* callback
   // Run the checkpoint on ourself while we wait for threads to suspend.
   checkpoint_function->Run(self);
 
+  bool mutator_lock_held = Locks::mutator_lock_->IsSharedHeld(self);
   bool repeat = true;
   // Run the checkpoint on the suspended threads.
   while (repeat) {
@@ -396,15 +397,17 @@ size_t ThreadList::RunCheckpoint(Closure* checkpoint_function, Closure* callback
       if (thread != nullptr) {
         // We know for sure that the thread is suspended at this point.
         DCHECK(thread->IsSuspended());
-        // Make sure there is no pending flip function before running checkpoint
-        // on behalf of thread.
-        thread->EnsureFlipFunctionStarted(self);
-        if (thread->GetStateAndFlags(std::memory_order_acquire)
-                .IsAnyOfFlagsSet(Thread::FlipFunctionFlags())) {
-          // There is another thread running the flip function for 'thread'.
-          // Instead of waiting for it to complete, move to the next thread.
-          repeat = true;
-          continue;
+        if (mutator_lock_held) {
+          // Make sure there is no pending flip function before running checkpoint
+          // on behalf of thread.
+          thread->EnsureFlipFunctionStarted(self);
+          if (thread->GetStateAndFlags(std::memory_order_acquire)
+                  .IsAnyOfFlagsSet(Thread::FlipFunctionFlags())) {
+            // There is another thread running the flip function for 'thread'.
+            // Instead of waiting for it to complete, move to the next thread.
+            repeat = true;
+            continue;
+          }
         }
         checkpoint_function->Run(thread);
         {
@@ -1406,6 +1409,14 @@ void ThreadList::Unregister(Thread* self, bool should_run_callbacks) {
 void ThreadList::ForEach(void (*callback)(Thread*, void*), void* context) {
   for (const auto& thread : list_) {
     callback(thread, context);
+  }
+}
+
+void ThreadList::WaitForUnregisterToComplete(Thread* self) {
+  // We hold thread_list_lock_ .
+  while (unregistering_count_ != 0) {
+    LOG(WARNING) << "Waiting for a thread to finish unregistering";
+    Locks::thread_exit_cond_->Wait(self);
   }
 }
 

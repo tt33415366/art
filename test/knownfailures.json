@@ -6,6 +6,10 @@
         "bug": "http://b/33389022"
     },
     {
+        "tests": "626-checker-arm64-scratch-register",
+        "description": ["Disable 626-checker until we assses whether to keep it"]
+    },
+    {
         "tests": "304-method-tracing",
         "description": ["Disable 304-method-tracing temporarily until a fix",
                         "arrives."],
@@ -266,9 +270,10 @@
                         "suppressed when tracing."]
     },
     {
-        "tests": "638-checker-inline-cache-intrinsic",
+        "tests": ["638-checker-inline-cache-intrinsic",
+                  "850-checker-branches"],
         "variant": "interpreter | interp-ac",
-        "description": ["Test expects JIT compilation"]
+        "description": ["Tests expect JIT compilation"]
     },
     {
         "tests": "597-deopt-invoke-stub",
@@ -438,7 +443,6 @@
     },
     {
         "test_patterns": [
-            ".*const-method-type.*",
             ".*invoke-custom.*",
             ".*invoke-polymorphic.*",
             ".*methodhandle.*",
@@ -1024,6 +1028,7 @@
           "819-verification-runtime",
           "823-cha-inlining",
           "842-vdex-hard-failure",
+          "850-checker-branches",
           "900-hello-plugin",
           "901-hello-ti-agent",
           "903-hello-tagging",
@@ -1181,6 +1186,7 @@
                   "845-data-image",
                   "846-multidex-data-image",
                   "847-filled-new-aray",
+                  "848-pattern-match",
                   "999-redefine-hiddenapi",
                   "1000-non-moving-space-stress",
                   "1001-app-image-regions",
@@ -1350,12 +1356,6 @@
         "variant": "gcstress",
         "bug": "b/137887811",
         "description": ["Occasional timeouts."]
-    },
-    {
-        "tests": ["909-attach-agent"],
-        "variant": "target",
-        "bug": "b/300654679",
-        "description": ["Library path issues."]
     },
     {
         "tests": ["175-alloc-big-bignums"],
@@ -1572,5 +1572,14 @@
         "tests": ["2031-zygote-compiled-frame-deopt"],
         "variant": "jit-on-first-use",
         "description": ["Test doesn't work when jitting can happen in parallel."]
+    },
+    {
+        "tests": ["689-zygote-jit-deopt",
+                  "728-imt-conflict-zygote",
+                  "2031-zygote-compiled-frame-deopt"],
+        "bug": "b/137887811",
+        "description": "ASAN issue.",
+        "variant": "host",
+        "env_vars": {"SANITIZE_HOST": "address"}
     }
 ]

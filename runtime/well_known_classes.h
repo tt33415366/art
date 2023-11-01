@@ -142,7 +142,6 @@ struct WellKnownClasses {
   static ArtMethod* java_lang_invoke_MethodHandle_invokeExact;
   static ArtMethod* java_lang_invoke_MethodHandles_lookup;
   static ArtMethod* java_lang_invoke_MethodHandles_Lookup_findConstructor;
-  static ArtMethod* java_lang_invoke_MethodType_makeImpl;
   static ArtMethod* java_lang_ref_FinalizerReference_add;
   static ArtMethod* java_lang_ref_ReferenceQueue_add;
   static ArtMethod* java_lang_reflect_InvocationTargetException_init;
@@ -170,6 +169,7 @@ struct WellKnownClasses {
   static ArtField* dalvik_system_VMRuntime_nonSdkApiUsageConsumer;
   static ArtField* java_io_FileDescriptor_descriptor;
   static ArtField* java_lang_ClassLoader_parent;
+  static ArtField* java_lang_String_EMPTY;
   static ArtField* java_lang_Thread_parkBlocker;
   static ArtField* java_lang_Thread_daemon;
   static ArtField* java_lang_Thread_group;

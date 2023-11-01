@@ -14,21 +14,20 @@
  * limitations under the License.
  */
 
-package annotations;
+import java.lang.reflect.Method;
 
-import java.lang.annotation.ElementType;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.lang.annotation.Target;
+class Main {
+  public static void main(String[] args) throws Exception {
+    System.loadLibrary(args[0]);
+    Class<?> cls = Class.forName("TestCase");
+    ensureJitBaselineCompiled(cls, "withBranch");
+    Method m = cls.getDeclaredMethod("withBranch", boolean.class);
+    m.invoke(null, true);
+    m.invoke(null, true);
+    m.invoke(null, false);
+    ensureJitCompiled(cls, "withBranch");
+  }
 
-/**
- * Methods annotated with this annotation will be replaced with ldc bytecode
- * with the MethodType described by the annotation.
- */
-@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.METHOD)
-public @interface ConstantMethodType {
-    Class<?> returnType() default void.class;
-
-    Class<?>[] parameterTypes() default {};
+  public static native void ensureJitBaselineCompiled(Class<?> cls, String methodName);
+  public static native void ensureJitCompiled(Class<?> cls, String methodName);
 }

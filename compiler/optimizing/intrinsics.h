@@ -136,7 +136,7 @@ class IntrinsicVisitor : public ValueObject {
   static MemberOffset GetReferenceDisableIntrinsicOffset();
   static MemberOffset GetReferenceSlowPathEnabledOffset();
   static void CreateReferenceGetReferentLocations(HInvoke* invoke, CodeGenerator* codegen);
-  static void CreateReferenceRefersToLocations(HInvoke* invoke);
+  static void CreateReferenceRefersToLocations(HInvoke* invoke, CodeGenerator* codegen);
 
  protected:
   IntrinsicVisitor() {}
@@ -327,6 +327,11 @@ bool IsCallFreeIntrinsic(HInvoke* invoke, Codegenerator* codegen) {
   }
   return false;
 }
+
+// Insert a `Float.floatToRawIntBits()` or `Double.doubleToRawLongBits()` intrinsic for a
+// given input. These fake calls are needed on arm and riscv64 to satisfy type consistency
+// checks while passing certain FP args in core registers for direct @CriticalNative calls.
+void InsertFpToIntegralIntrinsic(HInvokeStaticOrDirect* invoke, size_t input_index);
 
 }  // namespace art
 

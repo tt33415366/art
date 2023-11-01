@@ -87,9 +87,9 @@ public class BackgroundDexoptJob {
         start().thenAcceptAsync(result -> {
             writeStats(result);
             // This is a periodic job, where the interval is specified in the `JobInfo`. "true"
-            // means to execute again during a future idle maintenance window in the same
-            // interval, while "false" means not to execute again during a future idle maintenance
-            // window in the same interval but to execute again in the next interval.
+            // means to execute again in the same interval with the default retry policy, while
+            // "false" means not to execute again in the same interval but to execute again in the
+            // next interval.
             // This call will be ignored if `onStopJob` is called.
             boolean wantsReschedule = result instanceof CompletedResult
                     && ((CompletedResult) result).dexoptResult().getFinalStatus()
@@ -106,8 +106,7 @@ public class BackgroundDexoptJob {
             mLastStopReason = Optional.of(params.getStopReason());
         }
         cancel();
-        // "true" means to execute again during a future idle maintenance window in the same
-        // interval.
+        // "true" means to execute again in the same interval with the default retry policy.
         return true;
     }
 
@@ -228,41 +227,11 @@ public class BackgroundDexoptJob {
         synchronized (this) {
             stopReason = mLastStopReason;
         }
-        if (result instanceof CompletedResult) {
-            var completedResult = (CompletedResult) result;
-            ArtStatsLog.write(ArtStatsLog.BACKGROUND_DEXOPT_JOB_ENDED,
-                    getStatusForStats(completedResult, stopReason),
-                    stopReason.orElse(JobParameters.STOP_REASON_UNDEFINED),
-                    completedResult.durationMs(), 0 /* deprecated */);
+        if (result instanceof CompletedResult completedResult) {
+            BackgroundDexoptJobStatsReporter.reportSuccess(completedResult, stopReason);
         } else if (result instanceof FatalErrorResult) {
-            ArtStatsLog.write(ArtStatsLog.BACKGROUND_DEXOPT_JOB_ENDED,
-                    ArtStatsLog.BACKGROUND_DEXOPT_JOB_ENDED__STATUS__STATUS_FATAL_ERROR,
-                    JobParameters.STOP_REASON_UNDEFINED, 0 /* durationMs */, 0 /* deprecated */);
+            BackgroundDexoptJobStatsReporter.reportFailure();
         }
-    }
-
-    private int getStatusForStats(@NonNull CompletedResult result, Optional<Integer> stopReason) {
-        if (result.dexoptResult().getFinalStatus() == DexoptResult.DEXOPT_CANCELLED) {
-            if (stopReason.isPresent()) {
-                return ArtStatsLog
-                        .BACKGROUND_DEXOPT_JOB_ENDED__STATUS__STATUS_ABORT_BY_CANCELLATION;
-            } else {
-                return ArtStatsLog.BACKGROUND_DEXOPT_JOB_ENDED__STATUS__STATUS_ABORT_BY_API;
-            }
-        }
-
-        boolean isSkippedDueToStorageLow =
-                result.dexoptResult()
-                        .getPackageDexoptResults()
-                        .stream()
-                        .flatMap(packageResult
-                                -> packageResult.getDexContainerFileDexoptResults().stream())
-                        .anyMatch(fileResult -> fileResult.isSkippedDueToStorageLow());
-        if (isSkippedDueToStorageLow) {
-            return ArtStatsLog.BACKGROUND_DEXOPT_JOB_ENDED__STATUS__STATUS_ABORT_NO_SPACE_LEFT;
-        }
-
-        return ArtStatsLog.BACKGROUND_DEXOPT_JOB_ENDED__STATUS__STATUS_JOB_FINISHED;
     }
 
     static abstract class Result {}
