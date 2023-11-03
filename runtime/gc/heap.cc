@@ -1607,7 +1607,7 @@ class TrimIndirectReferenceTableClosure : public Closure {
  public:
   explicit TrimIndirectReferenceTableClosure(Barrier* barrier) : barrier_(barrier) {
   }
-  void Run(Thread* thread) override NO_THREAD_SAFETY_ANALYSIS {
+  void Run(Thread* thread) override REQUIRES_SHARED(Locks::mutator_lock_) {
     thread->GetJniEnv()->TrimLocals();
     // If thread is a running mutator, then act on behalf of the trim thread.
     // See the code in ThreadList::RunCheckpoint.
@@ -1628,8 +1628,8 @@ void Heap::TrimIndirectReferenceTables(Thread* self) {
   // TODO: May also want to look for entirely empty pages maintained by SmallIrtAllocator.
   Barrier barrier(0);
   TrimIndirectReferenceTableClosure closure(&barrier);
-  ScopedThreadStateChange tsc(self, ThreadState::kWaitingForCheckPointsToRun);
   size_t barrier_count = Runtime::Current()->GetThreadList()->RunCheckpoint(&closure);
+  ScopedThreadStateChange tsc(self, ThreadState::kWaitingForCheckPointsToRun);
   if (barrier_count != 0) {
     barrier.Increment(self, barrier_count);
   }
@@ -3760,7 +3760,10 @@ void Heap::GrowForUtilization(collector::GarbageCollector* collector_ran,
       grow_bytes = 0;
     }
   }
-  CHECK_LE(target_size, std::numeric_limits<size_t>::max());
+  CHECK_LE(target_size, std::numeric_limits<size_t>::max())
+      << " bytes_allocated:" << bytes_allocated
+      << " bytes_freed:" << current_gc_iteration_.GetFreedBytes()
+      << " large_obj_bytes_freed:" << current_gc_iteration_.GetFreedLargeObjectBytes();
   if (!ignore_target_footprint_) {
     SetIdealFootprint(target_size);
     // Store target size (computed with foreground heap growth multiplier) for updating
@@ -4539,10 +4542,9 @@ mirror::Object* Heap::AllocWithNewTLAB(Thread* self,
     }
     // Try allocating a new thread local buffer, if the allocation fails the space must be
     // full so return null.
-    if (!bump_pointer_space_->AllocNewTlab(self, new_tlab_size)) {
+    if (!bump_pointer_space_->AllocNewTlab(self, new_tlab_size, bytes_tl_bulk_allocated)) {
       return nullptr;
     }
-    *bytes_tl_bulk_allocated = new_tlab_size;
     if (CheckPerfettoJHPEnabled()) {
       VLOG(heap) << "JHP:kAllocatorTypeTLAB, New Tlab bytes allocated= " << new_tlab_size;
     }
