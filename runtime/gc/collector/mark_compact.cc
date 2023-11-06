@@ -83,6 +83,7 @@
 #endif  // __NR_userfaultfd
 #endif  // __BIONIC__
 
+#ifdef ART_TARGET_ANDROID
 namespace {
 
 using ::android::base::GetBoolProperty;
@@ -90,6 +91,7 @@ using ::android::base::ParseBool;
 using ::android::base::ParseBoolResult;
 
 }  // namespace
+#endif
 
 namespace art {
 
@@ -188,7 +190,7 @@ static int GetOverrideCacheInfoFd() {
   return -1;
 }
 
-static bool GetCachedBoolProperty(const std::string& key, bool default_value) {
+static std::unordered_map<std::string, std::string> GetCachedProperties() {
   // For simplicity, we don't handle multiple calls because otherwise we would have to reset the fd.
   static bool called = false;
   CHECK(!called) << "GetCachedBoolProperty can be called only once";
@@ -199,7 +201,7 @@ static bool GetCachedBoolProperty(const std::string& key, bool default_value) {
   if (fd >= 0) {
     if (!android::base::ReadFdToString(fd, &cache_info_contents)) {
       PLOG(ERROR) << "Failed to read cache-info from fd " << fd;
-      return default_value;
+      return {};
     }
   } else {
     std::string path = GetApexDataDalvikCacheDirectory(InstructionSet::kNone) + "/cache-info.xml";
@@ -210,7 +212,7 @@ static bool GetCachedBoolProperty(const std::string& key, bool default_value) {
       if (errno != ENOENT) {
         PLOG(ERROR) << "Failed to read cache-info from the default path";
       }
-      return default_value;
+      return {};
     }
   }
 
@@ -219,41 +221,51 @@ static bool GetCachedBoolProperty(const std::string& key, bool default_value) {
   if (!cache_info.has_value()) {
     // This should never happen.
     LOG(ERROR) << "Failed to parse cache-info";
-    return default_value;
+    return {};
   }
   const com::android::art::KeyValuePairList* list = cache_info->getFirstSystemProperties();
   if (list == nullptr) {
     // This should never happen.
     LOG(ERROR) << "Missing system properties from cache-info";
-    return default_value;
+    return {};
   }
   const std::vector<com::android::art::KeyValuePair>& properties = list->getItem();
+  std::unordered_map<std::string, std::string> result;
   for (const com::android::art::KeyValuePair& pair : properties) {
-    if (pair.getK() == key) {
-      ParseBoolResult result = ParseBool(pair.getV());
-      switch (result) {
-        case ParseBoolResult::kTrue:
-          return true;
-        case ParseBoolResult::kFalse:
-          return false;
-        case ParseBoolResult::kError:
-          return default_value;
-      }
-    }
+    result[pair.getK()] = pair.getV();
   }
-  return default_value;
+  return result;
+}
+
+static bool GetCachedBoolProperty(
+    const std::unordered_map<std::string, std::string>& cached_properties,
+    const std::string& key,
+    bool default_value) {
+  auto it = cached_properties.find(key);
+  if (it == cached_properties.end()) {
+    return default_value;
+  }
+  ParseBoolResult result = ParseBool(it->second);
+  switch (result) {
+    case ParseBoolResult::kTrue:
+      return true;
+    case ParseBoolResult::kFalse:
+      return false;
+    case ParseBoolResult::kError:
+      return default_value;
+  }
 }
 
 static bool SysPropSaysUffdGc() {
   // The phenotype flag can change at time time after boot, but it shouldn't take effect until a
   // reboot. Therefore, we read the phenotype flag from the cache info, which is generated on boot.
-  return GetCachedBoolProperty("persist.device_config.runtime_native_boot.enable_uffd_gc_2",
-                               false) ||
-         GetBoolProperty("ro.dalvik.vm.enable_uffd_gc", false);
+  std::unordered_map<std::string, std::string> cached_properties = GetCachedProperties();
+  return !GetCachedBoolProperty(
+      cached_properties, "persist.device_config.runtime_native_boot.force_disable_uffd_gc", false);
 }
 #else
 // Never called.
-static bool SysPropSaysUffdGc() { return false; }
+static bool SysPropSaysUffdGc() { return true; }
 #endif
 
 static bool ShouldUseUserfaultfd() {
@@ -291,7 +303,7 @@ static constexpr size_t kMaxNumUffdWorkers = 2;
 // of mutator threads trying to access the moving-space during one compaction
 // phase. Using a lower number in debug builds to hopefully catch the issue
 // before it becomes a problem on user builds.
-static constexpr size_t kMutatorCompactionBufferCount = kIsDebugBuild ? 256 : 512;
+static constexpr size_t kMutatorCompactionBufferCount = kIsDebugBuild ? 256 : 2048;
 // Minimum from-space chunk to be madvised (during concurrent compaction) in one go.
 static constexpr ssize_t kMinFromSpaceMadviseSize = 1 * MB;
 // Concurrent compaction termination logic is different (and slightly more efficient) if the
@@ -367,6 +379,24 @@ static bool IsSigbusFeatureAvailable() {
   return gUffdFeatures & UFFD_FEATURE_SIGBUS;
 }
 
+size_t MarkCompact::InitializeInfoMap(uint8_t* p, size_t moving_space_sz) {
+  size_t nr_moving_pages = moving_space_sz / kPageSize;
+
+  chunk_info_vec_ = reinterpret_cast<uint32_t*>(p);
+  vector_length_ = moving_space_sz / kOffsetChunkSize;
+  size_t total = vector_length_ * sizeof(uint32_t);
+
+  first_objs_non_moving_space_ = reinterpret_cast<ObjReference*>(p + total);
+  total += heap_->GetNonMovingSpace()->Capacity() / kPageSize * sizeof(ObjReference);
+
+  first_objs_moving_space_ = reinterpret_cast<ObjReference*>(p + total);
+  total += nr_moving_pages * sizeof(ObjReference);
+
+  pre_compact_offset_moving_space_ = reinterpret_cast<uint32_t*>(p + total);
+  total += nr_moving_pages * sizeof(uint32_t);
+  return total;
+}
+
 MarkCompact::MarkCompact(Heap* heap)
     : GarbageCollector(heap, "concurrent mark compact"),
       gc_barrier_(0),
@@ -384,7 +414,8 @@ MarkCompact::MarkCompact(Heap* heap)
       uffd_minor_fault_supported_(false),
       use_uffd_sigbus_(IsSigbusFeatureAvailable()),
       minor_fault_initialized_(false),
-      map_linear_alloc_shared_(false) {
+      map_linear_alloc_shared_(false),
+      clamp_info_map_status_(ClampInfoStatus::kClampInfoNotDone) {
   if (kIsDebugBuild) {
     updated_roots_.reset(new std::unordered_set<void*>());
   }
@@ -422,18 +453,8 @@ MarkCompact::MarkCompact(Heap* heap)
   if (UNLIKELY(!info_map_.IsValid())) {
     LOG(FATAL) << "Failed to allocate concurrent mark-compact chunk-info vector: " << err_msg;
   } else {
-    uint8_t* p = info_map_.Begin();
-    chunk_info_vec_ = reinterpret_cast<uint32_t*>(p);
-    vector_length_ = chunk_info_vec_size;
-
-    p += chunk_info_vec_size * sizeof(uint32_t);
-    first_objs_non_moving_space_ = reinterpret_cast<ObjReference*>(p);
-
-    p += nr_non_moving_pages * sizeof(ObjReference);
-    first_objs_moving_space_ = reinterpret_cast<ObjReference*>(p);
-
-    p += nr_moving_pages * sizeof(ObjReference);
-    pre_compact_offset_moving_space_ = reinterpret_cast<uint32_t*>(p);
+    size_t total = InitializeInfoMap(info_map_.Begin(), moving_space_size);
+    DCHECK_EQ(total, info_map_.Size());
   }
 
   size_t moving_space_alignment = BestPageTableAlignment(moving_space_size);
@@ -559,6 +580,49 @@ void MarkCompact::AddLinearAllocSpaceData(uint8_t* begin, size_t len) {
                                          begin,
                                          begin + len,
                                          is_shared);
+}
+
+void MarkCompact::ClampGrowthLimit(size_t new_capacity) {
+  // From-space is the same size as moving-space in virtual memory.
+  // However, if it's in >4GB address space then we don't need to do it
+  // synchronously.
+#if defined(__LP64__)
+  constexpr bool kClampFromSpace = kObjPtrPoisoning;
+#else
+  constexpr bool kClampFromSpace = true;
+#endif
+  size_t old_capacity = bump_pointer_space_->Capacity();
+  new_capacity = bump_pointer_space_->ClampGrowthLimit(new_capacity);
+  if (new_capacity < old_capacity) {
+    CHECK(from_space_map_.IsValid());
+    if (kClampFromSpace) {
+      from_space_map_.SetSize(new_capacity);
+    }
+    // NOTE: We usually don't use shadow_to_space_map_ and therefore the condition will
+    // mostly be false.
+    if (shadow_to_space_map_.IsValid() && shadow_to_space_map_.Size() > new_capacity) {
+      shadow_to_space_map_.SetSize(new_capacity);
+    }
+    clamp_info_map_status_ = ClampInfoStatus::kClampInfoPending;
+  }
+}
+
+void MarkCompact::MaybeClampGcStructures() {
+  size_t moving_space_size = bump_pointer_space_->Capacity();
+  DCHECK(thread_running_gc_ != nullptr);
+  if (UNLIKELY(clamp_info_map_status_ == ClampInfoStatus::kClampInfoPending)) {
+    CHECK(from_space_map_.IsValid());
+    if (from_space_map_.Size() > moving_space_size) {
+      from_space_map_.SetSize(moving_space_size);
+    }
+    // Bitmaps and other data structures
+    live_words_bitmap_->SetBitmapSize(moving_space_size);
+    size_t set_size = InitializeInfoMap(info_map_.Begin(), moving_space_size);
+    CHECK_LT(set_size, info_map_.Size());
+    info_map_.SetSize(set_size);
+
+    clamp_info_map_status_ = ClampInfoStatus::kClampInfoFinished;
+  }
 }
 
 void MarkCompact::PrepareCardTableForMarking(bool clear_alloc_space_cards) {
@@ -3922,6 +3986,7 @@ void MarkCompact::MarkingPhase() {
   TimingLogger::ScopedTiming t(__FUNCTION__, GetTimings());
   DCHECK_EQ(thread_running_gc_, Thread::Current());
   WriterMutexLock mu(thread_running_gc_, *Locks::heap_bitmap_lock_);
+  MaybeClampGcStructures();
   PrepareCardTableForMarking(/*clear_alloc_space_cards*/ true);
   MarkZygoteLargeObjects();
   MarkRoots(
