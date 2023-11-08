@@ -50,11 +50,7 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
 
 #define UNIMPLEMENTED_INTRINSIC_LIST_RISCV64(V) \
   V(IntegerReverse)                             \
-  V(IntegerDivideUnsigned)                      \
   V(LongReverse)                                \
-  V(LongDivideUnsigned)                         \
-  V(MathFmaDouble)                              \
-  V(MathFmaFloat)                               \
   V(MathCos)                                    \
   V(MathSin)                                    \
   V(MathAcos)                                   \
@@ -84,7 +80,6 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(SystemArrayCopyChar)                        \
   V(SystemArrayCopyInt)                         \
   V(SystemArrayCopy)                            \
-  V(ThreadCurrentThread)                        \
   V(FP16Ceil)                                   \
   V(FP16Compare)                                \
   V(FP16Floor)                                  \
@@ -179,7 +174,6 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(ReferenceRefersTo)                          \
   V(IntegerValueOf)                             \
   V(ThreadInterrupted)                          \
-  V(ReachabilityFence)                          \
   V(CRC32Update)                                \
   V(CRC32UpdateBytes)                           \
   V(CRC32UpdateByteBuffer)                      \
