@@ -18,7 +18,10 @@
 
 #include <algorithm>
 
+#include "base/bit_utils.h"
+#include "base/logging.h"
 #include "dex/dex_file-inl.h"
+#include "intrinsics_enum.h"
 #include "optimizing/data_type.h"
 #include "optimizing/nodes.h"
 
@@ -47,9 +50,16 @@ class HConstantFoldingVisitor final : public HGraphDelegateVisitor {
   void VisitArrayLength(HArrayLength* inst) override;
   void VisitDivZeroCheck(HDivZeroCheck* inst) override;
   void VisitIf(HIf* inst) override;
+  void VisitInvoke(HInvoke* inst) override;
   void VisitTypeConversion(HTypeConversion* inst) override;
 
   void PropagateValue(HBasicBlock* starting_block, HInstruction* variable, HConstant* constant);
+
+  // Intrinsics foldings
+  void FoldHighestOneBitIntrinsic(HInvoke* invoke);
+  void FoldLowestOneBitIntrinsic(HInvoke* invoke);
+  void FoldNumberOfLeadingZerosIntrinsic(HInvoke* invoke);
+  void FoldNumberOfTrailingZerosIntrinsic(HInvoke* invoke);
 
   // Use all optimizations without restrictions.
   bool use_all_optimizations_;
@@ -348,6 +358,115 @@ void HConstantFoldingVisitor::VisitIf(HIf* inst) {
     DCHECK_NE(other_constant, constant);
     PropagateValue(other_starting_block, variable, other_constant);
   }
+}
+
+void HConstantFoldingVisitor::VisitInvoke(HInvoke* inst) {
+  switch (inst->GetIntrinsic()) {
+    case Intrinsics::kIntegerHighestOneBit:
+    case Intrinsics::kLongHighestOneBit:
+      FoldHighestOneBitIntrinsic(inst);
+      break;
+    case Intrinsics::kIntegerLowestOneBit:
+    case Intrinsics::kLongLowestOneBit:
+      FoldLowestOneBitIntrinsic(inst);
+      break;
+    case Intrinsics::kIntegerNumberOfLeadingZeros:
+    case Intrinsics::kLongNumberOfLeadingZeros:
+      FoldNumberOfLeadingZerosIntrinsic(inst);
+      break;
+    case Intrinsics::kIntegerNumberOfTrailingZeros:
+    case Intrinsics::kLongNumberOfTrailingZeros:
+      FoldNumberOfTrailingZerosIntrinsic(inst);
+      break;
+    default:
+      break;
+  }
+}
+
+void HConstantFoldingVisitor::FoldHighestOneBitIntrinsic(HInvoke* inst) {
+  DCHECK(inst->GetIntrinsic() == Intrinsics::kIntegerHighestOneBit ||
+         inst->GetIntrinsic() == Intrinsics::kLongHighestOneBit);
+
+  HInstruction* input = inst->InputAt(0);
+  if (!input->IsConstant()) {
+    return;
+  }
+
+  // Integer and Long intrinsics have different return types.
+  if (inst->GetIntrinsic() == Intrinsics::kIntegerHighestOneBit) {
+    DCHECK(input->IsIntConstant());
+    inst->ReplaceWith(
+        GetGraph()->GetIntConstant(HighestOneBitValue(input->AsIntConstant()->GetValue())));
+  } else {
+    DCHECK(input->IsLongConstant());
+    inst->ReplaceWith(
+        GetGraph()->GetLongConstant(HighestOneBitValue(input->AsLongConstant()->GetValue())));
+  }
+  inst->GetBlock()->RemoveInstruction(inst);
+}
+
+void HConstantFoldingVisitor::FoldLowestOneBitIntrinsic(HInvoke* inst) {
+  DCHECK(inst->GetIntrinsic() == Intrinsics::kIntegerLowestOneBit ||
+         inst->GetIntrinsic() == Intrinsics::kLongLowestOneBit);
+
+  HInstruction* input = inst->InputAt(0);
+  if (!input->IsConstant()) {
+    return;
+  }
+
+  // Integer and Long intrinsics have different return types.
+  if (inst->GetIntrinsic() == Intrinsics::kIntegerLowestOneBit) {
+    DCHECK(input->IsIntConstant());
+    inst->ReplaceWith(
+        GetGraph()->GetIntConstant(LowestOneBitValue(input->AsIntConstant()->GetValue())));
+  } else {
+    DCHECK(input->IsLongConstant());
+    inst->ReplaceWith(
+        GetGraph()->GetLongConstant(LowestOneBitValue(input->AsLongConstant()->GetValue())));
+  }
+  inst->GetBlock()->RemoveInstruction(inst);
+}
+
+void HConstantFoldingVisitor::FoldNumberOfLeadingZerosIntrinsic(HInvoke* inst) {
+  DCHECK(inst->GetIntrinsic() == Intrinsics::kIntegerNumberOfLeadingZeros ||
+         inst->GetIntrinsic() == Intrinsics::kLongNumberOfLeadingZeros);
+
+  HInstruction* input = inst->InputAt(0);
+  if (!input->IsConstant()) {
+    return;
+  }
+
+  DCHECK_IMPLIES(inst->GetIntrinsic() == Intrinsics::kIntegerNumberOfLeadingZeros,
+                 input->IsIntConstant());
+  DCHECK_IMPLIES(inst->GetIntrinsic() == Intrinsics::kLongNumberOfLeadingZeros,
+                 input->IsLongConstant());
+
+  // Note that both the Integer and Long intrinsics return an int as a result.
+  int result = input->IsIntConstant() ? JAVASTYLE_CLZ(input->AsIntConstant()->GetValue()) :
+                                        JAVASTYLE_CLZ(input->AsLongConstant()->GetValue());
+  inst->ReplaceWith(GetGraph()->GetIntConstant(result));
+  inst->GetBlock()->RemoveInstruction(inst);
+}
+
+void HConstantFoldingVisitor::FoldNumberOfTrailingZerosIntrinsic(HInvoke* inst) {
+  DCHECK(inst->GetIntrinsic() == Intrinsics::kIntegerNumberOfTrailingZeros ||
+         inst->GetIntrinsic() == Intrinsics::kLongNumberOfTrailingZeros);
+
+  HInstruction* input = inst->InputAt(0);
+  if (!input->IsConstant()) {
+    return;
+  }
+
+  DCHECK_IMPLIES(inst->GetIntrinsic() == Intrinsics::kIntegerNumberOfTrailingZeros,
+                 input->IsIntConstant());
+  DCHECK_IMPLIES(inst->GetIntrinsic() == Intrinsics::kLongNumberOfTrailingZeros,
+                 input->IsLongConstant());
+
+  // Note that both the Integer and Long intrinsics return an int as a result.
+  int result = input->IsIntConstant() ? JAVASTYLE_CTZ(input->AsIntConstant()->GetValue()) :
+                                        JAVASTYLE_CTZ(input->AsLongConstant()->GetValue());
+  inst->ReplaceWith(GetGraph()->GetIntConstant(result));
+  inst->GetBlock()->RemoveInstruction(inst);
 }
 
 void HConstantFoldingVisitor::VisitArrayLength(HArrayLength* inst) {
