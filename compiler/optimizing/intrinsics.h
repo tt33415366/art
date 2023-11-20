@@ -132,11 +132,13 @@ class IntrinsicVisitor : public ValueObject {
 
   static IntegerValueOfInfo ComputeIntegerValueOfInfo(
       HInvoke* invoke, const CompilerOptions& compiler_options);
+  static bool CheckIntegerCacheFields(ObjPtr<mirror::ObjectArray<mirror::Object>> cache)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   static MemberOffset GetReferenceDisableIntrinsicOffset();
   static MemberOffset GetReferenceSlowPathEnabledOffset();
   static void CreateReferenceGetReferentLocations(HInvoke* invoke, CodeGenerator* codegen);
-  static void CreateReferenceRefersToLocations(HInvoke* invoke);
+  static void CreateReferenceRefersToLocations(HInvoke* invoke, CodeGenerator* codegen);
 
  protected:
   IntrinsicVisitor() {}

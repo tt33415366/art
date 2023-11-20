@@ -50,41 +50,11 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
 
 #define UNIMPLEMENTED_INTRINSIC_LIST_RISCV64(V) \
   V(IntegerReverse)                             \
-  V(IntegerDivideUnsigned)                      \
   V(LongReverse)                                \
-  V(LongDivideUnsigned)                         \
-  V(MathFmaDouble)                              \
-  V(MathFmaFloat)                               \
-  V(MathCos)                                    \
-  V(MathSin)                                    \
-  V(MathAcos)                                   \
-  V(MathAsin)                                   \
-  V(MathAtan)                                   \
-  V(MathAtan2)                                  \
-  V(MathPow)                                    \
-  V(MathCbrt)                                   \
-  V(MathCosh)                                   \
-  V(MathExp)                                    \
-  V(MathExpm1)                                  \
-  V(MathHypot)                                  \
-  V(MathLog)                                    \
-  V(MathLog10)                                  \
-  V(MathNextAfter)                              \
-  V(MathSinh)                                   \
-  V(MathTan)                                    \
-  V(MathTanh)                                   \
-  V(MathSqrt)                                   \
-  V(MathCeil)                                   \
-  V(MathFloor)                                  \
-  V(MathRint)                                   \
-  V(MathRoundDouble)                            \
-  V(MathRoundFloat)                             \
-  V(MathMultiplyHigh)                           \
   V(SystemArrayCopyByte)                        \
   V(SystemArrayCopyChar)                        \
   V(SystemArrayCopyInt)                         \
   V(SystemArrayCopy)                            \
-  V(ThreadCurrentThread)                        \
   V(FP16Ceil)                                   \
   V(FP16Compare)                                \
   V(FP16Floor)                                  \
@@ -100,8 +70,6 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(StringCompareTo)                            \
   V(StringEquals)                               \
   V(StringGetCharsNoCheck)                      \
-  V(StringIndexOf)                              \
-  V(StringIndexOfAfter)                         \
   V(StringStringIndexOf)                        \
   V(StringStringIndexOfAfter)                   \
   V(StringNewStringFromBytes)                   \
@@ -181,18 +149,11 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(ReferenceRefersTo)                          \
   V(IntegerValueOf)                             \
   V(ThreadInterrupted)                          \
-  V(ReachabilityFence)                          \
   V(CRC32Update)                                \
   V(CRC32UpdateBytes)                           \
   V(CRC32UpdateByteBuffer)                      \
   V(MethodHandleInvokeExact)                    \
   V(MethodHandleInvoke)                         \
-  V(VarHandleCompareAndExchange)                \
-  V(VarHandleCompareAndExchangeAcquire)         \
-  V(VarHandleCompareAndExchangeRelease)         \
-  V(VarHandleCompareAndSet)                     \
-  V(VarHandleGet)                               \
-  V(VarHandleGetAcquire)                        \
   V(VarHandleGetAndAdd)                         \
   V(VarHandleGetAndAddAcquire)                  \
   V(VarHandleGetAndAddRelease)                  \
@@ -207,17 +168,7 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(VarHandleGetAndBitwiseXorRelease)           \
   V(VarHandleGetAndSet)                         \
   V(VarHandleGetAndSetAcquire)                  \
-  V(VarHandleGetAndSetRelease)                  \
-  V(VarHandleGetOpaque)                         \
-  V(VarHandleGetVolatile)                       \
-  V(VarHandleSet)                               \
-  V(VarHandleSetOpaque)                         \
-  V(VarHandleSetRelease)                        \
-  V(VarHandleSetVolatile)                       \
-  V(VarHandleWeakCompareAndSet)                 \
-  V(VarHandleWeakCompareAndSetAcquire)          \
-  V(VarHandleWeakCompareAndSetPlain)            \
-  V(VarHandleWeakCompareAndSetRelease)
+  V(VarHandleGetAndSetRelease)
 
 // Method register on invoke.
 static const XRegister kArtMethodRegister = A0;
@@ -408,6 +359,18 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
 
   void ShNAdd(XRegister rd, XRegister rs1, XRegister rs2, DataType::Type type);
 
+  void Load(Location out, XRegister rs1, int32_t offset, DataType::Type type);
+  void Store(Location value, XRegister rs1, int32_t offset, DataType::Type type);
+
+  // Sequentially consistent store. Used for volatile fields and intrinsics.
+  // The `instruction` argument is for recording an implicit null check stack map with the
+  // store instruction which may not be the last instruction emitted by `StoreSeqCst()`.
+  void StoreSeqCst(Location value,
+                   XRegister rs1,
+                   int32_t offset,
+                   DataType::Type type,
+                   HInstruction* instruction = nullptr);
+
  protected:
   void GenerateClassInitializationCheck(SlowPathCodeRISCV64* slow_path, XRegister class_reg);
   void GenerateBitstringTypeCheckCompare(HTypeCheckInstruction* check, XRegister temp);
@@ -452,18 +415,6 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
                                          Location maybe_temp,
                                          ReadBarrierOption read_barrier_option);
 
-  // Generate a GC root reference load:
-  //
-  //   root <- *(obj + offset)
-  //
-  // while honoring read barriers (if any).
-  void GenerateGcRootFieldLoad(HInstruction* instruction,
-                               Location root,
-                               XRegister obj,
-                               uint32_t offset,
-                               ReadBarrierOption read_barrier_option,
-                               Riscv64Label* label_low = nullptr);
-
   void GenerateTestAndBranch(HInstruction* instruction,
                              size_t condition_input_index,
                              Riscv64Label* true_target,
@@ -473,6 +424,10 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
   void GenerateDivRemWithAnyConstant(HBinaryOperation* instruction);
   void GenerateDivRemIntegral(HBinaryOperation* instruction);
   void GenerateIntLongCondition(IfCondition cond, LocationSummary* locations);
+  void GenerateIntLongCondition(IfCondition cond,
+                                LocationSummary* locations,
+                                XRegister rd,
+                                bool to_all_bits);
   void GenerateIntLongCompareAndBranch(IfCondition cond,
                                        LocationSummary* locations,
                                        Riscv64Label* label);
@@ -481,6 +436,13 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
                            DataType::Type type,
                            LocationSummary* locations,
                            Riscv64Label* label = nullptr);
+  void GenerateFpCondition(IfCondition cond,
+                           bool gt_bias,
+                           DataType::Type type,
+                           LocationSummary* locations,
+                           Riscv64Label* label,
+                           XRegister rd,
+                           bool to_all_bits);
   void GenerateMethodEntryExitHook(HInstruction* instruction);
   void HandleGoto(HInstruction* got, HBasicBlock* successor);
   void GenPackedSwitchWithCompares(XRegister adjusted,
@@ -516,10 +478,8 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
   void FAbs(FRegister rd, FRegister rs1, DataType::Type type);
   void FNeg(FRegister rd, FRegister rs1, DataType::Type type);
   void FMv(FRegister rd, FRegister rs1, DataType::Type type);
+  void FMvX(XRegister rd, FRegister rs1, DataType::Type type);
   void FClass(XRegister rd, FRegister rs1, DataType::Type type);
-
-  void Load(Location out, XRegister rs1, int32_t offset, DataType::Type type);
-  void Store(Location value, XRegister rs1, int32_t offset, DataType::Type type);
 
   Riscv64Assembler* const assembler_;
   CodeGeneratorRISCV64* const codegen_;
@@ -587,7 +547,10 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
   const Riscv64Assembler& GetAssembler() const override { return assembler_; }
 
   HGraphVisitor* GetLocationBuilder() override { return &location_builder_; }
-  HGraphVisitor* GetInstructionVisitor() override { return &instruction_visitor_; }
+
+  InstructionCodeGeneratorRISCV64* GetInstructionVisitor() override {
+    return &instruction_visitor_;
+  }
 
   void MaybeGenerateInlineCacheCheck(HInstruction* instruction, XRegister klass);
 
@@ -602,6 +565,8 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
   void DumpFloatingPointRegister(std::ostream& stream, int reg) const override;
 
   InstructionSet GetInstructionSet() const override { return InstructionSet::kRiscv64; }
+
+  const Riscv64InstructionSetFeatures& GetInstructionSetFeatures() const;
 
   uint32_t GetPreferredSlotsAlignment() const override {
     return static_cast<uint32_t>(kRiscv64PointerSize);
@@ -724,6 +689,10 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
                                       Handle<mirror::Class> handle);
   void EmitJitRootPatches(uint8_t* code, const uint8_t* roots_data) override;
 
+  void LoadTypeForBootImageIntrinsic(XRegister dest, TypeReference target_type);
+  void LoadBootImageRelRoEntry(XRegister dest, uint32_t boot_image_offset);
+  void LoadClassRootForIntrinsic(XRegister dest, ClassRoot class_root);
+
   void LoadMethod(MethodLoadKind load_kind, Location temp, HInvoke* invoke);
   void GenerateStaticOrDirectCall(HInvokeStaticOrDirect* invoke,
                                   Location temp,
@@ -739,6 +708,26 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
 
   bool CanUseImplicitSuspendCheck() const;
 
+
+  // Create slow path for a Baker read barrier for a GC root load within `instruction`.
+  SlowPathCodeRISCV64* AddGcRootBakerBarrierBarrierSlowPath(
+      HInstruction* instruction, Location root, Location temp);
+
+  // Emit marking check for a Baker read barrier for a GC root load within `instruction`.
+  void EmitBakerReadBarierMarkingCheck(
+      SlowPathCodeRISCV64* slow_path, Location root, Location temp);
+
+  // Generate a GC root reference load:
+  //
+  //   root <- *(obj + offset)
+  //
+  // while honoring read barriers (if any).
+  void GenerateGcRootFieldLoad(HInstruction* instruction,
+                               Location root,
+                               XRegister obj,
+                               uint32_t offset,
+                               ReadBarrierOption read_barrier_option,
+                               Riscv64Label* label_low = nullptr);
 
   // Fast path implementation of ReadBarrier::Barrier for a heap
   // reference field load when Baker's read barriers are used.
@@ -757,8 +746,8 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
                                              Location index,
                                              Location temp,
                                              bool needs_null_check);
-  // Factored implementation, used by GenerateFieldLoadWithBakerReadBarrier
-  // and GenerateArrayLoadWithBakerReadBarrier.
+  // Factored implementation, used by GenerateFieldLoadWithBakerReadBarrier,
+  // GenerateArrayLoadWithBakerReadBarrier and intrinsics.
   void GenerateReferenceLoadWithBakerReadBarrier(HInstruction* instruction,
                                                  Location ref,
                                                  XRegister obj,
@@ -766,6 +755,18 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
                                                  Location index,
                                                  Location temp,
                                                  bool needs_null_check);
+
+  // Create slow path for a read barrier for a heap reference within `instruction`.
+  //
+  // This is a helper function for GenerateReadBarrierSlow() that has the same
+  // arguments. The creation and adding of the slow path is exposed for intrinsics
+  // that cannot use GenerateReadBarrierSlow() from their own slow paths.
+  SlowPathCodeRISCV64* AddReadBarrierSlowPath(HInstruction* instruction,
+                                              Location out,
+                                              Location ref,
+                                              Location obj,
+                                              uint32_t offset,
+                                              Location index);
 
   // Generate a read barrier for a heap reference within `instruction`
   // using a slow path.

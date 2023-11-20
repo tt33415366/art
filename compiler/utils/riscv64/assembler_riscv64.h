@@ -633,6 +633,10 @@ class Riscv64Assembler final : public Assembler {
     UNIMPLEMENTED(FATAL) << "Do not use Jump for RISCV64";
   }
 
+  void Jump(Riscv64Label* label) {
+    J(label);
+  }
+
   void Bind(Riscv64Label* label);
 
   // Load label address using PC-relative loads.
@@ -701,7 +705,6 @@ class Riscv64Assembler final : public Assembler {
       kUncondBranch,
       kCall,
       // Short branches (can't be promoted to longer).
-      // TODO(riscv64): Do we need these (untested) bare branches, or can we remove them?
       kBareCondBranch,
       kBareUncondBranch,
       kBareCall,

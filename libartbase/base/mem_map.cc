@@ -655,9 +655,12 @@ void MemMap::Invalidate() {
   DCHECK(IsValid());
 
   // Remove it from gMaps.
-  std::lock_guard<std::mutex> mu(*mem_maps_lock_);
-  auto it = GetGMapsEntry(*this);
-  gMaps->erase(it);
+  // TODO(b/307704260) Move MemMap::Init MemMap::Shutdown out of Runtime init/shutdown.
+  if (mem_maps_lock_ != nullptr) {  // Runtime was shutdown.
+    std::lock_guard<std::mutex> mu(*mem_maps_lock_);
+    auto it = GetGMapsEntry(*this);
+    gMaps->erase(it);
+  }
 
   // Mark it as invalid.
   base_size_ = 0u;
@@ -1001,6 +1004,10 @@ void MemMap::Init() {
     // dex2oat calls MemMap::Init twice since its needed before the runtime is created.
     return;
   }
+
+  CHECK_GE(kPageSize, kMinPageSize);
+  CHECK_LE(kPageSize, kMaxPageSize);
+
   mem_maps_lock_ = new std::mutex();
   // Not for thread safety, but for the annotation that gMaps is GUARDED_BY(mem_maps_lock_).
   std::lock_guard<std::mutex> mu(*mem_maps_lock_);

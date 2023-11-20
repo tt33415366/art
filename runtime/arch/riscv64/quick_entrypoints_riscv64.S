@@ -18,6 +18,7 @@
 #include "interpreter/cfi_asm_support.h"
 
 #include "arch/quick_alloc_entrypoints.S"
+#include "arch/quick_field_entrypoints.S"
 
 
 // Wrap ExecuteSwitchImpl in assembly method which specifies DEX PC for unwinding.
@@ -561,17 +562,25 @@ END art_quick_do_long_jump
 .endm
 
 
-// TODO: Rename the macro used by the shared `arch/quick_alloc_entrypoints.S` and drop this macro.
-.macro RETURN_IF_RESULT_IS_NON_ZERO_OR_DEOPT_OR_DELIVER
-    RETURN_OR_DEOPT_IF_RESULT_IS_NON_NULL_OR_DELIVER
-.endm
-
-
-.macro RETURN_OR_DEOPT_IF_RESULT_IS_ZERO_OR_DELIVER
+.macro RETURN_OR_DEOPT_IF_INT_RESULT_IS_ZERO_OR_DELIVER
     bnez  a0, 1f
     DEOPT_OR_RETURN a1
 1:
     DELIVER_PENDING_EXCEPTION
+.endm
+
+
+.macro RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION is_ref = 0
+    lwu   a1, THREAD_EXCEPTION_OFFSET(xSELF)   // Get exception field.
+    bnez  a1, 1f
+    DEOPT_OR_RETURN a1, \is_ref                // Check if deopt is required.
+1:
+    DELIVER_PENDING_EXCEPTION                  // Deliver exception on current thread.
+.endm
+
+
+.macro RETURN_REF_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
+    RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION /* is_ref= */ 1
 .endm
 
 
@@ -612,7 +621,7 @@ ENTRY art_quick_lock_object_no_inline
     mv    a1, xSELF                   // pass Thread::Current
     call  artLockObjectFromCode       // (Object*, Thread*)
     RESTORE_SAVE_REFS_ONLY_FRAME
-    RETURN_OR_DEOPT_IF_RESULT_IS_ZERO_OR_DELIVER
+    RETURN_OR_DEOPT_IF_INT_RESULT_IS_ZERO_OR_DELIVER
 END art_quick_lock_object_no_inline
 
 
@@ -634,7 +643,7 @@ ENTRY art_quick_unlock_object_no_inline
     mv    a1, xSELF                   // pass Thread::Current
     call  artUnlockObjectFromCode     // (Object*, Thread*)
     RESTORE_SAVE_REFS_ONLY_FRAME
-    RETURN_OR_DEOPT_IF_RESULT_IS_ZERO_OR_DELIVER
+    RETURN_OR_DEOPT_IF_INT_RESULT_IS_ZERO_OR_DELIVER
 END art_quick_unlock_object_no_inline
 
 
@@ -665,6 +674,72 @@ ENTRY art_quick_proxy_invoke_handler
     RESTORE_SAVE_REFS_AND_ARGS_FRAME
     DELIVER_PENDING_EXCEPTION
 END art_quick_proxy_invoke_handler
+
+
+// Compiled code has requested that we deoptimize into the interpreter. The deoptimization
+// will long jump to the upcall with a special exception of -1.
+    .extern artDeoptimizeFromCompiledCode
+ENTRY art_quick_deoptimize_from_compiled_code
+    SETUP_SAVE_EVERYTHING_FRAME
+    mv    a1, xSELF                           // Pass Thread::Current().
+    call  artDeoptimizeFromCompiledCode       // (DeoptimizationKind, Thread*)
+    unimp
+END art_quick_deoptimize_from_compiled_code
+
+
+    .extern artStringBuilderAppend
+ENTRY art_quick_string_builder_append
+    SETUP_SAVE_REFS_ONLY_FRAME                // Save callee saves in case of GC.
+    addi  a1, sp, (FRAME_SIZE_SAVE_REFS_ONLY + __SIZEOF_POINTER__)  // Pass args.
+    mv    a2, xSELF                           // Pass Thread::Current().
+    call  artStringBuilderAppend              // (uint32_t, const unit32_t*, Thread*)
+    RESTORE_SAVE_REFS_ONLY_FRAME
+    RETURN_OR_DEOPT_IF_RESULT_IS_NON_NULL_OR_DELIVER
+END art_quick_string_builder_append
+
+
+// Entry from managed code that calls artInstanceOfFromCode and on failure calls
+// artThrowClassCastExceptionForObject.
+    .extern artInstanceOfFromCode
+    .extern artThrowClassCastExceptionForObject
+ENTRY art_quick_check_instance_of
+    // Type check using the bit string passes null as the target class. In that case just throw.
+    beqz  a1, .Lthrow_class_cast_exception_for_bitstring_check
+
+    // Store arguments and return address register.
+    // Stack needs to be 16B aligned on calls.
+    INCREASE_FRAME 32
+    sd    a0, 0*8(sp)
+    sd    a1, 1*8(sp)
+    SAVE_GPR ra, 3*8
+
+    // Call runtime code.
+    call  artInstanceOfFromCode
+
+    // Restore RA.
+    RESTORE_GPR ra, 3*8
+
+    // Check for exception.
+    CFI_REMEMBER_STATE
+    beqz a0, .Lthrow_class_cast_exception
+
+    // Remove spill area and return (no need to restore A0 and A1).
+    DECREASE_FRAME 32
+    ret
+
+.Lthrow_class_cast_exception:
+    CFI_RESTORE_STATE_AND_DEF_CFA sp, 32
+    // Restore A0 and remove spill area.
+    ld    a0, 0*8(sp)
+    ld    a1, 1*8(sp)
+    DECREASE_FRAME 32
+
+.Lthrow_class_cast_exception_for_bitstring_check:
+    SETUP_SAVE_ALL_CALLEE_SAVES_FRAME         // Save all registers as basis for long jump context.
+    mv    a2, xSELF                           // Pass Thread::Current().
+    call  artThrowClassCastExceptionForObject // (Object*, Class*, Thread*)
+    unimp                                     // We should not return here...
+END art_quick_check_instance_of
 
 
 .macro N_ARG_RUNTIME_EXCEPTION_SAVE_EVERYTHING n, c_name, cxx_name
@@ -1169,7 +1244,7 @@ ONE_ARG_SAVE_EVERYTHING_DOWNCALL art_quick_resolve_string, artResolveStringFromC
     RESTORE_GPR ra, 5*8
     DECREASE_FRAME 48
 .endm
-#endif // USE_BAKER_READ_BARRIER
+#endif  // USE_BAKER_READ_BARRIER
 #endif  // USE_READ_BARRIER
 
 ENTRY art_quick_aput_obj
@@ -1764,25 +1839,26 @@ END \name
 
 .macro COMPUTE_ARRAY_SIZE_8 class, count, temp0, temp1, temp2
     // Add array data offset and alignment adjustment to the `\count`.
-    addi   \temp1, \count, (MIRROR_INT_ARRAY_DATA_OFFSET + OBJECT_ALIGNMENT_MASK)
+    li     \temp1, (MIRROR_INT_ARRAY_DATA_OFFSET + OBJECT_ALIGNMENT_MASK)
+    add.uw \temp1, \count, \temp1
 .endm
 
 .macro COMPUTE_ARRAY_SIZE_16 class, count, temp0, temp1, temp2
     // Add array data offset and alignment adjustment to the shifted `\count`.
     li     \temp1, (MIRROR_INT_ARRAY_DATA_OFFSET + OBJECT_ALIGNMENT_MASK)
-    sh1add \temp1, \count, \temp1
+    sh1add.uw \temp1, \count, \temp1
 .endm
 
 .macro COMPUTE_ARRAY_SIZE_32 class, count, temp0, temp1, temp2
     // Add array data offset and alignment adjustment to the shifted `\count`.
     li     \temp1, (MIRROR_INT_ARRAY_DATA_OFFSET + OBJECT_ALIGNMENT_MASK)
-    sh2add \temp1, \count, \temp1
+    sh2add.uw \temp1, \count, \temp1
 .endm
 
 .macro COMPUTE_ARRAY_SIZE_64 class, count, temp0, temp1, temp2
     // Add array data offset and alignment adjustment to the shifted `\count`.
     li     \temp1, (MIRROR_WIDE_ARRAY_DATA_OFFSET + OBJECT_ALIGNMENT_MASK)
-    sh3add \temp1, \count, \temp1
+    sh3add.uw \temp1, \count, \temp1
 .endm
 
 // TODO(ngeoffray): art_quick_alloc_array_resolved_region_tlab is not used for arm64, remove
@@ -1819,32 +1895,75 @@ GENERATE_ALLOC_ARRAY_TLAB art_quick_alloc_array_resolved64_tlab, \
                           COMPUTE_ARRAY_SIZE_64
 
 
-UNDEFINED art_quick_deoptimize_from_compiled_code
-UNDEFINED art_quick_string_builder_append
-UNDEFINED art_quick_check_instance_of
+GENERATE_FIELD_ENTRYPOINTS
 
-UNDEFINED art_quick_set8_instance
-UNDEFINED art_quick_set8_static
-UNDEFINED art_quick_set16_instance
-UNDEFINED art_quick_set16_static
-UNDEFINED art_quick_set32_instance
-UNDEFINED art_quick_set32_static
-UNDEFINED art_quick_set64_instance
-UNDEFINED art_quick_set64_static
-UNDEFINED art_quick_set_obj_instance
-UNDEFINED art_quick_set_obj_static
-UNDEFINED art_quick_get_byte_instance
-UNDEFINED art_quick_get_boolean_instance
-UNDEFINED art_quick_get_short_instance
-UNDEFINED art_quick_get_char_instance
-UNDEFINED art_quick_get32_instance
-UNDEFINED art_quick_get64_instance
-UNDEFINED art_quick_get_obj_instance
-UNDEFINED art_quick_get_byte_static
-UNDEFINED art_quick_get_boolean_static
-UNDEFINED art_quick_get_short_static
-UNDEFINED art_quick_get_char_static
-UNDEFINED art_quick_get32_static
-UNDEFINED art_quick_get64_static
-UNDEFINED art_quick_get_obj_static
-UNDEFINED art_quick_indexof
+
+// String's indexOf.
+//
+// TODO: Not very optimized. We should use the vector extension.
+// On entry:
+//    a0:   string object (known non-null)
+//    a1:   char to match (known <= 0xFFFF)
+//    a2:   Starting offset in string data
+ENTRY art_quick_indexof
+#if (STRING_COMPRESSION_FEATURE)
+    lwu   a4, MIRROR_STRING_COUNT_OFFSET(a0)
+#else
+    lwu   a3, MIRROR_STRING_COUNT_OFFSET(a0)
+#endif
+    addi  a0, a0, MIRROR_STRING_VALUE_OFFSET
+#if (STRING_COMPRESSION_FEATURE)
+    /* Split the count into length (a3) and compression flag (a4) */
+    srliw a3, a4, 1
+    andi  a4, a4, 1
+#endif
+    /* Clamp start to [0..count) */
+    sraiw a5, a2, 31
+    andn  a2, a2, a5
+    bge   a2, a3, .Lstring_indexof_nomatch
+
+#if (STRING_COMPRESSION_FEATURE)
+    beqz  a4, .Lstring_indexof_compressed
+#endif
+    /* Build pointers to start and end of the data to compare */
+    sh1add a2, a2, a0
+    sh1add a3, a3, a0
+
+    /*
+     * At this point we have:
+     *  a0: original start of string data
+     *  a1: char to compare
+     *  a2: start of the data to test
+     *  a3: end of the data to test
+     */
+
+.Lstring_indexof_loop:
+    lhu   a4, 0(a2)
+    beq   a4, a1, .Lstring_indexof_match
+    addi  a2, a2, 2
+    bne   a2, a3, .Lstring_indexof_loop
+.Lstring_indexof_nomatch:
+    li    a0, -1
+    ret
+.Lstring_indexof_match:
+    sub   a0, a2, a0
+    srli  a0, a0, 1
+    ret
+
+#if (STRING_COMPRESSION_FEATURE)
+   // Comparing compressed string one character at a time with the input character.
+.Lstring_indexof_compressed:
+    add   a2, a2, a0
+    add   a3, a3, a0
+.Lstring_indexof_compressed_loop:
+    lbu   a4, (a2)
+    beq   a4, a1, .Lstring_indexof_compressed_match
+    addi  a2, a2, 1
+    bne   a2, a3, .Lstring_indexof_compressed_loop
+    li    a0, -1
+    ret
+.Lstring_indexof_compressed_match:
+    sub   a0, a2, a0
+    ret
+#endif
+END art_quick_indexof

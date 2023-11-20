@@ -273,7 +273,9 @@ class Heap {
                                                                   GetCurrentNonMovingAllocator(),
                                                                   pre_fence_visitor);
     // Java Heap Profiler check and sample allocation.
-    JHPCheckNonTlabSampleAllocation(self, obj, num_bytes);
+    if (GetHeapSampler().IsEnabled()) {
+      JHPCheckNonTlabSampleAllocation(self, obj, num_bytes);
+    }
     return obj;
   }
 
@@ -551,6 +553,11 @@ class Heap {
   // The result should be treated as an approximation, if it is being concurrently updated.
   size_t GetBytesAllocated() const {
     return num_bytes_allocated_.load(std::memory_order_relaxed);
+  }
+
+  // Returns bytes_allocated before adding 'bytes' to it.
+  size_t AddBytesAllocated(size_t bytes) {
+    return num_bytes_allocated_.fetch_add(bytes, std::memory_order_relaxed);
   }
 
   bool GetUseGenerationalCC() const {
@@ -903,7 +910,6 @@ class Heap {
   }
 
   void InitPerfettoJavaHeapProf();
-  int CheckPerfettoJHPEnabled();
   // In NonTlab case: Check whether we should report a sample allocation and if so report it.
   // Also update state (bytes_until_sample).
   // By calling JHPCheckNonTlabSampleAllocation from different functions for Large allocations and

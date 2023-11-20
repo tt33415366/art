@@ -20,27 +20,24 @@
 #include "base/casts.h"
 #include "base/logging.h"
 #include "image.h"
+#include "intrinsics.h"
 #include "obj_ptr-inl.h"
+#include "well_known_classes.h"
 
 namespace art HIDDEN {
 
 static constexpr size_t kIntrinsicObjectsOffset =
     enum_cast<size_t>(ImageHeader::kIntrinsicObjectsStart);
 
-ObjPtr<mirror::ObjectArray<mirror::Object>> IntrinsicObjects::LookupIntegerCache(
-    Thread* self, ClassLinker* class_linker) {
-  ObjPtr<mirror::Class> integer_cache_class = class_linker->LookupClass(
-      self, "Ljava/lang/Integer$IntegerCache;", /* class_loader= */ nullptr);
-  if (integer_cache_class == nullptr || !integer_cache_class->IsInitialized()) {
-    return nullptr;
-  }
-  ArtField* cache_field =
-      integer_cache_class->FindDeclaredStaticField("cache", "[Ljava/lang/Integer;");
-  CHECK(cache_field != nullptr);
+ObjPtr<mirror::ObjectArray<mirror::Object>> IntrinsicObjects::LookupIntegerCache() {
+  ArtField* cache_field = WellKnownClasses::java_lang_Integer_IntegerCache_cache;
+  ObjPtr<mirror::Class> integer_cache_class = cache_field->GetDeclaringClass();
+  DCHECK(integer_cache_class->IsInitialized());
   ObjPtr<mirror::ObjectArray<mirror::Object>> integer_cache =
       ObjPtr<mirror::ObjectArray<mirror::Object>>::DownCast(
           cache_field->GetObject(integer_cache_class));
   CHECK(integer_cache != nullptr);
+  DCHECK(IntrinsicVisitor::CheckIntegerCacheFields(integer_cache));
   return integer_cache;
 }
 

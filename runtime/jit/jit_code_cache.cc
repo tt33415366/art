@@ -616,15 +616,15 @@ void JitCodeCache::CopyInlineCacheInto(
     const InlineCache& ic,
     /*out*/StackHandleScope<InlineCache::kIndividualCacheSize>* classes) {
   static_assert(arraysize(ic.classes_) == InlineCache::kIndividualCacheSize);
-  DCHECK_EQ(classes->NumberOfReferences(), InlineCache::kIndividualCacheSize);
-  DCHECK_EQ(classes->RemainingSlots(), InlineCache::kIndividualCacheSize);
+  DCHECK_EQ(classes->Capacity(), InlineCache::kIndividualCacheSize);
+  DCHECK_EQ(classes->Size(), 0u);
   WaitUntilInlineCacheAccessible(Thread::Current());
   // Note that we don't need to lock `lock_` here, the compiler calling
   // this method has already ensured the inline cache will not be deleted.
   for (const GcRoot<mirror::Class>& root : ic.classes_) {
     mirror::Class* object = root.Read();
     if (object != nullptr) {
-      DCHECK_NE(classes->RemainingSlots(), 0u);
+      DCHECK_LT(classes->Size(), classes->Capacity());
       classes->NewHandle(object);
     }
   }
@@ -1316,6 +1316,21 @@ ProfilingInfo* JitCodeCache::GetProfilingInfo(ArtMethod* method, Thread* self) {
   return it->second;
 }
 
+void JitCodeCache::MaybeUpdateInlineCache(ArtMethod* method,
+                                          uint32_t dex_pc,
+                                          ObjPtr<mirror::Class> cls,
+                                          Thread* self) {
+  ScopedDebugDisallowReadBarriers sddrb(self);
+  MutexLock mu(self, *Locks::jit_lock_);
+  auto it = profiling_infos_.find(method);
+  if (it == profiling_infos_.end()) {
+    return;
+  }
+  ProfilingInfo* info = it->second;
+  ScopedAssertNoThreadSuspension sants("ProfilingInfo");
+  info->AddInvokeInfo(dex_pc, cls.Ptr());
+}
+
 void JitCodeCache::ResetHotnessCounter(ArtMethod* method, Thread* self) {
   ScopedDebugDisallowReadBarriers sddrb(self);
   MutexLock mu(self, *Locks::jit_lock_);
@@ -1896,6 +1911,31 @@ void JitCodeCache::Dump(std::ostream& os) {
   histogram_profiling_info_memory_use_.PrintMemoryUse(os);
 }
 
+void JitCodeCache::DumpAllCompiledMethods(std::ostream& os) {
+  MutexLock mu(Thread::Current(), *Locks::jit_lock_);
+  for (auto it : method_code_map_) {  // Includes OSR methods.
+    ArtMethod* meth = it.second;
+    const void* code_ptr = it.first;
+    OatQuickMethodHeader* header = OatQuickMethodHeader::FromCodePointer(code_ptr);
+    os << meth->PrettyMethod() << "@"  << std::hex
+       << code_ptr << "-" << reinterpret_cast<uintptr_t>(code_ptr) + header->GetCodeSize() << '\n';
+  }
+  os << "JNIStubs: \n";
+  for (auto it : jni_stubs_map_) {
+    const void* code_ptr = it.second.GetCode();
+    if (code_ptr == nullptr) {
+      continue;
+    }
+    OatQuickMethodHeader* header = OatQuickMethodHeader::FromCodePointer(code_ptr);
+    os << std::hex << code_ptr << "-"
+       << reinterpret_cast<uintptr_t>(code_ptr) + header->GetCodeSize() << " ";
+    for (ArtMethod* m : it.second.GetMethods()) {
+      os << m->PrettyMethod() << ";";
+    }
+    os << "\n";
+  }
+}
+
 void JitCodeCache::PostForkChildAction(bool is_system_server, bool is_zygote) {
   Thread* self = Thread::Current();
 
@@ -1938,7 +1978,7 @@ void JitCodeCache::PostForkChildAction(bool is_system_server, bool is_zygote) {
                                   /* rwx_memory_allowed= */ !is_system_server,
                                   is_zygote,
                                   &error_msg)) {
-    LOG(WARNING) << "Could not create private region after zygote fork: " << error_msg;
+    LOG(FATAL) << "Could not create private region after zygote fork: " << error_msg;
   }
   if (private_region_.HasCodeMapping()) {
     const MemMap* exec_pages = private_region_.GetExecPages();
