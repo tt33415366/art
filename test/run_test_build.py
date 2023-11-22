@@ -216,6 +216,7 @@ class BuildTestContext:
       javac_args=[],
       javac_classpath: List[Path]=[],
       d8_flags=[],
+      d8_dex_container=True,
       smali_args=[],
       use_smali=True,
       use_jasmin=True,
@@ -245,6 +246,7 @@ class BuildTestContext:
         "agents": 26,
         "method-handles": 26,
         "var-handles": 28,
+        "const-method-type": 28,
       }
       api_level = API_LEVEL[api_level]
     assert isinstance(api_level, int), api_level
@@ -305,7 +307,10 @@ class BuildTestContext:
     # packaged in a jar file.
     def make_dex(src_dir: Path):
       dst_jar = Path(src_dir.name + ".jar")
-      args = d8_flags + ["--min-api", str(api_level), "--output", dst_jar]
+      args = []
+      if d8_dex_container:
+        args += ["-JDcom.android.tools.r8.dexContainerExperiment"]
+      args += d8_flags + ["--min-api", str(api_level), "--output", dst_jar]
       args += ["--lib", self.bootclasspath] if use_desugar else ["--no-desugaring"]
       args += sorted(src_dir.glob("**/*.class"))
       self.d8(args)
@@ -328,7 +333,11 @@ class BuildTestContext:
       # It is useful to normalize non-deterministic smali output.
       tmp_dir = self.test_dir / "dexmerge"
       tmp_dir.mkdir()
-      self.d8(["--min-api", str(api_level), "--output", tmp_dir] + srcs)
+      flags = []
+      if d8_dex_container:
+        flags += ["-JDcom.android.tools.r8.dexContainerExperiment"]
+      flags += ["--min-api", str(api_level), "--output", tmp_dir]
+      self.d8(flags + srcs)
       assert not (tmp_dir / "classes2.dex").exists()
       for src_file in srcs:
         src_file.unlink()

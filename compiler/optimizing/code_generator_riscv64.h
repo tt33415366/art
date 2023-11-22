@@ -48,43 +48,20 @@ static constexpr FRegister kRuntimeParameterFpuRegisters[] = {
 static constexpr size_t kRuntimeParameterFpuRegistersLength =
     arraysize(kRuntimeParameterFpuRegisters);
 
+// FCLASS returns a 10-bit classification mask with the two highest bits marking NaNs
+// (signaling and quiet). To detect a NaN, we can compare (either BGE or BGEU, the sign
+// bit is always clear) the result with the `kFClassNaNMinValue`.
+static_assert(kSignalingNaN == 0x100);
+static_assert(kQuietNaN == 0x200);
+static constexpr int32_t kFClassNaNMinValue = 0x100;
+
 #define UNIMPLEMENTED_INTRINSIC_LIST_RISCV64(V) \
   V(IntegerReverse)                             \
-  V(IntegerDivideUnsigned)                      \
   V(LongReverse)                                \
-  V(LongDivideUnsigned)                         \
-  V(MathFmaDouble)                              \
-  V(MathFmaFloat)                               \
-  V(MathCos)                                    \
-  V(MathSin)                                    \
-  V(MathAcos)                                   \
-  V(MathAsin)                                   \
-  V(MathAtan)                                   \
-  V(MathAtan2)                                  \
-  V(MathPow)                                    \
-  V(MathCbrt)                                   \
-  V(MathCosh)                                   \
-  V(MathExp)                                    \
-  V(MathExpm1)                                  \
-  V(MathHypot)                                  \
-  V(MathLog)                                    \
-  V(MathLog10)                                  \
-  V(MathNextAfter)                              \
-  V(MathSinh)                                   \
-  V(MathTan)                                    \
-  V(MathTanh)                                   \
-  V(MathSqrt)                                   \
-  V(MathCeil)                                   \
-  V(MathFloor)                                  \
-  V(MathRint)                                   \
-  V(MathRoundDouble)                            \
-  V(MathRoundFloat)                             \
-  V(MathMultiplyHigh)                           \
   V(SystemArrayCopyByte)                        \
   V(SystemArrayCopyChar)                        \
   V(SystemArrayCopyInt)                         \
   V(SystemArrayCopy)                            \
-  V(ThreadCurrentThread)                        \
   V(FP16Ceil)                                   \
   V(FP16Compare)                                \
   V(FP16Floor)                                  \
@@ -149,6 +126,7 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(JdkUnsafeCompareAndSetInt)                  \
   V(JdkUnsafeCompareAndSetLong)                 \
   V(JdkUnsafeCompareAndSetObject)               \
+  V(JdkUnsafeCompareAndSetReference)            \
   V(JdkUnsafeGet)                               \
   V(JdkUnsafeGetVolatile)                       \
   V(JdkUnsafeGetAcquire)                        \
@@ -177,18 +155,12 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(JdkUnsafeGetAndSetObject)                   \
   V(ReferenceGetReferent)                       \
   V(ReferenceRefersTo)                          \
-  V(IntegerValueOf)                             \
   V(ThreadInterrupted)                          \
-  V(ReachabilityFence)                          \
   V(CRC32Update)                                \
   V(CRC32UpdateBytes)                           \
   V(CRC32UpdateByteBuffer)                      \
   V(MethodHandleInvokeExact)                    \
   V(MethodHandleInvoke)                         \
-  V(VarHandleCompareAndExchange)                \
-  V(VarHandleCompareAndExchangeAcquire)         \
-  V(VarHandleCompareAndExchangeRelease)         \
-  V(VarHandleCompareAndSet)                     \
   V(VarHandleGetAndAdd)                         \
   V(VarHandleGetAndAddAcquire)                  \
   V(VarHandleGetAndAddRelease)                  \
@@ -204,10 +176,10 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(VarHandleGetAndSet)                         \
   V(VarHandleGetAndSetAcquire)                  \
   V(VarHandleGetAndSetRelease)                  \
-  V(VarHandleWeakCompareAndSet)                 \
-  V(VarHandleWeakCompareAndSetAcquire)          \
-  V(VarHandleWeakCompareAndSetPlain)            \
-  V(VarHandleWeakCompareAndSetRelease)
+  V(ByteValueOf)                                \
+  V(ShortValueOf)                               \
+  V(CharacterValueOf)                           \
+  V(IntegerValueOf)                             \
 
 // Method register on invoke.
 static const XRegister kArtMethodRegister = A0;
@@ -396,19 +368,7 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
 
   void GenerateMemoryBarrier(MemBarrierKind kind);
 
-  void ShNAdd(XRegister rd, XRegister rs1, XRegister rs2, DataType::Type type);
-
-  // Generate a GC root reference load:
-  //
-  //   root <- *(obj + offset)
-  //
-  // while honoring read barriers (if any).
-  void GenerateGcRootFieldLoad(HInstruction* instruction,
-                               Location root,
-                               XRegister obj,
-                               uint32_t offset,
-                               ReadBarrierOption read_barrier_option,
-                               Riscv64Label* label_low = nullptr);
+  void FClass(XRegister rd, FRegister rs1, DataType::Type type);
 
   void Load(Location out, XRegister rs1, int32_t offset, DataType::Type type);
   void Store(Location value, XRegister rs1, int32_t offset, DataType::Type type);
@@ -421,6 +381,8 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
                    int32_t offset,
                    DataType::Type type,
                    HInstruction* instruction = nullptr);
+
+  void ShNAdd(XRegister rd, XRegister rs1, XRegister rs2, DataType::Type type);
 
  protected:
   void GenerateClassInitializationCheck(SlowPathCodeRISCV64* slow_path, XRegister class_reg);
@@ -530,7 +492,6 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
   void FNeg(FRegister rd, FRegister rs1, DataType::Type type);
   void FMv(FRegister rd, FRegister rs1, DataType::Type type);
   void FMvX(XRegister rd, FRegister rs1, DataType::Type type);
-  void FClass(XRegister rd, FRegister rs1, DataType::Type type);
 
   Riscv64Assembler* const assembler_;
   CodeGeneratorRISCV64* const codegen_;
@@ -760,6 +721,26 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
   bool CanUseImplicitSuspendCheck() const;
 
 
+  // Create slow path for a Baker read barrier for a GC root load within `instruction`.
+  SlowPathCodeRISCV64* AddGcRootBakerBarrierBarrierSlowPath(
+      HInstruction* instruction, Location root, Location temp);
+
+  // Emit marking check for a Baker read barrier for a GC root load within `instruction`.
+  void EmitBakerReadBarierMarkingCheck(
+      SlowPathCodeRISCV64* slow_path, Location root, Location temp);
+
+  // Generate a GC root reference load:
+  //
+  //   root <- *(obj + offset)
+  //
+  // while honoring read barriers (if any).
+  void GenerateGcRootFieldLoad(HInstruction* instruction,
+                               Location root,
+                               XRegister obj,
+                               uint32_t offset,
+                               ReadBarrierOption read_barrier_option,
+                               Riscv64Label* label_low = nullptr);
+
   // Fast path implementation of ReadBarrier::Barrier for a heap
   // reference field load when Baker's read barriers are used.
   void GenerateFieldLoadWithBakerReadBarrier(HInstruction* instruction,
@@ -786,6 +767,18 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
                                                  Location index,
                                                  Location temp,
                                                  bool needs_null_check);
+
+  // Create slow path for a read barrier for a heap reference within `instruction`.
+  //
+  // This is a helper function for GenerateReadBarrierSlow() that has the same
+  // arguments. The creation and adding of the slow path is exposed for intrinsics
+  // that cannot use GenerateReadBarrierSlow() from their own slow paths.
+  SlowPathCodeRISCV64* AddReadBarrierSlowPath(HInstruction* instruction,
+                                              Location out,
+                                              Location ref,
+                                              Location obj,
+                                              uint32_t offset,
+                                              Location index);
 
   // Generate a read barrier for a heap reference within `instruction`
   // using a slow path.

@@ -753,12 +753,15 @@ static void WaitUntilSingleThreaded() {
   // break atomicity of the read.
   static constexpr size_t kNumTries = 1000;
   static constexpr size_t kNumThreadsIndex = 20;
+  static constexpr ssize_t BUF_SIZE = 500;
+  static constexpr ssize_t BUF_PRINT_SIZE = 150;  // Only log this much on failure to limit length.
+  static_assert(BUF_SIZE > BUF_PRINT_SIZE);
+  char buf[BUF_SIZE];
+  ssize_t bytes_read = -1;
   for (size_t tries = 0; tries < kNumTries; ++tries) {
-    static constexpr int BUF_SIZE = 500;
-    char buf[BUF_SIZE];
     int stat_fd = open("/proc/self/stat", O_RDONLY | O_CLOEXEC);
     CHECK(stat_fd >= 0) << strerror(errno);
-    ssize_t bytes_read = TEMP_FAILURE_RETRY(read(stat_fd, buf, BUF_SIZE));
+    bytes_read = TEMP_FAILURE_RETRY(read(stat_fd, buf, BUF_SIZE));
     CHECK(bytes_read >= 0) << strerror(errno);
     int ret = close(stat_fd);
     DCHECK(ret == 0) << strerror(errno);
@@ -781,7 +784,9 @@ static void WaitUntilSingleThreaded() {
     }
     usleep(1000);
   }
-  LOG(FATAL) << "Failed to reach single-threaded state";
+  buf[std::min(BUF_PRINT_SIZE, bytes_read)] = '\0';  // Truncate buf before printing.
+  LOG(FATAL) << "Failed to reach single-threaded state: bytes_read = " << bytes_read
+             << " stat contents = \"" << buf << "...\"";
 #else  // Not Linux; shouldn't matter, but this has a high probability of working slowly.
   usleep(20'000);
 #endif
@@ -958,7 +963,8 @@ static jobject CreateSystemClassLoader(Runtime* runtime) {
   CHECK(getSystemClassLoader->IsStatic());
 
   ObjPtr<mirror::Object> system_class_loader = getSystemClassLoader->InvokeStatic<'L'>(soa.Self());
-  CHECK(system_class_loader != nullptr);
+  CHECK(system_class_loader != nullptr)
+      << (soa.Self()->IsExceptionPending() ? soa.Self()->GetException()->Dump() : "<null>");
 
   ScopedAssertNoThreadSuspension sants(__FUNCTION__);
   jobject g_system_class_loader =
@@ -2404,6 +2410,10 @@ void Runtime::DumpDeoptimizations(std::ostream& os) {
   }
 }
 
+std::optional<uint64_t> Runtime::SiqQuitNanoTime() const {
+  return signal_catcher_ != nullptr ? signal_catcher_->SiqQuitNanoTime() : std::nullopt;
+}
+
 void Runtime::DumpForSigQuit(std::ostream& os) {
   // Print backtraces first since they are important do diagnose ANRs,
   // and ANRs can often be trimmed to limit upload size.
@@ -3580,10 +3590,10 @@ bool Runtime::HasImageWithProfile() const {
 }
 
 void Runtime::AppendToBootClassPath(const std::string& filename, const std::string& location) {
-  DCHECK(!DexFileLoader::IsMultiDexLocation(filename.c_str()));
+  DCHECK(!DexFileLoader::IsMultiDexLocation(filename));
   boot_class_path_.push_back(filename);
   if (!boot_class_path_locations_.empty()) {
-    DCHECK(!DexFileLoader::IsMultiDexLocation(location.c_str()));
+    DCHECK(!DexFileLoader::IsMultiDexLocation(location));
     boot_class_path_locations_.push_back(location);
   }
 }
@@ -3596,7 +3606,7 @@ void Runtime::AppendToBootClassPath(
   ScopedObjectAccess soa(Thread::Current());
   for (const std::unique_ptr<const art::DexFile>& dex_file : dex_files) {
     // The first element must not be at a multi-dex location, while other elements must be.
-    DCHECK_NE(DexFileLoader::IsMultiDexLocation(dex_file->GetLocation().c_str()),
+    DCHECK_NE(DexFileLoader::IsMultiDexLocation(dex_file->GetLocation()),
               dex_file.get() == dex_files.begin()->get());
     GetClassLinker()->AppendToBootClassPath(Thread::Current(), dex_file.get());
   }
@@ -3609,7 +3619,7 @@ void Runtime::AppendToBootClassPath(const std::string& filename,
   ScopedObjectAccess soa(Thread::Current());
   for (const art::DexFile* dex_file : dex_files) {
     // The first element must not be at a multi-dex location, while other elements must be.
-    DCHECK_NE(DexFileLoader::IsMultiDexLocation(dex_file->GetLocation().c_str()),
+    DCHECK_NE(DexFileLoader::IsMultiDexLocation(dex_file->GetLocation()),
               dex_file == *dex_files.begin());
     GetClassLinker()->AppendToBootClassPath(Thread::Current(), dex_file);
   }
@@ -3624,7 +3634,7 @@ void Runtime::AppendToBootClassPath(
   ScopedObjectAccess soa(Thread::Current());
   for (const auto& [dex_file, dex_cache] : dex_files_and_cache) {
     // The first element must not be at a multi-dex location, while other elements must be.
-    DCHECK_NE(DexFileLoader::IsMultiDexLocation(dex_file->GetLocation().c_str()),
+    DCHECK_NE(DexFileLoader::IsMultiDexLocation(dex_file->GetLocation()),
               dex_file == dex_files_and_cache.begin()->first);
     GetClassLinker()->AppendToBootClassPath(dex_file, dex_cache);
   }
@@ -3638,7 +3648,7 @@ void Runtime::AddExtraBootDexFiles(const std::string& filename,
   if (kIsDebugBuild) {
     for (const std::unique_ptr<const art::DexFile>& dex_file : dex_files) {
       // The first element must not be at a multi-dex location, while other elements must be.
-      DCHECK_NE(DexFileLoader::IsMultiDexLocation(dex_file->GetLocation().c_str()),
+      DCHECK_NE(DexFileLoader::IsMultiDexLocation(dex_file->GetLocation()),
                 dex_file.get() == dex_files.begin()->get());
     }
   }

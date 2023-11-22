@@ -32,8 +32,8 @@ TrackedArena::TrackedArena(uint8_t* start, size_t size, bool pre_zygote_fork, bo
       first_obj_array_(nullptr),
       pre_zygote_fork_(pre_zygote_fork),
       waiting_for_deletion_(false) {
-  static_assert(ArenaAllocator::kArenaAlignment <= kPageSize,
-                "Arena should not need stronger alignment than kPageSize.");
+  static_assert(ArenaAllocator::kArenaAlignment <= kMinPageSize,
+                "Arena should not need stronger alignment than kMinPageSize.");
   memory_ = start;
   size_ = size;
   if (single_obj_arena) {
@@ -178,7 +178,7 @@ uint8_t* GcVisitedArenaPool::AllocSingleObjArena(size_t size) {
         new TrackedArena(begin, size, /*pre_zygote_fork=*/true, /*single_obj_arena=*/true));
     arena = *insert_result.first;
   } else {
-    arena = AllocArena(size, /*single_obj_arena=*/true);
+    arena = AllocArena(size, /*need_first_obj_arr=*/true);
   }
   return arena->Begin();
 }

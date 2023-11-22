@@ -25,6 +25,7 @@
 #include "data_type-inl.h"
 #include "entrypoints/quick/quick_entrypoints.h"
 #include "heap_poisoning.h"
+#include "intrinsic_objects.h"
 #include "intrinsics.h"
 #include "intrinsics_utils.h"
 #include "lock_word.h"
@@ -36,6 +37,7 @@
 #include "scoped_thread_state_change-inl.h"
 #include "thread-current-inl.h"
 #include "utils/arm64/assembler_arm64.h"
+#include "well_known_classes.h"
 
 using namespace vixl::aarch64;  // NOLINT(build/namespaces)
 
@@ -751,9 +753,9 @@ static bool UnsafeGetIntrinsicOnCallList(Intrinsics intrinsic) {
   return false;
 }
 
-static void CreateIntIntIntToIntLocations(ArenaAllocator* allocator,
-                                          HInvoke* invoke,
-                                          CodeGeneratorARM64* codegen) {
+static void CreateUnsafeGetLocations(ArenaAllocator* allocator,
+                                     HInvoke* invoke,
+                                     CodeGeneratorARM64* codegen) {
   bool can_call =
       codegen->EmitReadBarrier() && UnsafeGetIntrinsicOnCallList(invoke->GetIntrinsic());
   LocationSummary* locations =
@@ -795,31 +797,31 @@ void IntrinsicLocationsBuilderARM64::VisitUnsafeGetObjectVolatile(HInvoke* invok
 }
 
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGet(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
+  CreateUnsafeGetLocations(allocator_, invoke, codegen_);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetVolatile(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
+  CreateUnsafeGetLocations(allocator_, invoke, codegen_);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetAcquire(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
+  CreateUnsafeGetLocations(allocator_, invoke, codegen_);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetLong(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
+  CreateUnsafeGetLocations(allocator_, invoke, codegen_);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetLongVolatile(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
+  CreateUnsafeGetLocations(allocator_, invoke, codegen_);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetLongAcquire(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
+  CreateUnsafeGetLocations(allocator_, invoke, codegen_);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetObject(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
+  CreateUnsafeGetLocations(allocator_, invoke, codegen_);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetObjectVolatile(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
+  CreateUnsafeGetLocations(allocator_, invoke, codegen_);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeGetObjectAcquire(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
+  CreateUnsafeGetLocations(allocator_, invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorARM64::VisitUnsafeGet(HInvoke* invoke) {
@@ -869,7 +871,7 @@ void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeGetObjectAcquire(HInvoke* invoke
   GenUnsafeGet(invoke, DataType::Type::kReference, /*is_volatile=*/ true, codegen_);
 }
 
-static void CreateIntIntIntIntToVoid(ArenaAllocator* allocator, HInvoke* invoke) {
+static void CreateUnsafePutLocations(ArenaAllocator* allocator, HInvoke* invoke) {
   LocationSummary* locations =
       new (allocator) LocationSummary(invoke, LocationSummary::kNoCall, kIntrinsified);
   locations->SetInAt(0, Location::NoLocation());        // Unused receiver.
@@ -907,40 +909,40 @@ void IntrinsicLocationsBuilderARM64::VisitUnsafePutLongVolatile(HInvoke* invoke)
 }
 
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePut(HInvoke* invoke) {
-  CreateIntIntIntIntToVoid(allocator_, invoke);
+  CreateUnsafePutLocations(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutOrdered(HInvoke* invoke) {
-  CreateIntIntIntIntToVoid(allocator_, invoke);
+  CreateUnsafePutLocations(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutVolatile(HInvoke* invoke) {
-  CreateIntIntIntIntToVoid(allocator_, invoke);
+  CreateUnsafePutLocations(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutRelease(HInvoke* invoke) {
-  CreateIntIntIntIntToVoid(allocator_, invoke);
+  CreateUnsafePutLocations(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutObject(HInvoke* invoke) {
-  CreateIntIntIntIntToVoid(allocator_, invoke);
+  CreateUnsafePutLocations(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutObjectOrdered(HInvoke* invoke) {
-  CreateIntIntIntIntToVoid(allocator_, invoke);
+  CreateUnsafePutLocations(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutObjectVolatile(HInvoke* invoke) {
-  CreateIntIntIntIntToVoid(allocator_, invoke);
+  CreateUnsafePutLocations(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutObjectRelease(HInvoke* invoke) {
-  CreateIntIntIntIntToVoid(allocator_, invoke);
+  CreateUnsafePutLocations(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutLong(HInvoke* invoke) {
-  CreateIntIntIntIntToVoid(allocator_, invoke);
+  CreateUnsafePutLocations(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutLongOrdered(HInvoke* invoke) {
-  CreateIntIntIntIntToVoid(allocator_, invoke);
+  CreateUnsafePutLocations(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutLongVolatile(HInvoke* invoke) {
-  CreateIntIntIntIntToVoid(allocator_, invoke);
+  CreateUnsafePutLocations(allocator_, invoke);
 }
 void IntrinsicLocationsBuilderARM64::VisitJdkUnsafePutLongRelease(HInvoke* invoke) {
-  CreateIntIntIntIntToVoid(allocator_, invoke);
+  CreateUnsafePutLocations(allocator_, invoke);
 }
 
 static void GenUnsafePut(HInvoke* invoke,
@@ -1261,7 +1263,7 @@ static void GenerateCompareAndSet(CodeGeneratorARM64* codegen,
   // }
   //
   // Flag Z indicates whether `old_value == expected || old_value == expected2`.
-  // (Is `expected2` is not valid, the `old_value == expected2` part is not emitted.)
+  // (If `expected2` is not valid, the `old_value == expected2` part is not emitted.)
 
   vixl::aarch64::Label loop_head;
   if (strong) {
@@ -1549,6 +1551,9 @@ void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeCompareAndSetObject(HInvoke* 
     }
   }
 }
+void IntrinsicLocationsBuilderARM64::VisitJdkUnsafeCompareAndSetReference(HInvoke* invoke) {
+  VisitJdkUnsafeCompareAndSetObject(invoke);
+}
 
 void IntrinsicCodeGeneratorARM64::VisitUnsafeCASInt(HInvoke* invoke) {
   VisitJdkUnsafeCASInt(invoke);
@@ -1584,6 +1589,9 @@ void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeCompareAndSetObject(HInvoke* inv
   DCHECK_IMPLIES(codegen_->EmitReadBarrier(), kUseBakerReadBarrier);
 
   GenUnsafeCas(invoke, DataType::Type::kReference, codegen_);
+}
+void IntrinsicCodeGeneratorARM64::VisitJdkUnsafeCompareAndSetReference(HInvoke* invoke) {
+  VisitJdkUnsafeCompareAndSetObject(invoke);
 }
 
 enum class GetAndUpdateOp {
@@ -2276,7 +2284,7 @@ static void CreateFPFPToFPCallLocations(ArenaAllocator* allocator, HInvoke* invo
   locations->SetOut(calling_convention.GetReturnLocation(invoke->GetType()));
 }
 
-static void CreateFPFPFPToFPCallLocations(ArenaAllocator* allocator, HInvoke* invoke) {
+static void CreateFPFPFPToFPLocations(ArenaAllocator* allocator, HInvoke* invoke) {
   DCHECK_EQ(invoke->GetNumberOfArguments(), 3U);
   DCHECK(DataType::IsFloatingPointType(invoke->InputAt(0)->GetType()));
   DCHECK(DataType::IsFloatingPointType(invoke->InputAt(1)->GetType()));
@@ -3469,18 +3477,34 @@ void IntrinsicCodeGeneratorARM64::VisitDoubleIsInfinite(HInvoke* invoke) {
   GenIsInfinite(invoke->GetLocations(), /* is64bit= */ true, GetVIXLAssembler());
 }
 
-void IntrinsicLocationsBuilderARM64::VisitIntegerValueOf(HInvoke* invoke) {
-  InvokeRuntimeCallingConvention calling_convention;
-  IntrinsicVisitor::ComputeIntegerValueOfLocations(
-      invoke,
-      codegen_,
-      calling_convention.GetReturnLocation(DataType::Type::kReference),
-      Location::RegisterLocation(calling_convention.GetRegisterAt(0).GetCode()));
-}
+#define VISIT_INTRINSIC(name, low, high, type, start_index) \
+  void IntrinsicLocationsBuilderARM64::Visit ##name ##ValueOf(HInvoke* invoke) { \
+    InvokeRuntimeCallingConvention calling_convention; \
+    IntrinsicVisitor::ComputeValueOfLocations( \
+        invoke, \
+        codegen_, \
+        low, \
+        high - low + 1, \
+        calling_convention.GetReturnLocation(DataType::Type::kReference), \
+        Location::RegisterLocation(calling_convention.GetRegisterAt(0).GetCode())); \
+  } \
+  void IntrinsicCodeGeneratorARM64::Visit ##name ##ValueOf(HInvoke* invoke) { \
+    IntrinsicVisitor::ValueOfInfo info = \
+        IntrinsicVisitor::ComputeValueOfInfo( \
+            invoke, \
+            codegen_->GetCompilerOptions(), \
+            WellKnownClasses::java_lang_ ##name ##_value, \
+            low, \
+            high - low + 1, \
+            start_index); \
+    HandleValueOf(invoke, info, type); \
+  }
+  BOXED_TYPES(VISIT_INTRINSIC)
+#undef VISIT_INTRINSIC
 
-void IntrinsicCodeGeneratorARM64::VisitIntegerValueOf(HInvoke* invoke) {
-  IntrinsicVisitor::IntegerValueOfInfo info =
-      IntrinsicVisitor::ComputeIntegerValueOfInfo(invoke, codegen_->GetCompilerOptions());
+void IntrinsicCodeGeneratorARM64::HandleValueOf(HInvoke* invoke,
+                                                const IntrinsicVisitor::ValueOfInfo& info,
+                                                DataType::Type type) {
   LocationSummary* locations = invoke->GetLocations();
   MacroAssembler* masm = GetVIXLAssembler();
 
@@ -3493,20 +3517,20 @@ void IntrinsicCodeGeneratorARM64::VisitIntegerValueOf(HInvoke* invoke) {
     codegen_->InvokeRuntime(kQuickAllocObjectInitialized, invoke, invoke->GetDexPc());
     CheckEntrypointTypes<kQuickAllocObjectWithChecks, void*, mirror::Class*>();
   };
-  if (invoke->InputAt(0)->IsConstant()) {
+  if (invoke->InputAt(0)->IsIntConstant()) {
     int32_t value = invoke->InputAt(0)->AsIntConstant()->GetValue();
     if (static_cast<uint32_t>(value - info.low) < info.length) {
-      // Just embed the j.l.Integer in the code.
-      DCHECK_NE(info.value_boot_image_reference, IntegerValueOfInfo::kInvalidReference);
+      // Just embed the object in the code.
+      DCHECK_NE(info.value_boot_image_reference, ValueOfInfo::kInvalidReference);
       codegen_->LoadBootImageAddress(out, info.value_boot_image_reference);
     } else {
       DCHECK(locations->CanCall());
-      // Allocate and initialize a new j.l.Integer.
-      // TODO: If we JIT, we could allocate the j.l.Integer now, and store it in the
+      // Allocate and initialize a new object.
+      // TODO: If we JIT, we could allocate the object now, and store it in the
       // JIT object table.
       allocate_instance();
       __ Mov(temp.W(), value);
-      __ Str(temp.W(), HeapOperand(out.W(), info.value_offset));
+      codegen_->Store(type, temp.W(), HeapOperand(out.W(), info.value_offset));
       // Class pointer and `value` final field stores require a barrier before publication.
       codegen_->GenerateMemoryBarrier(MemBarrierKind::kStoreStore);
     }
@@ -3518,7 +3542,7 @@ void IntrinsicCodeGeneratorARM64::VisitIntegerValueOf(HInvoke* invoke) {
     __ Cmp(out.W(), info.length);
     vixl::aarch64::Label allocate, done;
     __ B(&allocate, hs);
-    // If the value is within the bounds, load the j.l.Integer directly from the array.
+    // If the value is within the bounds, load the object directly from the array.
     codegen_->LoadBootImageAddress(temp, info.array_data_boot_image_reference);
     MemOperand source = HeapOperand(
         temp, out.X(), LSL, DataType::SizeShift(DataType::Type::kReference));
@@ -3526,9 +3550,9 @@ void IntrinsicCodeGeneratorARM64::VisitIntegerValueOf(HInvoke* invoke) {
     codegen_->GetAssembler()->MaybeUnpoisonHeapReference(out);
     __ B(&done);
     __ Bind(&allocate);
-    // Otherwise allocate and initialize a new j.l.Integer.
+    // Otherwise allocate and initialize a new object.
     allocate_instance();
-    __ Str(in.W(), HeapOperand(out.W(), info.value_offset));
+    codegen_->Store(type, in.W(), HeapOperand(out.W(), info.value_offset));
     // Class pointer and `value` final field stores require a barrier before publication.
     codegen_->GenerateMemoryBarrier(MemBarrierKind::kStoreStore);
     __ Bind(&done);
@@ -4309,7 +4333,7 @@ static void GenerateMathFma(HInvoke* invoke, CodeGeneratorARM64* codegen) {
 }
 
 void IntrinsicLocationsBuilderARM64::VisitMathFmaDouble(HInvoke* invoke) {
-  CreateFPFPFPToFPCallLocations(allocator_, invoke);
+  CreateFPFPFPToFPLocations(allocator_, invoke);
 }
 
 void IntrinsicCodeGeneratorARM64::VisitMathFmaDouble(HInvoke* invoke) {
@@ -4317,7 +4341,7 @@ void IntrinsicCodeGeneratorARM64::VisitMathFmaDouble(HInvoke* invoke) {
 }
 
 void IntrinsicLocationsBuilderARM64::VisitMathFmaFloat(HInvoke* invoke) {
-  CreateFPFPFPToFPCallLocations(allocator_, invoke);
+  CreateFPFPFPToFPLocations(allocator_, invoke);
 }
 
 void IntrinsicCodeGeneratorARM64::VisitMathFmaFloat(HInvoke* invoke) {
