@@ -1899,7 +1899,6 @@ TEST_F(Dex2oatTest, CompactDexInZip) {
   CompactDexFile::WriteMagic(header.magic_.data());
   CompactDexFile::WriteCurrentVersion(header.magic_.data());
   header.file_size_ = sizeof(CompactDexFile::Header);
-  header.data_off_ = 10 * MB;
   header.map_off_ = 10 * MB;
   header.class_defs_off_ = 10 * MB;
   header.class_defs_size_ = 10000;

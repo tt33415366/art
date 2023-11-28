@@ -165,6 +165,9 @@ class DexFile {
     // Decode the dex magic version
     uint32_t GetVersion() const;
 
+    // Get the header_size that is expected for this version.
+    uint32_t GetExpectedHeaderSize() const;
+
     // Returns true for standard DEX version 41 or newer.
     bool HasDexContainer() const;
 

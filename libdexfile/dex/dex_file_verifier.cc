@@ -571,6 +571,7 @@ bool DexFileVerifier::CheckValidOffsetAndSize(uint32_t offset,
       ErrorStringPrintf("Offset(%d) should be zero when size is zero for %s.", offset, label);
       return false;
     }
+    return true;
   }
   size_t hdr_offset = PtrToOffset(header_);
   if (offset < hdr_offset) {
@@ -2328,7 +2329,7 @@ bool DexFileVerifier::CheckIntraSection() {
           ErrorStringPrintf("Header at %x, expected %x", section_offset, expected);
           return false;
         }
-        ptr_ = OffsetToPtr(header_->header_size_);
+        ptr_ += header_->header_size_;
         break;
       }
 

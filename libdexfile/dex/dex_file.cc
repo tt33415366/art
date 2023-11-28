@@ -97,11 +97,16 @@ bool DexFile::DisableWrite() const {
   return container_->DisableWrite();
 }
 
+uint32_t DexFile::Header::GetExpectedHeaderSize() const {
+  uint32_t version = GetVersion();
+  return version == 0 ? 0 : version < 41 ? sizeof(Header) : sizeof(HeaderV41);
+}
+
 bool DexFile::Header::HasDexContainer() const {
   if (CompactDexFile::IsMagicValid(magic_.data())) {
     return false;
   }
-  DCHECK_EQ(header_size_, GetVersion() >= 41 ? sizeof(HeaderV41) : sizeof(Header));
+  DCHECK_EQ(header_size_, GetExpectedHeaderSize());
   return header_size_ >= sizeof(HeaderV41);
 }
 
@@ -202,6 +207,16 @@ bool DexFile::Init(std::string* error_msg) {
   if (!CheckMagicAndVersion(error_msg)) {
     return false;
   }
+  if (!IsCompactDexFile()) {
+    uint32_t expected_header_size = header_->GetExpectedHeaderSize();
+    if (header_->header_size_ != expected_header_size) {
+      *error_msg = StringPrintf("Unable to open '%s' : Header size is %u but %u was expected",
+                                location_.c_str(),
+                                header_->header_size_,
+                                expected_header_size);
+      return false;
+    }
+  }
   if (container_size < header_->file_size_) {
     *error_msg = StringPrintf("Unable to open '%s' : File size is %zu but the header expects %u",
                               location_.c_str(),
@@ -260,7 +275,9 @@ ArrayRef<const uint8_t> DexFile::GetDataRange(const uint8_t* data, DexFileContai
       return separate_data;
     }
     // Shared compact dex data is located at the end after all dex files.
-    data += std::min<size_t>(header->data_off_, size);
+    CHECK_LE(header->data_off_, size);
+    data += header->data_off_;
+    CHECK_LE(header->data_size_, static_cast<size_t>(container->End() - data));
     size = header->data_size_;
   }
   // The returned range is guaranteed to be in bounds of the container memory.
