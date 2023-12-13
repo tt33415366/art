@@ -68,7 +68,7 @@ static RegisterSet OneRegInReferenceOutSaveEverythingCallerSaves() {
   RegisterSet caller_saves = RegisterSet::Empty();
   caller_saves.Add(Location::RegisterLocation(calling_convention.GetRegisterAt(0)));
   // TODO: Add GetReturnLocation() to the calling convention so that we can DCHECK()
-  // that the the kPrimNot result register is the same as the first argument register.
+  // that the kPrimNot result register is the same as the first argument register.
   return caller_saves;
 }
 
@@ -653,7 +653,7 @@ class ReadBarrierMarkAndUpdateFieldSlowPathX86 : public SlowPathCode {
     __ cmpl(temp_, ref_reg);
     __ j(kEqual, &done);
 
-    // Update the the holder's field atomically.  This may fail if
+    // Update the holder's field atomically.  This may fail if
     // mutator updates before us, but it's OK.  This is achieved
     // using a strong compare-and-set (CAS) operation with relaxed
     // memory synchronization ordering, where the expected value is
@@ -989,11 +989,14 @@ class MethodEntryExitHooksSlowPathX86 : public SlowPathCode {
 
 class CompileOptimizedSlowPathX86 : public SlowPathCode {
  public:
-  CompileOptimizedSlowPathX86() : SlowPathCode(/* instruction= */ nullptr) {}
+  explicit CompileOptimizedSlowPathX86(uint32_t counter_address)
+      : SlowPathCode(/* instruction= */ nullptr),
+        counter_address_(counter_address) {}
 
   void EmitNativeCode(CodeGenerator* codegen) override {
     CodeGeneratorX86* x86_codegen = down_cast<CodeGeneratorX86*>(codegen);
     __ Bind(GetEntryLabel());
+    __ movw(Address::Absolute(counter_address_), Immediate(ProfilingInfo::GetOptimizeThreshold()));
     x86_codegen->GenerateInvokeRuntime(
         GetThreadOffset<kX86PointerSize>(kQuickCompileOptimized).Int32Value());
     __ jmp(GetExitLabel());
@@ -1004,6 +1007,8 @@ class CompileOptimizedSlowPathX86 : public SlowPathCode {
   }
 
  private:
+  uint32_t counter_address_;
+
   DISALLOW_COPY_AND_ASSIGN(CompileOptimizedSlowPathX86);
 };
 
@@ -1343,13 +1348,13 @@ void CodeGeneratorX86::MaybeIncrementHotness(bool is_frame_entry) {
   }
 
   if (GetGraph()->IsCompilingBaseline() && !Runtime::Current()->IsAotCompiler()) {
-    SlowPathCode* slow_path = new (GetScopedAllocator()) CompileOptimizedSlowPathX86();
-    AddSlowPath(slow_path);
     ProfilingInfo* info = GetGraph()->GetProfilingInfo();
     DCHECK(info != nullptr);
     uint32_t address = reinterpret_cast32<uint32_t>(info) +
         ProfilingInfo::BaselineHotnessCountOffset().Int32Value();
     DCHECK(!HasEmptyFrame());
+    SlowPathCode* slow_path = new (GetScopedAllocator()) CompileOptimizedSlowPathX86(address);
+    AddSlowPath(slow_path);
     // With multiple threads, this can overflow. This is OK, we will eventually get to see
     // it reaching 0. Also, at this point we have no register available to look
     // at the counter directly.
