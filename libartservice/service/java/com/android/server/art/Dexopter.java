@@ -302,13 +302,14 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
         if (mInjector.isSystemUiPackage(mPkgState.getPackageName())) {
             String systemUiCompilerFilter = getSystemUiCompilerFilter();
             if (!systemUiCompilerFilter.isEmpty()) {
-                return systemUiCompilerFilter;
+                targetCompilerFilter = systemUiCompilerFilter;
             }
+        } else if (mInjector.isLauncherPackage(mPkgState.getPackageName())) {
+            targetCompilerFilter = "speed-profile";
         }
 
-        if (mInjector.isLauncherPackage(mPkgState.getPackageName())) {
-            return "speed-profile";
-        }
+        // Code below should only downgrade the compiler filter. Don't upgrade the compiler filter
+        // beyond this point!
 
         // We force vmSafeMode on debuggable apps as well:
         //  - the runtime ignores their compiled code
@@ -318,13 +319,13 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
         // are done via adb shell commands). This is okay because the runtime will ignore the
         // compiled code anyway.
         if (mPkg.isVmSafeMode() || mPkg.isDebuggable()) {
-            return DexFile.getSafeModeCompilerFilter(targetCompilerFilter);
+            targetCompilerFilter = DexFile.getSafeModeCompilerFilter(targetCompilerFilter);
         }
 
         // We cannot do AOT compilation if we don't have a valid class loader context.
-        if (dexInfo.classLoaderContext() == null) {
-            return DexFile.isOptimizedCompilerFilter(targetCompilerFilter) ? "verify"
-                                                                           : targetCompilerFilter;
+        if (dexInfo.classLoaderContext() == null
+                && DexFile.isOptimizedCompilerFilter(targetCompilerFilter)) {
+            targetCompilerFilter = "verify";
         }
 
         // This application wants to use the embedded dex in the APK, rather than extracted or
@@ -332,9 +333,13 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
         // "verify" does not prevent dex2oat from extracting the dex code, but in practice, dex2oat
         // won't extract the dex code because the APK is uncompressed, and the assumption is that
         // such applications always use uncompressed APKs.
-        if (mPkg.isUseEmbeddedDex()) {
-            return DexFile.isOptimizedCompilerFilter(targetCompilerFilter) ? "verify"
-                                                                           : targetCompilerFilter;
+        if (mPkg.isUseEmbeddedDex() && DexFile.isOptimizedCompilerFilter(targetCompilerFilter)) {
+            targetCompilerFilter = "verify";
+        }
+
+        if ((mParams.getFlags() & ArtFlags.FLAG_IGNORE_PROFILE) != 0
+                && DexFile.isProfileGuidedCompilerFilter(targetCompilerFilter)) {
+            targetCompilerFilter = "verify";
         }
 
         return targetCompilerFilter;
@@ -536,9 +541,12 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
             @Nullable ProfilePath referenceProfile) throws RemoteException {
         OutputProfile output = buildOutputProfile(dexInfo, false /* isPublic */);
 
+        var options = new MergeProfileOptions();
+        options.forceMerge = (mParams.getFlags() & ArtFlags.FLAG_FORCE_MERGE_PROFILE) != 0;
+
         try {
             if (mInjector.getArtd().mergeProfiles(getCurProfiles(dexInfo), referenceProfile, output,
-                        List.of(dexInfo.dexPath()), new MergeProfileOptions())) {
+                        List.of(dexInfo.dexPath()), options)) {
                 return ProfilePath.tmpProfilePath(output.profilePath);
             }
         } catch (ServiceSpecificException e) {
