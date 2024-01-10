@@ -971,8 +971,9 @@ class MethodEntryExitHooksSlowPathARMVIXL : public SlowPathCodeARMVIXL {
 
 class CompileOptimizedSlowPathARMVIXL : public SlowPathCodeARMVIXL {
  public:
-  explicit CompileOptimizedSlowPathARMVIXL(vixl32::Register profiling_info)
-      : SlowPathCodeARMVIXL(/* instruction= */ nullptr),
+  CompileOptimizedSlowPathARMVIXL(HSuspendCheck* suspend_check,
+                                  vixl32::Register profiling_info)
+      : SlowPathCodeARMVIXL(suspend_check),
         profiling_info_(profiling_info) {}
 
   void EmitNativeCode(CodeGenerator* codegen) override {
@@ -2275,7 +2276,8 @@ void InstructionCodeGeneratorARMVIXL::VisitMethodEntryHook(HMethodEntryHook* ins
   GenerateMethodEntryExitHook(instruction);
 }
 
-void CodeGeneratorARMVIXL::MaybeIncrementHotness(bool is_frame_entry) {
+void CodeGeneratorARMVIXL::MaybeIncrementHotness(HSuspendCheck* suspend_check,
+                                                 bool is_frame_entry) {
   if (GetCompilerOptions().CountHotnessInCompiledCode()) {
     UseScratchRegisterScope temps(GetVIXLAssembler());
     vixl32::Register temp = temps.Acquire();
@@ -2306,8 +2308,8 @@ void CodeGeneratorARMVIXL::MaybeIncrementHotness(bool is_frame_entry) {
     uint32_t address = reinterpret_cast32<uint32_t>(info);
     UseScratchRegisterScope temps(GetVIXLAssembler());
     vixl32::Register tmp = temps.Acquire();
-    SlowPathCodeARMVIXL* slow_path =
-        new (GetScopedAllocator()) CompileOptimizedSlowPathARMVIXL(/* profiling_info= */ lr);
+    SlowPathCodeARMVIXL* slow_path = new (GetScopedAllocator()) CompileOptimizedSlowPathARMVIXL(
+        suspend_check, /* profiling_info= */ lr);
     AddSlowPath(slow_path);
     __ Mov(lr, address);
     __ Ldrh(tmp, MemOperand(lr, ProfilingInfo::BaselineHotnessCountOffset().Int32Value()));
@@ -2382,7 +2384,7 @@ void CodeGeneratorARMVIXL::GenerateFrameEntry() {
   if (HasEmptyFrame()) {
     // Ensure that the CFI opcode list is not empty.
     GetAssembler()->cfi().Nop();
-    MaybeIncrementHotness(/* is_frame_entry= */ true);
+    MaybeIncrementHotness(/* suspend_check= */ nullptr, /* is_frame_entry= */ true);
     return;
   }
 
@@ -2482,7 +2484,7 @@ void CodeGeneratorARMVIXL::GenerateFrameEntry() {
     GetAssembler()->StoreToOffset(kStoreWord, temp, sp, GetStackOffsetOfShouldDeoptimizeFlag());
   }
 
-  MaybeIncrementHotness(/* is_frame_entry= */ true);
+  MaybeIncrementHotness(/* suspend_check= */ nullptr, /* is_frame_entry= */ true);
   MaybeGenerateMarkingRegisterCheck(/* code= */ 1);
 }
 
@@ -2827,7 +2829,7 @@ void InstructionCodeGeneratorARMVIXL::HandleGoto(HInstruction* got, HBasicBlock*
   HLoopInformation* info = block->GetLoopInformation();
 
   if (info != nullptr && info->IsBackEdge(*block) && info->HasSuspendCheck()) {
-    codegen_->MaybeIncrementHotness(/* is_frame_entry= */ false);
+    codegen_->MaybeIncrementHotness(info->GetSuspendCheck(), /* is_frame_entry= */ false);
     GenerateSuspendCheck(info->GetSuspendCheck(), successor);
     return;
   }
