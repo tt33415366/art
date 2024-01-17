@@ -34,6 +34,7 @@
 #include "linker/linker_patch.h"
 #include "mirror/class-inl.h"
 #include "optimizing/nodes.h"
+#include "optimizing/profiling_info_builder.h"
 #include "runtime.h"
 #include "scoped_thread_state_change-inl.h"
 #include "stack_map_stream.h"
@@ -55,13 +56,6 @@ constexpr uint32_t kLinkTimeOffsetPlaceholderLow = 0x678;
 // and N 32-bit data words for N cases.
 // We switch to the table-based method starting with 6 entries.
 static constexpr uint32_t kPackedSwitchCompareJumpThreshold = 6;
-
-// FCLASS returns a 10-bit classification mask with the two highest bits marking NaNs
-// (signaling and quiet). To detect a NaN, we can compare (either BGE or BGEU, the sign
-// bit is always clear) the result with the `kFClassNaNMinValue`.
-static_assert(kSignalingNaN == 0x100);
-static_assert(kQuietNaN == 0x200);
-static constexpr int32_t kFClassNaNMinValue = 0x100;
 
 static constexpr XRegister kCoreCalleeSaves[] = {
     // S1(TR) is excluded as the ART thread register.
@@ -272,22 +266,41 @@ void LocationsBuilderRISCV64::HandleInvoke(HInvoke* instruction) {
 
 class CompileOptimizedSlowPathRISCV64 : public SlowPathCodeRISCV64 {
  public:
-  CompileOptimizedSlowPathRISCV64() : SlowPathCodeRISCV64(/*instruction=*/ nullptr) {}
+  CompileOptimizedSlowPathRISCV64(HSuspendCheck* suspend_check, XRegister base, int32_t imm12)
+      : SlowPathCodeRISCV64(suspend_check),
+        base_(base),
+        imm12_(imm12) {}
 
   void EmitNativeCode(CodeGenerator* codegen) override {
     uint32_t entrypoint_offset =
         GetThreadOffset<kRiscv64PointerSize>(kQuickCompileOptimized).Int32Value();
     __ Bind(GetEntryLabel());
+    CodeGeneratorRISCV64* riscv64_codegen = down_cast<CodeGeneratorRISCV64*>(codegen);
+    riscv64::ScratchRegisterScope srs(riscv64_codegen->GetAssembler());
+    XRegister counter = srs.AllocateXRegister();
+    __ LoadConst32(counter, ProfilingInfo::GetOptimizeThreshold());
+    __ Sh(counter, base_, imm12_);
+    if (instruction_ != nullptr) {
+      // Only saves live vector regs for SIMD.
+      SaveLiveRegisters(codegen, instruction_->GetLocations());
+    }
     __ Loadd(RA, TR, entrypoint_offset);
     // Note: we don't record the call here (and therefore don't generate a stack
     // map), as the entrypoint should never be suspended.
     __ Jalr(RA);
+    if (instruction_ != nullptr) {
+      // Only restores live vector regs for SIMD.
+      RestoreLiveRegisters(codegen, instruction_->GetLocations());
+    }
     __ J(GetExitLabel());
   }
 
   const char* GetDescription() const override { return "CompileOptimizedSlowPath"; }
 
  private:
+  XRegister base_;
+  const int32_t imm12_;
+
   DISALLOW_COPY_AND_ASSIGN(CompileOptimizedSlowPathRISCV64);
 };
 
@@ -691,7 +704,6 @@ class ReadBarrierMarkSlowPathRISCV64 : public SlowPathCodeRISCV64 {
     DCHECK(locations->CanCall());
     DCHECK(!locations->GetLiveRegisters()->ContainsCoreRegister(ref_reg)) << ref_reg;
     DCHECK(instruction_->IsInstanceFieldGet() ||
-           instruction_->IsPredicatedInstanceFieldGet() ||
            instruction_->IsStaticFieldGet() ||
            instruction_->IsArrayGet() ||
            instruction_->IsArraySet() ||
@@ -793,7 +805,7 @@ inline void InstructionCodeGeneratorRISCV64::FpBinOp(
   }
 }
 
-inline void InstructionCodeGeneratorRISCV64::FAdd(
+void InstructionCodeGeneratorRISCV64::FAdd(
     FRegister rd, FRegister rs1, FRegister rs2, DataType::Type type) {
   FpBinOp<FRegister, &Riscv64Assembler::FAddS, &Riscv64Assembler::FAddD>(rd, rs1, rs2, type);
 }
@@ -872,7 +884,7 @@ inline void InstructionCodeGeneratorRISCV64::FMvX(
   FpUnOp<XRegister, &Riscv64Assembler::FMvXW, &Riscv64Assembler::FMvXD>(rd, rs1, type);
 }
 
-inline void InstructionCodeGeneratorRISCV64::FClass(
+void InstructionCodeGeneratorRISCV64::FClass(
     XRegister rd, FRegister rs1, DataType::Type type) {
   FpUnOp<XRegister, &Riscv64Assembler::FClassS, &Riscv64Assembler::FClassD>(rd, rs1, type);
 }
@@ -2005,7 +2017,7 @@ void InstructionCodeGeneratorRISCV64::HandleGoto(HInstruction* instruction,
   HLoopInformation* info = block->GetLoopInformation();
 
   if (info != nullptr && info->IsBackEdge(*block) && info->HasSuspendCheck()) {
-    codegen_->MaybeIncrementHotness(/*is_frame_entry=*/ false);
+    codegen_->MaybeIncrementHotness(info->GetSuspendCheck(), /*is_frame_entry=*/ false);
     GenerateSuspendCheck(info->GetSuspendCheck(), successor);
     return;  // `GenerateSuspendCheck()` emitted the jump.
   }
@@ -2471,13 +2483,6 @@ void InstructionCodeGeneratorRISCV64::HandleFieldSet(HInstruction* instruction,
   DCHECK_IMPLIES(value.IsConstant(), IsZeroBitPattern(value.GetConstant()));
   bool is_volatile = field_info.IsVolatile();
   uint32_t offset = field_info.GetFieldOffset().Uint32Value();
-  bool is_predicated =
-      instruction->IsInstanceFieldSet() && instruction->AsInstanceFieldSet()->GetIsPredicatedSet();
-
-  Riscv64Label pred_is_null;
-  if (is_predicated) {
-    __ Beqz(obj, &pred_is_null);
-  }
 
   if (is_volatile) {
     StoreSeqCst(value, obj, offset, type, instruction);
@@ -2493,18 +2498,10 @@ void InstructionCodeGeneratorRISCV64::HandleFieldSet(HInstruction* instruction,
         value.AsRegister<XRegister>(),
         value_can_be_null && write_barrier_kind == WriteBarrierKind::kEmitWithNullCheck);
   }
-
-  if (is_predicated) {
-    __ Bind(&pred_is_null);
-  }
 }
 
 void LocationsBuilderRISCV64::HandleFieldGet(HInstruction* instruction) {
-  DCHECK(instruction->IsInstanceFieldGet() ||
-         instruction->IsStaticFieldGet() ||
-         instruction->IsPredicatedInstanceFieldGet());
-
-  bool is_predicated = instruction->IsPredicatedInstanceFieldGet();
+  DCHECK(instruction->IsInstanceFieldGet() || instruction->IsStaticFieldGet());
 
   bool object_field_get_with_read_barrier =
       (instruction->GetType() == DataType::Type::kReference) && codegen_->EmitReadBarrier();
@@ -2515,27 +2512,17 @@ void LocationsBuilderRISCV64::HandleFieldGet(HInstruction* instruction) {
           : LocationSummary::kNoCall);
 
   // Input for object receiver.
-  locations->SetInAt(is_predicated ? 1 : 0, Location::RequiresRegister());
+  locations->SetInAt(0, Location::RequiresRegister());
 
   if (DataType::IsFloatingPointType(instruction->GetType())) {
-    if (is_predicated) {
-      locations->SetInAt(0, Location::RequiresFpuRegister());
-      locations->SetOut(Location::SameAsFirstInput());
-    } else {
-      locations->SetOut(Location::RequiresFpuRegister());
-    }
+    locations->SetOut(Location::RequiresFpuRegister());
   } else {
-    if (is_predicated) {
-      locations->SetInAt(0, Location::RequiresRegister());
-      locations->SetOut(Location::SameAsFirstInput());
-    } else {
-      // The output overlaps for an object field get when read barriers
-      // are enabled: we do not want the load to overwrite the object's
-      // location, as we need it to emit the read barrier.
-      locations->SetOut(Location::RequiresRegister(),
-                        object_field_get_with_read_barrier ? Location::kOutputOverlap
-                                                           : Location::kNoOutputOverlap);
-    }
+    // The output overlaps for an object field get when read barriers
+    // are enabled: we do not want the load to overwrite the object's
+    // location, as we need it to emit the read barrier.
+    locations->SetOut(
+        Location::RequiresRegister(),
+        object_field_get_with_read_barrier ? Location::kOutputOverlap : Location::kNoOutputOverlap);
   }
 
   if (object_field_get_with_read_barrier && kUseBakerReadBarrier) {
@@ -2548,13 +2535,11 @@ void LocationsBuilderRISCV64::HandleFieldGet(HInstruction* instruction) {
 
 void InstructionCodeGeneratorRISCV64::HandleFieldGet(HInstruction* instruction,
                                                      const FieldInfo& field_info) {
-  DCHECK(instruction->IsInstanceFieldGet() ||
-         instruction->IsStaticFieldGet() ||
-         instruction->IsPredicatedInstanceFieldGet());
+  DCHECK(instruction->IsInstanceFieldGet() || instruction->IsStaticFieldGet());
   DCHECK_EQ(DataType::Size(field_info.GetFieldType()), DataType::Size(instruction->GetType()));
   DataType::Type type = instruction->GetType();
   LocationSummary* locations = instruction->GetLocations();
-  Location obj_loc = locations->InAt(instruction->IsPredicatedInstanceFieldGet() ? 1 : 0);
+  Location obj_loc = locations->InAt(0);
   XRegister obj = obj_loc.AsRegister<XRegister>();
   Location dst_loc = locations->Out();
   bool is_volatile = field_info.IsVolatile();
@@ -2907,6 +2892,12 @@ void LocationsBuilderRISCV64::VisitArraySet(HArraySet* instruction) {
   locations->SetInAt(0, Location::RequiresRegister());
   locations->SetInAt(1, Location::RegisterOrConstant(instruction->InputAt(1)));
   locations->SetInAt(2, ValueLocationForStore(instruction->GetValue()));
+  if (kPoisonHeapReferences &&
+      instruction->GetComponentType() == DataType::Type::kReference &&
+      !locations->InAt(1).IsConstant() &&
+      !locations->InAt(2).IsConstant()) {
+    locations->AddTemp(Location::RequiresRegister());
+  }
 }
 
 void InstructionCodeGeneratorRISCV64::VisitArraySet(HArraySet* instruction) {
@@ -2995,7 +2986,11 @@ void InstructionCodeGeneratorRISCV64::VisitArraySet(HArraySet* instruction) {
     Store(value, array, offset, value_type);
   } else {
     ScratchRegisterScope srs(GetAssembler());
-    XRegister tmp = srs.AllocateXRegister();
+    // Heap poisoning needs two scratch registers in `Store()`, except for null constants.
+    XRegister tmp =
+        (kPoisonHeapReferences && value_type == DataType::Type::kReference && !value.IsConstant())
+            ? locations->GetTemp(0).AsRegister<XRegister>()
+            : srs.AllocateXRegister();
     ShNAdd(tmp, index.AsRegister<XRegister>(), array, value_type);
     Store(value, tmp, data_offset, value_type);
   }
@@ -3705,7 +3700,9 @@ void LocationsBuilderRISCV64::VisitIf(HIf* instruction) {
   LocationSummary* locations = new (GetGraph()->GetAllocator()) LocationSummary(instruction);
   if (IsBooleanValueOrMaterializedCondition(instruction->InputAt(0))) {
     locations->SetInAt(0, Location::RequiresRegister());
-    if (GetGraph()->IsCompilingBaseline() && !Runtime::Current()->IsAotCompiler()) {
+    if (GetGraph()->IsCompilingBaseline() &&
+        codegen_->GetCompilerOptions().ProfileBranches() &&
+        !Runtime::Current()->IsAotCompiler()) {
       DCHECK(instruction->InputAt(0)->IsCondition());
       ProfilingInfo* info = GetGraph()->GetProfilingInfo();
       DCHECK(info != nullptr);
@@ -3727,7 +3724,9 @@ void InstructionCodeGeneratorRISCV64::VisitIf(HIf* instruction) {
       ? nullptr
       : codegen_->GetLabelOf(false_successor);
   if (IsBooleanValueOrMaterializedCondition(instruction->InputAt(0))) {
-    if (GetGraph()->IsCompilingBaseline() && !Runtime::Current()->IsAotCompiler()) {
+    if (GetGraph()->IsCompilingBaseline() &&
+        codegen_->GetCompilerOptions().ProfileBranches() &&
+        !Runtime::Current()->IsAotCompiler()) {
       DCHECK(instruction->InputAt(0)->IsCondition());
       ProfilingInfo* info = GetGraph()->GetProfilingInfo();
       DCHECK(info != nullptr);
@@ -3758,8 +3757,6 @@ void InstructionCodeGeneratorRISCV64::VisitIf(HIf* instruction) {
         __ Bind(&done);
       }
     }
-  } else {
-    DCHECK(!GetGraph()->IsCompilingBaseline()) << instruction->InputAt(0)->DebugName();
   }
   GenerateTestAndBranch(instruction, /* condition_input_index= */ 0, true_target, false_target);
 }
@@ -3781,21 +3778,6 @@ void InstructionCodeGeneratorRISCV64::VisitInstanceFieldSet(HInstanceFieldSet* i
                  instruction->GetFieldInfo(),
                  instruction->GetValueCanBeNull(),
                  instruction->GetWriteBarrierKind());
-}
-
-void LocationsBuilderRISCV64::VisitPredicatedInstanceFieldGet(
-    HPredicatedInstanceFieldGet* instruction) {
-  HandleFieldGet(instruction);
-}
-
-void InstructionCodeGeneratorRISCV64::VisitPredicatedInstanceFieldGet(
-    HPredicatedInstanceFieldGet* instruction) {
-  Riscv64Label finish;
-  LocationSummary* locations = instruction->GetLocations();
-  XRegister target = locations->InAt(1).AsRegister<XRegister>();
-  __ Beqz(target, &finish);
-  HandleFieldGet(instruction, instruction->GetFieldInfo());
-  __ Bind(&finish);
 }
 
 void LocationsBuilderRISCV64::VisitInstanceOf(HInstanceOf* instruction) {
@@ -5720,7 +5702,8 @@ CodeGeneratorRISCV64::CodeGeneratorRISCV64(HGraph* graph,
   AddAllocatedRegister(Location::RegisterLocation(RA));
 }
 
-void CodeGeneratorRISCV64::MaybeIncrementHotness(bool is_frame_entry) {
+void CodeGeneratorRISCV64::MaybeIncrementHotness(HSuspendCheck* suspend_check,
+                                                 bool is_frame_entry) {
   if (GetCompilerOptions().CountHotnessInCompiledCode()) {
     ScratchRegisterScope srs(GetAssembler());
     XRegister method = is_frame_entry ? kArtMethodRegister : srs.AllocateXRegister();
@@ -5741,8 +5724,6 @@ void CodeGeneratorRISCV64::MaybeIncrementHotness(bool is_frame_entry) {
   }
 
   if (GetGraph()->IsCompilingBaseline() && !Runtime::Current()->IsAotCompiler()) {
-    SlowPathCodeRISCV64* slow_path = new (GetScopedAllocator()) CompileOptimizedSlowPathRISCV64();
-    AddSlowPath(slow_path);
     ProfilingInfo* info = GetGraph()->GetProfilingInfo();
     DCHECK(info != nullptr);
     DCHECK(!HasEmptyFrame());
@@ -5750,9 +5731,12 @@ void CodeGeneratorRISCV64::MaybeIncrementHotness(bool is_frame_entry) {
                        ProfilingInfo::BaselineHotnessCountOffset().SizeValue();
     auto [base_address, imm12] = SplitJitAddress(address);
     ScratchRegisterScope srs(GetAssembler());
-    XRegister tmp = srs.AllocateXRegister();
-    __ LoadConst64(tmp, base_address);
     XRegister counter = srs.AllocateXRegister();
+    XRegister tmp = RA;
+    __ LoadConst64(tmp, base_address);
+    SlowPathCodeRISCV64* slow_path =
+        new (GetScopedAllocator()) CompileOptimizedSlowPathRISCV64(suspend_check, tmp, imm12);
+    AddSlowPath(slow_path);
     __ Lhu(counter, tmp, imm12);
     __ Beqz(counter, slow_path->GetEntryLabel());  // Can clobber `TMP` if taken.
     __ Addi(counter, counter, -1);
@@ -5896,7 +5880,7 @@ void CodeGeneratorRISCV64::GenerateFrameEntry() {
       __ Storew(Zero, SP, GetStackOffsetOfShouldDeoptimizeFlag());
     }
   }
-  MaybeIncrementHotness(/*is_frame_entry=*/ true);
+  MaybeIncrementHotness(/* suspend_check= */ nullptr, /*is_frame_entry=*/ true);
 }
 
 void CodeGeneratorRISCV64::GenerateFrameExit() {
@@ -6588,6 +6572,38 @@ void CodeGeneratorRISCV64::LoadBootImageRelRoEntry(XRegister dest, uint32_t boot
   EmitPcRelativeLwuPlaceholder(info_low, dest, dest);
 }
 
+void CodeGeneratorRISCV64::LoadBootImageAddress(XRegister dest, uint32_t boot_image_reference) {
+  if (GetCompilerOptions().IsBootImage()) {
+    PcRelativePatchInfo* info_high = NewBootImageIntrinsicPatch(boot_image_reference);
+    EmitPcRelativeAuipcPlaceholder(info_high, dest);
+    PcRelativePatchInfo* info_low = NewBootImageIntrinsicPatch(boot_image_reference, info_high);
+    EmitPcRelativeAddiPlaceholder(info_low, dest, dest);
+  } else if (GetCompilerOptions().GetCompilePic()) {
+    LoadBootImageRelRoEntry(dest, boot_image_reference);
+  } else {
+    DCHECK(GetCompilerOptions().IsJitCompiler());
+    gc::Heap* heap = Runtime::Current()->GetHeap();
+    DCHECK(!heap->GetBootImageSpaces().empty());
+    const uint8_t* address = heap->GetBootImageSpaces()[0]->Begin() + boot_image_reference;
+    // Note: Boot image is in the low 4GiB (usually the low 2GiB, requiring just LUI+ADDI).
+    // We may not have an available scratch register for `LoadConst64()` but it never
+    // emits better code than `Li()` for 32-bit unsigned constants anyway.
+    __ Li(dest, reinterpret_cast32<uint32_t>(address));
+  }
+}
+
+void CodeGeneratorRISCV64::LoadIntrinsicDeclaringClass(XRegister dest, HInvoke* invoke) {
+  DCHECK_NE(invoke->GetIntrinsic(), Intrinsics::kNone);
+  if (GetCompilerOptions().IsBootImage()) {
+    MethodReference target_method = invoke->GetResolvedMethodReference();
+    dex::TypeIndex type_idx = target_method.dex_file->GetMethodId(target_method.index).class_idx_;
+    LoadTypeForBootImageIntrinsic(dest, TypeReference(target_method.dex_file, type_idx));
+  } else {
+    uint32_t boot_image_offset = GetBootImageOffsetOfIntrinsicDeclaringClass(invoke);
+    LoadBootImageAddress(dest, boot_image_offset);
+  }
+}
+
 void CodeGeneratorRISCV64::LoadClassRootForIntrinsic(XRegister dest, ClassRoot class_root) {
   if (GetCompilerOptions().IsBootImage()) {
     ScopedObjectAccess soa(Thread::Current());
@@ -6596,15 +6612,7 @@ void CodeGeneratorRISCV64::LoadClassRootForIntrinsic(XRegister dest, ClassRoot c
     LoadTypeForBootImageIntrinsic(dest, target_type);
   } else {
     uint32_t boot_image_offset = GetBootImageOffset(class_root);
-    if (GetCompilerOptions().GetCompilePic()) {
-      LoadBootImageRelRoEntry(dest, boot_image_offset);
-    } else {
-      DCHECK(GetCompilerOptions().IsJitCompiler());
-      gc::Heap* heap = Runtime::Current()->GetHeap();
-      DCHECK(!heap->GetBootImageSpaces().empty());
-      const uint8_t* address = heap->GetBootImageSpaces()[0]->Begin() + boot_image_offset;
-      __ Loadwu(dest, DeduplicateBootImageAddressLiteral(reinterpret_cast<uintptr_t>(address)));
-    }
+    LoadBootImageAddress(dest, boot_image_offset);
   }
 }
 
@@ -6732,32 +6740,36 @@ void CodeGeneratorRISCV64::GenerateStaticOrDirectCall(HInvokeStaticOrDirect* inv
 
 void CodeGeneratorRISCV64::MaybeGenerateInlineCacheCheck(HInstruction* instruction,
                                                          XRegister klass) {
-  // We know the destination of an intrinsic, so no need to record inline caches.
-  if (!instruction->GetLocations()->Intrinsified() &&
-      GetGraph()->IsCompilingBaseline() &&
-      !Runtime::Current()->IsAotCompiler()) {
-    DCHECK(!instruction->GetEnvironment()->IsFromInlinedInvoke());
+  if (ProfilingInfoBuilder::IsInlineCacheUseful(instruction->AsInvoke(), this)) {
     ProfilingInfo* info = GetGraph()->GetProfilingInfo();
     DCHECK(info != nullptr);
-    InlineCache* cache = info->GetInlineCache(instruction->GetDexPc());
-    uint64_t address = reinterpret_cast64<uint64_t>(cache);
-    Riscv64Label done;
-    // The `art_quick_update_inline_cache` expects the inline cache in T5.
-    XRegister ic_reg = T5;
-    ScratchRegisterScope srs(GetAssembler());
-    DCHECK_EQ(srs.AvailableXRegisters(), 2u);
-    srs.ExcludeXRegister(ic_reg);
-    DCHECK_EQ(srs.AvailableXRegisters(), 1u);
-    __ LoadConst64(ic_reg, address);
-    {
-      ScratchRegisterScope srs2(GetAssembler());
-      XRegister tmp = srs2.AllocateXRegister();
-      __ Loadd(tmp, ic_reg, InlineCache::ClassesOffset().Int32Value());
-      // Fast path for a monomorphic cache.
-      __ Beq(klass, tmp, &done);
+    InlineCache* cache = ProfilingInfoBuilder::GetInlineCache(
+        info, GetCompilerOptions(), instruction->AsInvoke());
+    if (cache != nullptr) {
+      uint64_t address = reinterpret_cast64<uint64_t>(cache);
+      Riscv64Label done;
+      // The `art_quick_update_inline_cache` expects the inline cache in T5.
+      XRegister ic_reg = T5;
+      ScratchRegisterScope srs(GetAssembler());
+      DCHECK_EQ(srs.AvailableXRegisters(), 2u);
+      srs.ExcludeXRegister(ic_reg);
+      DCHECK_EQ(srs.AvailableXRegisters(), 1u);
+      __ LoadConst64(ic_reg, address);
+      {
+        ScratchRegisterScope srs2(GetAssembler());
+        XRegister tmp = srs2.AllocateXRegister();
+        __ Loadd(tmp, ic_reg, InlineCache::ClassesOffset().Int32Value());
+        // Fast path for a monomorphic cache.
+        __ Beq(klass, tmp, &done);
+      }
+      InvokeRuntime(kQuickUpdateInlineCache, instruction, instruction->GetDexPc());
+      __ Bind(&done);
+    } else {
+      // This is unexpected, but we don't guarantee stable compilation across
+      // JIT runs so just warn about it.
+      ScopedObjectAccess soa(Thread::Current());
+      LOG(WARNING) << "Missing inline cache for " << GetGraph()->GetArtMethod()->PrettyMethod();
     }
-    InvokeRuntime(kQuickUpdateInlineCache, instruction, instruction->GetDexPc());
-    __ Bind(&done);
   }
 }
 

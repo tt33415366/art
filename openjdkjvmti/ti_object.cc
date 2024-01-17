@@ -108,12 +108,14 @@ jvmtiError ObjectUtil::GetObjectMonitorUsage(
     // Scan all threads to see which are waiting on this particular monitor.
     std::list<art::Thread*> thread_list;
     {
+      // Since we're in a SuspendAll, exiting threads are not a concern.
       art::MutexLock tll(self, *art::Locks::thread_list_lock_);
       thread_list = art::Runtime::Current()->GetThreadList()->GetList();
     }
     for (art::Thread* thd : thread_list) {
       if (thd != info.owner_ && target.Ptr() == thd->GetMonitorEnterObject()) {
-        wait.push_back(jni->AddLocalReference<jthread>(thd->GetPeerFromOtherThread()));
+        art::mirror::Object* peer = thd->GetPeerFromOtherThread();
+        wait.push_back(jni->AddLocalReference<jthread>(peer));
       }
     }
   }

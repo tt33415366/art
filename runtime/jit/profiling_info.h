@@ -28,6 +28,7 @@
 namespace art {
 
 class ArtMethod;
+class CompilerOptions;
 class ProfilingInfo;
 
 namespace jit {
@@ -49,6 +50,18 @@ class InlineCache {
   static constexpr MemberOffset ClassesOffset() {
     return MemberOffset(OFFSETOF_MEMBER(InlineCache, classes_));
   }
+
+  // Encode the list of `dex_pcs` to fit into an uint32_t.
+  static uint32_t EncodeDexPc(ArtMethod* method,
+                              const std::vector<uint32_t>& dex_pcs,
+                              uint32_t inline_max_code_units)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
+  // Return the maximum inlining depth that we support to encode a list of dex
+  // pcs.
+  static uint32_t MaxDexPcEncodingDepth(ArtMethod* method,
+                                        uint32_t inline_max_code_units)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
  private:
   uint32_t dex_pc_;
@@ -99,7 +112,9 @@ class BranchCache {
 class ProfilingInfo {
  public:
   // Create a ProfilingInfo for 'method'.
-  static ProfilingInfo* Create(Thread* self, ArtMethod* method)
+  static ProfilingInfo* Create(Thread* self,
+                               ArtMethod* method,
+                               const std::vector<uint32_t>& inline_cache_entries)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Add information from an executed INVOKE instruction to the profile.
@@ -168,12 +183,12 @@ class ProfilingInfo {
     return baseline_hotness_count_;
   }
 
+  static uint16_t GetOptimizeThreshold();
+
  private:
   ProfilingInfo(ArtMethod* method,
                 const std::vector<uint32_t>& inline_cache_entries,
                 const std::vector<uint32_t>& branch_cache_entries);
-
-  static uint16_t GetOptimizeThreshold();
 
   // Hotness count for methods compiled with the JIT baseline compiler. Once
   // a threshold is hit (currentily the maximum value of uint16_t), we will

@@ -211,7 +211,8 @@ static_assert(enum_cast<uint32_t>(IndirectRefKind::kLastKind) < alignof(LrtEntry
 static constexpr size_t kInitialLrtBytes = 512;  // Number of bytes in an initial local table.
 static constexpr size_t kSmallLrtEntries = kInitialLrtBytes / sizeof(LrtEntry);
 static_assert(IsPowerOfTwo(kInitialLrtBytes));
-static_assert(kPageSize % kInitialLrtBytes == 0);
+
+static_assert(kMinPageSize % kInitialLrtBytes == 0);
 static_assert(kInitialLrtBytes % sizeof(LrtEntry) == 0);
 
 // A minimal stopgap allocator for initial small local LRT tables.
@@ -226,9 +227,14 @@ class SmallLrtAllocator {
   void Deallocate(LrtEntry* unneeded, size_t size) REQUIRES(!lock_);
 
  private:
-  static constexpr size_t kNumSlots = WhichPowerOf2(kPageSize / kInitialLrtBytes);
+  // Number of free lists in the allocator.
+#ifdef ART_PAGE_SIZE_AGNOSTIC
+  const size_t num_lrt_slots_ = (WhichPowerOf2(gPageSize / kInitialLrtBytes));
+#else
+  static constexpr size_t num_lrt_slots_ = (WhichPowerOf2(gPageSize / kInitialLrtBytes));
+#endif
 
-  static size_t GetIndex(size_t size);
+  size_t GetIndex(size_t size);
 
   // Free lists of small chunks linked through the first word.
   dchecked_vector<void*> free_lists_;
@@ -400,8 +406,8 @@ class LocalReferenceTable {
     return 1u + WhichPowerOf2(size / kSmallLrtEntries);
   }
 
-  static constexpr size_t MaxSmallTables() {
-    return NumTablesForSize(kPageSize / sizeof(LrtEntry));
+  static size_t MaxSmallTables() {
+    return NumTablesForSize(gPageSize / sizeof(LrtEntry));
   }
 
   LrtEntry* GetEntry(size_t entry_index) const {

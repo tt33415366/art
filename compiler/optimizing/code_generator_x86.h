@@ -89,19 +89,8 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(StringBuilderLength)                    \
   V(StringBuilderToString)                  \
   /* 1.8 */                                 \
-  V(UnsafeGetAndAddInt)                     \
-  V(UnsafeGetAndAddLong)                    \
-  V(UnsafeGetAndSetInt)                     \
-  V(UnsafeGetAndSetLong)                    \
-  V(UnsafeGetAndSetObject)                  \
   V(MethodHandleInvokeExact)                \
-  V(MethodHandleInvoke)                     \
-  /* OpenJDK 11 */                          \
-  V(JdkUnsafeGetAndAddInt)                  \
-  V(JdkUnsafeGetAndAddLong)                 \
-  V(JdkUnsafeGetAndSetInt)                  \
-  V(JdkUnsafeGetAndSetLong)                 \
-  V(JdkUnsafeGetAndSetObject)
+  V(MethodHandleInvoke)
 
 class InvokeRuntimeCallingConvention : public CallingConvention<Register, XmmRegister> {
  public:
@@ -739,7 +728,7 @@ class CodeGeneratorX86 : public CodeGenerator {
   void GenerateExplicitNullCheck(HNullCheck* instruction) override;
 
   void MaybeGenerateInlineCacheCheck(HInstruction* instruction, Register klass);
-  void MaybeIncrementHotness(bool is_frame_entry);
+  void MaybeIncrementHotness(HSuspendCheck* suspend_check, bool is_frame_entry);
 
   // When we don't know the proper offset for the value, we use kPlaceholder32BitOffset.
   // The correct value will be inserted when processing Assembler fixups.

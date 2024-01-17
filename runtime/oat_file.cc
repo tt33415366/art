@@ -622,7 +622,11 @@ bool OatFileBase::Setup(int zip_fd,
   }
 
   DCHECK_GE(static_cast<size_t>(pointer_size), alignof(GcRoot<mirror::Object>));
-  if (!IsAligned<kPageSize>(bss_begin_) ||
+  // In certain cases, ELF can be mapped at an address which is page aligned,
+  // however not aligned to kElfSegmentAlignment. While technically this isn't
+  // correct as per requirement in the ELF header, it has to be supported for
+  // now. See also the comment at ImageHeader::RelocateImageReferences.
+  if (!IsAlignedParam(bss_begin_, MemMap::GetPageSize()) ||
       !IsAlignedParam(bss_methods_, static_cast<size_t>(pointer_size)) ||
       !IsAlignedParam(bss_roots_, static_cast<size_t>(pointer_size)) ||
       !IsAligned<alignof(GcRoot<mirror::Object>)>(bss_end_)) {
@@ -1012,6 +1016,7 @@ bool OatFileBase::Setup(int zip_fd,
     const IndexBssMapping* public_type_bss_mapping;
     const IndexBssMapping* package_type_bss_mapping;
     const IndexBssMapping* string_bss_mapping;
+    const IndexBssMapping* method_type_bss_mapping = nullptr;
     auto read_index_bss_mapping = [&](const char* tag, /*out*/const IndexBssMapping** mapping) {
       return ReadIndexBssMapping(this, &oat, i, dex_file_location, tag, mapping, error_msg);
     };
@@ -1019,7 +1024,8 @@ bool OatFileBase::Setup(int zip_fd,
         !read_index_bss_mapping("type", &type_bss_mapping) ||
         !read_index_bss_mapping("public type", &public_type_bss_mapping) ||
         !read_index_bss_mapping("package type", &package_type_bss_mapping) ||
-        !read_index_bss_mapping("string", &string_bss_mapping)) {
+        !read_index_bss_mapping("string", &string_bss_mapping) ||
+        !read_index_bss_mapping("method type", &method_type_bss_mapping)) {
       return false;
     }
 
@@ -1039,6 +1045,7 @@ bool OatFileBase::Setup(int zip_fd,
                        public_type_bss_mapping,
                        package_type_bss_mapping,
                        string_bss_mapping,
+                       method_type_bss_mapping,
                        class_offsets_pointer,
                        dex_layout_sections);
     oat_dex_files_storage_.push_back(oat_dex_file);
@@ -1417,7 +1424,10 @@ bool DlOpenOatFile::Dlopen(const std::string& elf_filename,
       // Take ownership of the memory used by the shared object. dlopen() does not assume
       // full ownership of this memory and dlclose() shall just remap it as zero pages with
       // PROT_NONE. We need to unmap the memory when destroying this oat file.
-      dlopen_mmaps_.push_back(reservation->TakeReservedMemory(context.max_size));
+      // The reserved memory size is aligned up to kElfSegmentAlignment to ensure
+      // that the next reserved area will be aligned to the value.
+      dlopen_mmaps_.push_back(reservation->TakeReservedMemory(
+          CondRoundUp<kPageSizeAgnostic>(context.max_size, kElfSegmentAlignment)));
     }
 #else
     static_assert(!kIsTargetBuild || kIsTargetLinux || kIsTargetFuchsia,
@@ -2185,6 +2195,7 @@ OatDexFile::OatDexFile(const OatFile* oat_file,
                        const IndexBssMapping* public_type_bss_mapping_data,
                        const IndexBssMapping* package_type_bss_mapping_data,
                        const IndexBssMapping* string_bss_mapping_data,
+                       const IndexBssMapping* method_type_bss_mapping_data,
                        const uint32_t* oat_class_offsets_pointer,
                        const DexLayoutSections* dex_layout_sections)
     : oat_file_(oat_file),
@@ -2201,6 +2212,7 @@ OatDexFile::OatDexFile(const OatFile* oat_file,
       public_type_bss_mapping_(public_type_bss_mapping_data),
       package_type_bss_mapping_(package_type_bss_mapping_data),
       string_bss_mapping_(string_bss_mapping_data),
+      method_type_bss_mapping_(method_type_bss_mapping_data),
       oat_class_offsets_pointer_(oat_class_offsets_pointer),
       lookup_table_(),
       dex_layout_sections_(dex_layout_sections) {
@@ -2273,12 +2285,12 @@ std::unique_ptr<const DexFile> OatDexFile::OpenDexFile(std::string* error_msg) c
   static constexpr bool kVerify = false;
   static constexpr bool kVerifyChecksum = false;
   ArtDexFileLoader dex_file_loader(dex_file_container_, dex_file_location_);
-  return dex_file_loader.Open(dex_file_pointer_ - dex_file_container_->Begin(),
-                              dex_file_location_checksum_,
-                              this,
-                              kVerify,
-                              kVerifyChecksum,
-                              error_msg);
+  return dex_file_loader.OpenOne(dex_file_pointer_ - dex_file_container_->Begin(),
+                                 dex_file_location_checksum_,
+                                 this,
+                                 kVerify,
+                                 kVerifyChecksum,
+                                 error_msg);
 }
 
 uint32_t OatDexFile::GetOatClassOffset(uint16_t class_def_index) const {

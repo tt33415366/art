@@ -206,6 +206,12 @@ static constexpr double kLowMemoryMaxLoadFactor = 0.8;
 static constexpr double kNormalMinLoadFactor = 0.4;
 static constexpr double kNormalMaxLoadFactor = 0.7;
 
+#ifdef ART_PAGE_SIZE_AGNOSTIC
+// Declare the constant as ALWAYS_HIDDEN to ensure it isn't visible from outside libart.so.
+const size_t PageSize::value_ ALWAYS_HIDDEN = GetPageSizeSlow();
+PageSize gPageSize ALWAYS_HIDDEN;
+#endif
+
 Runtime* Runtime::instance_ = nullptr;
 
 struct TraceConfig {
@@ -548,6 +554,12 @@ Runtime::~Runtime() {
   // instance. We rely on a small initialization order issue in Runtime::Start() that requires
   // elements of WellKnownClasses to be null, see b/65500943.
   WellKnownClasses::Clear();
+
+#ifdef ART_PAGE_SIZE_AGNOSTIC
+  // This is added to ensure no test is able to access gPageSize prior to initializing Runtime just
+  // because a Runtime instance was created (and subsequently destroyed) by another test.
+  gPageSize.DisallowAccess();
+#endif
 }
 
 struct AbortState {
@@ -1247,7 +1259,8 @@ void Runtime::InitNonZygoteOrPostFork(
         std::min(static_cast<size_t>(std::thread::hardware_concurrency()), kMaxRuntimeWorkers);
     MutexLock mu(Thread::Current(), *Locks::runtime_thread_pool_lock_);
     CHECK(thread_pool_ == nullptr);
-    thread_pool_.reset(new ThreadPool("Runtime", num_workers, /*create_peers=*/false, kStackSize));
+    thread_pool_.reset(
+        ThreadPool::Create("Runtime", num_workers, /*create_peers=*/false, kStackSize));
     thread_pool_->StartWorkers(Thread::Current());
   }
 
@@ -1492,10 +1505,14 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   // Take a snapshot of the environment at the time the runtime was created, for use by Exec, etc.
   env_snapshot_.TakeSnapshot();
 
+#ifdef ART_PAGE_SIZE_AGNOSTIC
+  gPageSize.AllowAccess();
+#endif
+
   using Opt = RuntimeArgumentMap;
   Opt runtime_options(std::move(runtime_options_in));
   ScopedTrace trace(__FUNCTION__);
-  CHECK_EQ(static_cast<size_t>(sysconf(_SC_PAGE_SIZE)), kPageSize);
+  CHECK_EQ(static_cast<size_t>(sysconf(_SC_PAGE_SIZE)), gPageSize);
 
   // Reload all the flags value (from system properties and device configs).
   ReloadAllFlags(__FUNCTION__);
@@ -1525,11 +1542,11 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   // Note: Don't request an error message. That will lead to a maps dump in the case of failure,
   //       leading to logspam.
   {
-    constexpr uintptr_t kSentinelAddr =
-        RoundDown(static_cast<uintptr_t>(Context::kBadGprBase), kPageSize);
+    const uintptr_t sentinel_addr =
+        RoundDown(static_cast<uintptr_t>(Context::kBadGprBase), gPageSize);
     protected_fault_page_ = MemMap::MapAnonymous("Sentinel fault page",
-                                                 reinterpret_cast<uint8_t*>(kSentinelAddr),
-                                                 kPageSize,
+                                                 reinterpret_cast<uint8_t*>(sentinel_addr),
+                                                 gPageSize,
                                                  PROT_NONE,
                                                  /*low_4gb=*/ true,
                                                  /*reuse=*/ false,
@@ -1537,7 +1554,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
                                                  /*error_msg=*/ nullptr);
     if (!protected_fault_page_.IsValid()) {
       LOG(WARNING) << "Could not reserve sentinel fault page";
-    } else if (reinterpret_cast<uintptr_t>(protected_fault_page_.Begin()) != kSentinelAddr) {
+    } else if (reinterpret_cast<uintptr_t>(protected_fault_page_.Begin()) != sentinel_addr) {
       LOG(WARNING) << "Could not reserve sentinel fault page at the right address.";
       protected_fault_page_.Reset();
     }
@@ -2615,7 +2632,7 @@ void Runtime::VisitConcurrentRoots(RootVisitor* visitor, VisitRootFlags flags) {
   jni_id_manager_->VisitRoots(visitor);
   heap_->VisitAllocationRecords(visitor);
   if (jit_ != nullptr) {
-    jit_->GetCodeCache()->VisitRoots(visitor);
+    jit_->VisitRoots(visitor);
   }
   if ((flags & kVisitRootFlagNewRoots) == 0) {
     // Guaranteed to have no new roots in the constant roots.
@@ -3351,10 +3368,12 @@ RuntimeCallbacks* Runtime::GetRuntimeCallbacks() {
   return callbacks_.get();
 }
 
-// Used to patch boot image method entry point to interpreter bridge.
-class UpdateEntryPointsClassVisitor : public ClassVisitor {
+// Used to update boot image to not use AOT code. This is used when transitioning the runtime to
+// java debuggable. This visitor re-initializes the entry points without using AOT code. This also
+// disables shared hotness counters so the necessary methods can be JITed more efficiently.
+class DeoptimizeBootImageClassVisitor : public ClassVisitor {
  public:
-  explicit UpdateEntryPointsClassVisitor(instrumentation::Instrumentation* instrumentation)
+  explicit DeoptimizeBootImageClassVisitor(instrumentation::Instrumentation* instrumentation)
       : instrumentation_(instrumentation) {}
 
   bool operator()(ObjPtr<mirror::Class> klass) override REQUIRES(Locks::mutator_lock_) {
@@ -3388,6 +3407,9 @@ class UpdateEntryPointsClassVisitor : public ClassVisitor {
         m.ClearPreCompiled();
         instrumentation_->InitializeMethodsCode(&m, /*aot_code=*/ nullptr);
       }
+
+      // Clear MemorySharedAccessFlags so the boot class methods can be JITed better.
+      m.ClearMemorySharedMethod();
     }
     return true;
   }
@@ -3408,7 +3430,7 @@ void Runtime::DeoptimizeBootImage() {
   // If we've already started and we are setting this runtime to debuggable,
   // we patch entry points of methods in boot image to interpreter bridge, as
   // boot image code may be AOT compiled as not debuggable.
-  UpdateEntryPointsClassVisitor visitor(GetInstrumentation());
+  DeoptimizeBootImageClassVisitor visitor(GetInstrumentation());
   GetClassLinker()->VisitClasses(&visitor);
   jit::Jit* jit = GetJit();
   if (jit != nullptr) {
@@ -3517,8 +3539,8 @@ void Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
                                   const uint8_t* map_begin,
                                   const uint8_t* map_end,
                                   const std::string& file_name) {
-  map_begin = AlignDown(map_begin, kPageSize);
-  map_size_bytes = RoundUp(map_size_bytes, kPageSize);
+  map_begin = AlignDown(map_begin, gPageSize);
+  map_size_bytes = RoundUp(map_size_bytes, gPageSize);
 #ifdef ART_TARGET_ANDROID
   // Short-circuit the madvise optimization for background processes. This
   // avoids IO and memory contention with foreground processes, particularly

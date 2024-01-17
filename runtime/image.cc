@@ -69,10 +69,10 @@ ImageHeader::ImageHeader(uint32_t image_reservation_size,
     boot_image_checksum_(boot_image_checksum),
     image_roots_(image_roots),
     pointer_size_(pointer_size) {
-  CHECK_EQ(image_begin, RoundUp(image_begin, kPageSize));
+  CHECK_EQ(image_begin, RoundUp(image_begin, kElfSegmentAlignment));
   if (oat_checksum != 0u) {
-    CHECK_EQ(oat_file_begin, RoundUp(oat_file_begin, kPageSize));
-    CHECK_EQ(oat_data_begin, RoundUp(oat_data_begin, kPageSize));
+    CHECK_EQ(oat_file_begin, RoundUp(oat_file_begin, kElfSegmentAlignment));
+    CHECK_EQ(oat_data_begin, RoundUp(oat_data_begin, kElfSegmentAlignment));
     CHECK_LT(image_roots, oat_file_begin);
     CHECK_LE(oat_file_begin, oat_data_begin);
     CHECK_LT(oat_data_begin, oat_data_end);
@@ -85,7 +85,27 @@ ImageHeader::ImageHeader(uint32_t image_reservation_size,
 }
 
 void ImageHeader::RelocateImageReferences(int64_t delta) {
-  CHECK_ALIGNED(delta, kPageSize) << "relocation delta must be page aligned";
+  // App Images can be relocated to a page aligned address.
+  // Unlike with the Boot Image, for which the memory is reserved in advance of
+  // loading and is aligned to kElfSegmentAlignment, the App Images can be mapped
+  // without reserving memory i.e. via direct file mapping in which case the
+  // memory range is aligned by the kernel and the only guarantee is that it is
+  // aligned to the page sizes.
+  //
+  // NOTE: While this might be less than alignment required via information in
+  //       the ELF header, it should be sufficient in practice as the only reason
+  //       for the ELF segment alignment to be more than one page size is the
+  //       compatibility of the ELF with system configurations that use larger
+  //       page size.
+  //
+  //       Adding preliminary memory reservation would introduce certain overhead.
+  //
+  //       However, technically the alignment requirement isn't fulfilled and that
+  //       might be worth addressing even if it adds certain overhead. This will have
+  //       to be done in alignment with the dynamic linker's ELF loader as
+  //       otherwise inconsistency would still be possible e.g. when using
+  //       `dlopen`-like calls to load OAT files.
+  CHECK_ALIGNED_PARAM(delta, gPageSize) << "relocation delta must be page aligned";
   oat_file_begin_ += delta;
   oat_data_begin_ += delta;
   oat_data_end_ += delta;
@@ -95,7 +115,7 @@ void ImageHeader::RelocateImageReferences(int64_t delta) {
 }
 
 void ImageHeader::RelocateBootImageReferences(int64_t delta) {
-  CHECK_ALIGNED(delta, kPageSize) << "relocation delta must be page aligned";
+  CHECK_ALIGNED(delta, kElfSegmentAlignment) << "relocation delta must be Elf segment aligned";
   DCHECK_EQ(boot_image_begin_ != 0u, boot_image_size_ != 0u);
   if (boot_image_begin_ != 0u) {
     boot_image_begin_ += delta;
@@ -108,8 +128,8 @@ void ImageHeader::RelocateBootImageReferences(int64_t delta) {
 bool ImageHeader::IsAppImage() const {
   // Unlike boot image and boot image extensions which include address space for
   // oat files in their reservation size, app images are loaded separately from oat
-  // files and their reservation size is the image size rounded up to full page.
-  return image_reservation_size_ == RoundUp(image_size_, kPageSize);
+  // files and their reservation size is the image size rounded up to Elf alignment.
+  return image_reservation_size_ == RoundUp(image_size_, kElfSegmentAlignment);
 }
 
 uint32_t ImageHeader::GetImageSpaceCount() const {
@@ -127,7 +147,7 @@ bool ImageHeader::IsValid() const {
   if (memcmp(version_, kImageVersion, sizeof(kImageVersion)) != 0) {
     return false;
   }
-  if (!IsAligned<kPageSize>(image_reservation_size_)) {
+  if (!IsAligned<kElfSegmentAlignment>(image_reservation_size_)) {
     return false;
   }
   // Unsigned so wraparound is well defined.
@@ -219,7 +239,14 @@ bool ImageHeader::Block::Decompress(uint8_t* out_ptr,
       if (!ok) {
         return false;
       }
-      CHECK_EQ(decompressed_size, image_size_);
+      if (decompressed_size != image_size_) {
+        if (error_msg != nullptr) {
+          // Maybe some disk / memory corruption, just bail.
+          *error_msg = (std::ostringstream() << "Decompressed size different than image size: "
+                                             << decompressed_size << ", and " << image_size_).str();
+        }
+        return false;
+      }
       break;
     }
     default: {
@@ -250,48 +277,36 @@ const char* ImageHeader::GetImageSectionName(ImageSections index) {
   }
 }
 
-// If `image_storage_mode` is compressed, compress data from `source`
-// into `storage`, and return an array pointing to the compressed.
-// If the mode is uncompressed, just return an array pointing to `source`.
-static ArrayRef<const uint8_t> MaybeCompressData(ArrayRef<const uint8_t> source,
-                                                 ImageHeader::StorageMode image_storage_mode,
-                                                 /*out*/ dchecked_vector<uint8_t>* storage) {
+// Compress data from `source` into `storage`.
+static bool CompressData(ArrayRef<const uint8_t> source,
+                         ImageHeader::StorageMode image_storage_mode,
+                         /*out*/ dchecked_vector<uint8_t>* storage) {
   const uint64_t compress_start_time = NanoTime();
 
-  switch (image_storage_mode) {
-    case ImageHeader::kStorageModeLZ4: {
-      storage->resize(LZ4_compressBound(source.size()));
-      size_t data_size = LZ4_compress_default(
-          reinterpret_cast<char*>(const_cast<uint8_t*>(source.data())),
-          reinterpret_cast<char*>(storage->data()),
-          source.size(),
-          storage->size());
-      storage->resize(data_size);
-      break;
-    }
-    case ImageHeader::kStorageModeLZ4HC: {
-      // Bound is same as non HC.
-      storage->resize(LZ4_compressBound(source.size()));
-      size_t data_size = LZ4_compress_HC(
-          reinterpret_cast<const char*>(const_cast<uint8_t*>(source.data())),
-          reinterpret_cast<char*>(storage->data()),
-          source.size(),
-          storage->size(),
-          LZ4HC_CLEVEL_MAX);
-      storage->resize(data_size);
-      break;
-    }
-    case ImageHeader::kStorageModeUncompressed: {
-      return source;
-    }
-    default: {
-      LOG(FATAL) << "Unsupported";
-      UNREACHABLE();
-    }
+  // Bound is same for both LZ4 and LZ4HC.
+  storage->resize(LZ4_compressBound(source.size()));
+  size_t data_size = 0;
+  if (image_storage_mode == ImageHeader::kStorageModeLZ4) {
+    data_size = LZ4_compress_default(
+        reinterpret_cast<char*>(const_cast<uint8_t*>(source.data())),
+        reinterpret_cast<char*>(storage->data()),
+        source.size(),
+        storage->size());
+  } else {
+    DCHECK_EQ(image_storage_mode, ImageHeader::kStorageModeLZ4HC);
+    data_size = LZ4_compress_HC(
+        reinterpret_cast<const char*>(const_cast<uint8_t*>(source.data())),
+        reinterpret_cast<char*>(storage->data()),
+        source.size(),
+        storage->size(),
+        LZ4HC_CLEVEL_MAX);
   }
 
-  DCHECK(image_storage_mode == ImageHeader::kStorageModeLZ4 ||
-         image_storage_mode == ImageHeader::kStorageModeLZ4HC);
+  if (data_size == 0) {
+    return false;
+  }
+  storage->resize(data_size);
+
   VLOG(image) << "Compressed from " << source.size() << " to " << storage->size() << " in "
               << PrettyDuration(NanoTime() - compress_start_time);
   if (kIsDebugBuild) {
@@ -312,7 +327,7 @@ static ArrayRef<const uint8_t> MaybeCompressData(ArrayRef<const uint8_t> source,
     CHECK_EQ(decompressed_size, decompressed.size());
     CHECK_EQ(memcmp(source.data(), decompressed.data(), source.size()), 0) << image_storage_mode;
   }
-  return ArrayRef<const uint8_t>(*storage);
+  return true;
 }
 
 bool ImageHeader::WriteData(const ImageFileGuard& image_file,
@@ -353,10 +368,16 @@ bool ImageHeader::WriteData(const ImageFileGuard& image_file,
   for (const std::pair<uint32_t, uint32_t> block : block_sources) {
     ArrayRef<const uint8_t> raw_image_data(data + block.first, block.second);
     dchecked_vector<uint8_t> compressed_data;
-    ArrayRef<const uint8_t> image_data =
-        MaybeCompressData(raw_image_data, image_storage_mode, &compressed_data);
-
-    if (!is_compressed) {
+    ArrayRef<const uint8_t> image_data;
+    if (is_compressed) {
+      if (!CompressData(raw_image_data, image_storage_mode, &compressed_data)) {
+        *error_msg = "Error compressing data for " +
+            image_file->GetPath() + ": " + std::string(strerror(errno));
+        return false;
+      }
+      image_data = ArrayRef<const uint8_t>(compressed_data);
+    } else {
+      image_data = raw_image_data;
       // For uncompressed, preserve alignment since the image will be directly mapped.
       out_offset = block.first;
     }
@@ -402,7 +423,7 @@ bool ImageHeader::WriteData(const ImageFileGuard& image_file,
   // possibly compressed image.
   ImageSection& bitmap_section = GetImageSection(ImageHeader::kSectionImageBitmap);
   // Align up since data size may be unaligned if the image is compressed.
-  out_offset = RoundUp(out_offset, kPageSize);
+  out_offset = RoundUp(out_offset, kElfSegmentAlignment);
   bitmap_section = ImageSection(out_offset, bitmap_section.Size());
 
   if (!image_file->PwriteFully(bitmap_data,

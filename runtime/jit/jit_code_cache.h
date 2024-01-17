@@ -17,6 +17,7 @@
 #ifndef ART_RUNTIME_JIT_JIT_CODE_CACHE_H_
 #define ART_RUNTIME_JIT_JIT_CODE_CACHE_H_
 
+#include <cstdint>
 #include <iosfwd>
 #include <memory>
 #include <set>
@@ -181,15 +182,19 @@ class ZygoteMap {
 class JitCodeCache {
  public:
   static constexpr size_t kMaxCapacity = 64 * MB;
-  // Put the default to a very low amount for debug builds to stress the code cache
-  // collection. It should be at least two pages, however, as the storage is split
-  // into data and code sections with sizes that should be aligned to page size each
-  // as that's the unit mspaces use. See also: JitMemoryRegion::Initialize.
-  static constexpr size_t kInitialCapacity = std::max(kIsDebugBuild ? 8 * KB : 64 * KB,
-                                                      2 * kPageSize);
 
-  // By default, do not GC until reaching four times the initial capacity.
-  static constexpr size_t kReservedCapacity = kInitialCapacity * 4;
+  // Default initial capacity of the JIT code cache.
+  static size_t GetInitialCapacity() {
+    // This function is called during static initialization
+    // when gPageSize might not be available yet.
+    const size_t page_size = GetPageSizeSlow();
+
+    // Put the default to a very low amount for debug builds to stress the code cache
+    // collection. It should be at least two pages, however, as the storage is split
+    // into data and code sections with sizes that should be aligned to page size each
+    // as that's the unit mspaces use. See also: JitMemoryRegion::Initialize.
+    return std::max(kIsDebugBuild ? 8 * KB : 64 * KB, 2 * page_size);
+  }
 
   // Create the code cache with a code + data capacity equal to "capacity", error message is passed
   // in the out arg error_msg.
@@ -331,9 +336,11 @@ class JitCodeCache {
   void* MoreCore(const void* mspace, intptr_t increment);
 
   // Adds to `methods` all profiled methods which are part of any of the given dex locations.
+  // Saves inline caches for a method if its hotness meets `inline_cache_threshold` after being
+  // baseline compiled.
   void GetProfiledMethods(const std::set<std::string>& dex_base_locations,
-                          std::vector<ProfileMethodInfo>& methods)
-      REQUIRES(!Locks::jit_lock_)
+                          std::vector<ProfileMethodInfo>& methods,
+                          uint16_t inline_cache_threshold) REQUIRES(!Locks::jit_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   void InvalidateAllCompiledCode()
@@ -416,20 +423,6 @@ class JitCodeCache {
                               Thread* self)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  void VisitRoots(RootVisitor* visitor);
-
-  // Return whether `method` is being compiled with the given mode.
-  bool IsMethodBeingCompiled(ArtMethod* method, CompilationKind compilation_kind)
-      REQUIRES(Locks::jit_lock_);
-
-  // Remove `method` from the list of methods meing compiled with the given mode.
-  void RemoveMethodBeingCompiled(ArtMethod* method, CompilationKind compilation_kind)
-      REQUIRES(Locks::jit_lock_);
-
-  // Record that `method` is being compiled with the given mode.
-  void AddMethodBeingCompiled(ArtMethod* method, CompilationKind compilation_kind)
-      REQUIRES(Locks::jit_lock_);
-
  private:
   JitCodeCache();
 
@@ -490,12 +483,7 @@ class JitCodeCache {
   // Return whether the code cache's capacity is at its maximum.
   bool IsAtMaxCapacity() const REQUIRES(Locks::jit_lock_);
 
-  // Return whether we should do a full collection given the current state of the cache.
-  bool ShouldDoFullCollection()
-      REQUIRES(Locks::jit_lock_)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  void DoCollection(Thread* self, bool collect_profiling_info)
+  void DoCollection(Thread* self)
       REQUIRES(!Locks::jit_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -515,13 +503,14 @@ class JitCodeCache {
     return shared_region_.IsInDataSpace(ptr);
   }
 
+  size_t GetReservedCapacity() {
+    return reserved_capacity_;
+  }
+
   bool IsWeakAccessEnabled(Thread* self) const;
   void WaitUntilInlineCacheAccessible(Thread* self)
       REQUIRES(!Locks::jit_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
-
-  // Return whether `method` is being compiled in any mode.
-  bool IsMethodBeingCompiled(ArtMethod* method) REQUIRES(Locks::jit_lock_);
 
   class JniStubKey;
   class JniStubData;
@@ -533,6 +522,12 @@ class JitCodeCache {
 
   // Condition to wait on for accessing inline caches.
   ConditionVariable inline_cache_cond_ GUARDED_BY(Locks::jit_lock_);
+
+  // Reserved capacity of the JIT code cache.
+  const size_t reserved_capacity_;
+
+  // By default, do not GC until reaching four times the initial capacity.
+  static constexpr size_t kReservedCapacityMultiplier = 4;
 
   // -------------- JIT memory regions ------------------------------------- //
 
@@ -568,11 +563,6 @@ class JitCodeCache {
   // ProfilingInfo objects we have allocated.
   SafeMap<ArtMethod*, ProfilingInfo*> profiling_infos_ GUARDED_BY(Locks::jit_lock_);
 
-  // Methods we are currently compiling, one set for each kind of compilation.
-  std::set<ArtMethod*> current_optimized_compilations_ GUARDED_BY(Locks::jit_lock_);
-  std::set<ArtMethod*> current_osr_compilations_ GUARDED_BY(Locks::jit_lock_);
-  std::set<ArtMethod*> current_baseline_compilations_ GUARDED_BY(Locks::jit_lock_);
-
   // Methods that the zygote has compiled and can be shared across processes
   // forked from the zygote.
   ZygoteMap zygote_map_;
@@ -587,9 +577,6 @@ class JitCodeCache {
 
   // Bitmap for collecting code and data.
   std::unique_ptr<CodeCacheBitmap> live_bitmap_;
-
-  // Whether the last collection round increased the code cache.
-  bool last_collection_increased_code_cache_ GUARDED_BY(Locks::jit_lock_);
 
   // Whether we can do garbage collection. Not 'const' as tests may override this.
   bool garbage_collect_code_ GUARDED_BY(Locks::jit_lock_);
@@ -617,7 +604,6 @@ class JitCodeCache {
   // Histograms for keeping track of profiling info statistics.
   Histogram<uint64_t> histogram_profiling_info_memory_use_ GUARDED_BY(Locks::jit_lock_);
 
-  friend class art::JitJniStubTestHelper;
   friend class ScopedCodeCacheWrite;
   friend class MarkCodeClosure;
 

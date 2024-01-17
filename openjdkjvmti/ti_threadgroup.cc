@@ -169,23 +169,28 @@ static void GetThreads(art::Handle<art::mirror::Object> thread_group,
                        std::vector<art::ObjPtr<art::mirror::Object>>* thread_peers)
     REQUIRES_SHARED(art::Locks::mutator_lock_) REQUIRES(!art::Locks::thread_list_lock_) {
   CHECK(thread_group != nullptr);
-  std::list<art::Thread*> thread_list;
-  {
-    art::MutexLock mu(art::Thread::Current(), *art::Locks::thread_list_lock_);
-    thread_list = art::Runtime::Current()->GetThreadList()->GetList();
+
+  art::MutexLock mu(art::Thread::Current(), *art::Locks::thread_list_lock_);
+  std::list<art::Thread*> thread_list = art::Runtime::Current()->GetThreadList()->GetList();
+  // We have to be careful with threads exiting while we build this list.
+  std::vector<art::ThreadExitFlag> tefs(thread_list.size());
+  auto i = tefs.begin();
+  for (art::Thread* thd : thread_list) {
+    thd->NotifyOnThreadExit(&*i++);
   }
+  DCHECK(i == tefs.end());
+
+  i = tefs.begin();
   for (art::Thread* t : thread_list) {
-    if (t->IsStillStarting()) {
-      continue;
-    }
-    art::ObjPtr<art::mirror::Object> peer = t->GetPeerFromOtherThread();
-    if (peer == nullptr) {
-      continue;
-    }
-    if (IsInDesiredThreadGroup(thread_group, peer)) {
+    art::ThreadExitFlag* tef = &*i++;
+    art::ObjPtr<art::mirror::Object> peer = t->LockedGetPeerFromOtherThread(tef);
+    if (peer != nullptr && !tef->HasExited() && !t->IsStillStarting() &&
+        IsInDesiredThreadGroup(thread_group, peer)) {
       thread_peers->push_back(peer);
     }
+    t->UnregisterThreadExitFlag(tef);
   }
+  DCHECK(i == tefs.end());
 }
 
 static void GetChildThreadGroups(art::Handle<art::mirror::Object> thread_group,

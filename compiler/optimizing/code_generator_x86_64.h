@@ -87,19 +87,8 @@ static constexpr FloatRegister non_volatile_xmm_regs[] = { XMM12, XMM13, XMM14, 
   V(StringBuilderLength)                       \
   V(StringBuilderToString)                     \
   /* 1.8 */                                    \
-  V(UnsafeGetAndAddInt)                        \
-  V(UnsafeGetAndAddLong)                       \
-  V(UnsafeGetAndSetInt)                        \
-  V(UnsafeGetAndSetLong)                       \
-  V(UnsafeGetAndSetObject)                     \
   V(MethodHandleInvokeExact)                   \
-  V(MethodHandleInvoke)                        \
-  /* OpenJDK 11 */                             \
-  V(JdkUnsafeGetAndAddInt)                     \
-  V(JdkUnsafeGetAndAddLong)                    \
-  V(JdkUnsafeGetAndSetInt)                     \
-  V(JdkUnsafeGetAndSetLong)                    \
-  V(JdkUnsafeGetAndSetObject)
+  V(MethodHandleInvoke)
 
 class InvokeRuntimeCallingConvention : public CallingConvention<Register, FloatRegister> {
  public:
@@ -534,6 +523,7 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   Label* NewTypeBssEntryPatch(HLoadClass* load_class);
   void RecordBootImageStringPatch(HLoadString* load_string);
   Label* NewStringBssEntryPatch(HLoadString* load_string);
+  Label* NewMethodTypeBssEntryPatch(HLoadMethodType* load_method_type);
   void RecordBootImageJniEntrypointPatch(HInvokeStaticOrDirect* invoke);
   Label* NewJitRootStringPatch(const DexFile& dex_file,
                                dex::StringIndex string_index,
@@ -705,7 +695,7 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   void GenerateExplicitNullCheck(HNullCheck* instruction) override;
   void MaybeGenerateInlineCacheCheck(HInstruction* instruction, CpuRegister cls);
 
-  void MaybeIncrementHotness(bool is_frame_entry);
+  void MaybeIncrementHotness(HSuspendCheck* suspend_check, bool is_frame_entry);
 
   static void BlockNonVolatileXmmRegisters(LocationSummary* locations);
 
@@ -746,6 +736,8 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   ArenaDeque<PatchInfo<Label>> boot_image_string_patches_;
   // PC-relative String patch info for kBssEntry.
   ArenaDeque<PatchInfo<Label>> string_bss_entry_patches_;
+  // PC-relative MethodType patch info for kBssEntry.
+  ArenaDeque<PatchInfo<Label>> method_type_bss_entry_patches_;
   // PC-relative method patch info for kBootImageLinkTimePcRelative+kCallCriticalNative.
   ArenaDeque<PatchInfo<Label>> boot_image_jni_entrypoint_patches_;
   // PC-relative patch info for IntrinsicObjects for the boot image,
