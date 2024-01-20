@@ -76,9 +76,6 @@ static constexpr int32_t kFClassNaNMinValue = 0x100;
   V(StringGetCharsNoCheck)                      \
   V(StringStringIndexOf)                        \
   V(StringStringIndexOfAfter)                   \
-  V(StringNewStringFromBytes)                   \
-  V(StringNewStringFromChars)                   \
-  V(StringNewStringFromString)                  \
   V(StringBufferAppend)                         \
   V(StringBufferLength)                         \
   V(StringBufferToString)                       \
@@ -94,7 +91,6 @@ static constexpr int32_t kFClassNaNMinValue = 0x100;
   V(StringBuilderAppendDouble)                  \
   V(StringBuilderLength)                        \
   V(StringBuilderToString)                      \
-  V(ThreadInterrupted)                          \
   V(CRC32Update)                                \
   V(CRC32UpdateBytes)                           \
   V(CRC32UpdateByteBuffer)                      \
@@ -642,7 +638,7 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
 
   void GenerateMemoryBarrier(MemBarrierKind kind);
 
-  void MaybeIncrementHotness(HSuspendCheck* suspend_check, bool is_frame_entry);
+  void MaybeIncrementHotness(bool is_frame_entry);
 
   bool CanUseImplicitSuspendCheck() const;
 

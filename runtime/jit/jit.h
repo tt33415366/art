@@ -35,7 +35,7 @@
 #include "obj_ptr.h"
 #include "thread_pool.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class ArtMethod;
 class ClassLinker;
@@ -200,7 +200,6 @@ class JitCompilerInterface {
   virtual void ParseCompilerOptions() = 0;
   virtual bool IsBaselineCompiler() const = 0;
   virtual void SetDebuggableCompilerOption(bool value) = 0;
-  virtual uint32_t GetInlineMaxCodeUnits() const = 0;
 
   virtual std::vector<uint8_t> PackElfFileForJIT(ArrayRef<const JITCodeEntry*> elf_files,
                                                  ArrayRef<const void*> removed_symbols,
@@ -309,8 +308,10 @@ class Jit {
   // Create JIT itself.
   static std::unique_ptr<Jit> Create(JitCodeCache* code_cache, JitOptions* options);
 
-  bool CompileMethod(ArtMethod* method, Thread* self, CompilationKind compilation_kind, bool prejit)
-      REQUIRES_SHARED(Locks::mutator_lock_);
+  EXPORT bool CompileMethod(ArtMethod* method,
+                            Thread* self,
+                            CompilationKind compilation_kind,
+                            bool prejit) REQUIRES_SHARED(Locks::mutator_lock_);
 
   void VisitRoots(RootVisitor* visitor);
 
@@ -371,7 +372,7 @@ class Jit {
   }
 
   // Wait until there is no more pending compilation tasks.
-  void WaitForCompilationToFinish(Thread* self);
+  EXPORT void WaitForCompilationToFinish(Thread* self);
 
   // Profiling methods.
   void MethodEntered(Thread* thread, ArtMethod* method)
@@ -412,7 +413,7 @@ class Jit {
   void DumpTypeInfoForLoadedTypes(ClassLinker* linker);
 
   // Return whether we should try to JIT compiled code as soon as an ArtMethod is invoked.
-  bool JitAtFirstUse();
+  EXPORT bool JitAtFirstUse();
 
   // Return whether we can invoke JIT code for `method`.
   bool CanInvokeCompiledCode(ArtMethod* method);
@@ -438,16 +439,16 @@ class Jit {
   }
 
   // Stop the JIT by waiting for all current compilations and enqueued compilations to finish.
-  void Stop();
+  EXPORT void Stop();
 
   // Start JIT threads.
-  void Start();
+  EXPORT void Start();
 
   // Transition to a child state.
-  void PostForkChildAction(bool is_system_server, bool is_zygote);
+  EXPORT void PostForkChildAction(bool is_system_server, bool is_zygote);
 
   // Prepare for forking.
-  void PreZygoteFork();
+  EXPORT void PreZygoteFork();
 
   // Adjust state after forking.
   void PostZygoteFork();
@@ -540,7 +541,7 @@ class Jit {
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   // JIT compiler
-  static JitCompilerInterface* jit_compiler_;
+  EXPORT static JitCompilerInterface* jit_compiler_;
 
   // JIT resources owned by runtime.
   jit::JitCodeCache* const code_cache_;
@@ -588,7 +589,7 @@ class Jit {
 };
 
 // Helper class to stop the JIT for a given scope. This will wait for the JIT to quiesce.
-class ScopedJitSuspend {
+class EXPORT ScopedJitSuspend {
  public:
   ScopedJitSuspend();
   ~ScopedJitSuspend();
