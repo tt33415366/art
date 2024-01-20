@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef ART_RUNTIME_ELF_FILE_H_
-#define ART_RUNTIME_ELF_FILE_H_
+#ifndef ART_RUNTIME_OAT_ELF_FILE_H_
+#define ART_RUNTIME_OAT_ELF_FILE_H_
 
 #include <memory>
 #include <string>
@@ -24,7 +24,7 @@
 #include "base/os.h"
 #include "elf/elf_utils.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class MemMap;
 
@@ -110,4 +110,4 @@ class ElfFile {
 
 }  // namespace art
 
-#endif  // ART_RUNTIME_ELF_FILE_H_
+#endif  // ART_RUNTIME_OAT_ELF_FILE_H_

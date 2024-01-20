@@ -14,18 +14,19 @@
  * limitations under the License.
  */
 
-#ifndef ART_RUNTIME_ELF_FILE_IMPL_H_
-#define ART_RUNTIME_ELF_FILE_IMPL_H_
+#ifndef ART_RUNTIME_OAT_ELF_FILE_IMPL_H_
+#define ART_RUNTIME_OAT_ELF_FILE_IMPL_H_
 
 #include <map>
 #include <memory>
 #include <type_traits>
 #include <vector>
 
+#include "base/macros.h"
 #include "base/mem_map.h"
 #include "elf/elf_utils.h"
 
-namespace art {
+namespace art HIDDEN {
 
 template <typename ElfTypes>
 class ElfFileImpl {
@@ -221,4 +222,4 @@ class ElfFileImpl {
 
 }  // namespace art
 
-#endif  // ART_RUNTIME_ELF_FILE_IMPL_H_
+#endif  // ART_RUNTIME_OAT_ELF_FILE_IMPL_H_
