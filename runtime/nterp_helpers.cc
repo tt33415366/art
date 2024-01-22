@@ -20,7 +20,7 @@
 #include "entrypoints/quick/callee_save_frame.h"
 #include "interpreter/mterp/nterp.h"
 #include "nterp_helpers.h"
-#include "oat_quick_method_header.h"
+#include "oat/oat_quick_method_header.h"
 #include "quick/quick_method_frame_info.h"
 
 namespace art {
@@ -272,8 +272,58 @@ bool CanMethodUseNterp(ArtMethod* method, InstructionSet isa) {
         case Instruction::CONST_WIDE_32:
         case Instruction::CONST_WIDE:
         case Instruction::CONST_WIDE_HIGH16:
+        case Instruction::CONST_STRING:
+        case Instruction::CONST_STRING_JUMBO:
+        case Instruction::CONST_CLASS:
+        case Instruction::MONITOR_ENTER:
+        case Instruction::MONITOR_EXIT:
+        case Instruction::ARRAY_LENGTH:
+        case Instruction::FILLED_NEW_ARRAY:
+        case Instruction::FILLED_NEW_ARRAY_RANGE:
+        case Instruction::FILL_ARRAY_DATA:
+        case Instruction::THROW:
+        case Instruction::AGET:
+        case Instruction::AGET_WIDE:
+        case Instruction::AGET_OBJECT:
+        case Instruction::AGET_BOOLEAN:
+        case Instruction::AGET_BYTE:
+        case Instruction::AGET_CHAR:
+        case Instruction::AGET_SHORT:
+        case Instruction::APUT:
+        case Instruction::APUT_WIDE:
+        case Instruction::APUT_OBJECT:
+        case Instruction::APUT_BOOLEAN:
+        case Instruction::APUT_BYTE:
+        case Instruction::APUT_CHAR:
+        case Instruction::APUT_SHORT:
+        case Instruction::IGET:
+        case Instruction::IGET_WIDE:
+        case Instruction::IGET_OBJECT:
+        case Instruction::IGET_BOOLEAN:
+        case Instruction::IGET_BYTE:
+        case Instruction::IGET_CHAR:
+        case Instruction::IGET_SHORT:
+        case Instruction::IPUT:
+        case Instruction::IPUT_WIDE:
+        case Instruction::IPUT_OBJECT:
+        case Instruction::IPUT_BOOLEAN:
+        case Instruction::IPUT_BYTE:
+        case Instruction::IPUT_CHAR:
+        case Instruction::IPUT_SHORT:
+        case Instruction::SGET:
+        case Instruction::SGET_WIDE:
+        case Instruction::SGET_OBJECT:
+        case Instruction::SGET_BOOLEAN:
+        case Instruction::SGET_BYTE:
+        case Instruction::SGET_CHAR:
+        case Instruction::SGET_SHORT:
         case Instruction::SPUT:
+        case Instruction::SPUT_WIDE:
         case Instruction::SPUT_OBJECT:
+        case Instruction::SPUT_BOOLEAN:
+        case Instruction::SPUT_BYTE:
+        case Instruction::SPUT_CHAR:
+        case Instruction::SPUT_SHORT:
         case Instruction::INVOKE_VIRTUAL:
         case Instruction::INVOKE_SUPER:
         case Instruction::INVOKE_DIRECT:
@@ -388,6 +438,12 @@ bool CanMethodUseNterp(ArtMethod* method, InstructionSet isa) {
         case Instruction::SHL_INT_LIT8:
         case Instruction::SHR_INT_LIT8:
         case Instruction::USHR_INT_LIT8:
+        case Instruction::INVOKE_POLYMORPHIC:
+        case Instruction::INVOKE_POLYMORPHIC_RANGE:
+        case Instruction::INVOKE_CUSTOM:
+        case Instruction::INVOKE_CUSTOM_RANGE:
+        case Instruction::CONST_METHOD_HANDLE:
+        case Instruction::CONST_METHOD_TYPE:
           continue;
         default:
           return false;

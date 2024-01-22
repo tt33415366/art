@@ -17,14 +17,16 @@
 #ifndef ART_RUNTIME_ART_FIELD_H_
 #define ART_RUNTIME_ART_FIELD_H_
 
+#include "base/macros.h"
 #include "dex/modifiers.h"
 #include "dex/primitive.h"
 #include "gc_root.h"
 #include "obj_ptr.h"
 #include "offsets.h"
 #include "read_barrier_option.h"
+#include "verify_object.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class DexFile;
 template<typename T> class LengthPrefixedArray;
@@ -38,7 +40,7 @@ class Object;
 class String;
 }  // namespace mirror
 
-class ArtField final {
+class EXPORT ArtField final {
  public:
   // Visit declaring classes of all the art-fields in 'array' that reside
   // in [start_boundary, end_boundary).
@@ -198,7 +200,9 @@ class ArtField final {
   // Returns an instance field with this offset in the given class or null if not found.
   // If kExactOffset is true then we only find the matching offset, not the field containing the
   // offset.
-  template <bool kExactOffset = true>
+  template <bool kExactOffset = true,
+            VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags,
+            ReadBarrierOption kReadBarrierOption = kWithReadBarrier>
   static ArtField* FindInstanceFieldWithOffset(ObjPtr<mirror::Class> klass, uint32_t field_offset)
       REQUIRES_SHARED(Locks::mutator_lock_);
 

@@ -50,6 +50,9 @@ enum class MethodCompilationStat {
   kRemovedDeadPhi,
   kRemovedTry,
   kRemovedNullCheck,
+  kRemovedVolatileLoad,
+  kRemovedVolatileStore,
+  kRemovedMonitorOp,
   kNotCompiledSkipped,
   kNotCompiledInvalidBytecode,
   kNotCompiledThrowCatchLoop,
@@ -131,8 +134,6 @@ enum class MethodCompilationStat {
   kPartialLSEPossible,
   kPartialStoreRemoved,
   kPartialAllocationMoved,
-  kPredicatedLoadAdded,
-  kPredicatedStoreAdded,
   kDevirtualized,
   kLastStat
 };

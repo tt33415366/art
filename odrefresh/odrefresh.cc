@@ -107,8 +107,8 @@ using ::android::base::Split;
 using ::android::base::StartsWith;
 using ::android::base::StringPrintf;
 using ::android::base::Timer;
-using ::android::modules::sdklevel::IsAtLeastT;
 using ::android::modules::sdklevel::IsAtLeastU;
+using ::android::modules::sdklevel::IsAtLeastV;
 using ::art::tools::CmdlineBuilder;
 
 // Name of cache info file in the ART Apex artifact cache.
@@ -489,7 +489,7 @@ Result<void> AddCacheInfoFd(/*inout*/ CmdlineBuilder& args,
                             const std::string& cache_info_filename) {
   std::unique_ptr<File> cache_info_file(OS::OpenFileForReading(cache_info_filename.c_str()));
   if (cache_info_file == nullptr) {
-    return ErrnoErrorf("Failed to open a cache info file '{}'", cache_info_file);
+    return ErrnoErrorf("Failed to open a cache info file '{}'", cache_info_filename);
   }
 
   args.Add("--cache-info-fd=%d", cache_info_file->Fd());
@@ -1100,19 +1100,17 @@ WARN_UNUSED bool OnDeviceRefresh::CheckSystemPropertiesHaveNotChanged(
 WARN_UNUSED bool OnDeviceRefresh::CheckBuildUserfaultFdGc() const {
   bool build_enable_uffd_gc =
       config_.GetSystemProperties().GetBool("ro.dalvik.vm.enable_uffd_gc", /*default_value=*/false);
-  bool is_at_least_t = IsAtLeastT();
+  bool is_at_most_u = !IsAtLeastV();
   bool kernel_supports_uffd = KernelSupportsUffd();
   if (!art::odrefresh::CheckBuildUserfaultFdGc(
-          build_enable_uffd_gc, is_at_least_t, kernel_supports_uffd)) {
-    // Assuming the system property reflects how the dexpreopted boot image was
-    // compiled, and it doesn't agree with runtime support, we need to recompile
-    // it. This happens if we're running on S, T or U, or if the system image
-    // was built with a wrong PRODUCT_ENABLE_UFFD_GC flag.
-    LOG(INFO) << ART_FORMAT(
-        "Userfaultfd GC check failed (build_enable_uffd_gc: {}, is_at_least_t: {}, "
+          build_enable_uffd_gc, is_at_most_u, kernel_supports_uffd)) {
+    // Normally, this should not happen. If this happens, the system image was probably built with a
+    // wrong PRODUCT_ENABLE_UFFD_GC flag.
+    LOG(WARNING) << ART_FORMAT(
+        "Userfaultfd GC check failed (build_enable_uffd_gc: {}, is_at_most_u: {}, "
         "kernel_supports_uffd: {}).",
         build_enable_uffd_gc,
-        is_at_least_t,
+        is_at_most_u,
         kernel_supports_uffd);
     return false;
   }

@@ -24,7 +24,7 @@
 #include "gc/collector/mark_compact.h"
 #include "jit/jit_memory_region.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace gc {
 namespace accounting {
 
@@ -47,7 +47,7 @@ Bitmap::~Bitmap() {
 
 MemMap Bitmap::AllocateMemMap(const std::string& name, size_t num_bits) {
   const size_t bitmap_size = RoundUp(
-      RoundUp(num_bits, kBitsPerBitmapWord) / kBitsPerBitmapWord * sizeof(uintptr_t), kPageSize);
+      RoundUp(num_bits, kBitsPerBitmapWord) / kBitsPerBitmapWord * sizeof(uintptr_t), gPageSize);
   std::string error_msg;
   MemMap mem_map = MemMap::MapAnonymous(name.c_str(),
                                         bitmap_size,

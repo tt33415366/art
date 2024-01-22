@@ -41,12 +41,12 @@
 #include "base/utils.h"
 #include "class_table.h"
 #include "gc/accounting/space_bitmap.h"
-#include "image.h"
 #include "intern_table.h"
 #include "lock_word.h"
 #include "mirror/dex_cache.h"
-#include "oat.h"
-#include "oat_file.h"
+#include "oat/image.h"
+#include "oat/oat.h"
+#include "oat/oat_file.h"
 #include "obj_ptr.h"
 
 namespace art {
@@ -594,6 +594,9 @@ class ImageWriter final {
       REQUIRES_SHARED(Locks::mutator_lock_);
   template <typename ValueType>
   void CopyAndFixupPointer(void* object, MemberOffset offset, ValueType src_value)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
+  void ResetNterpFastPathFlags(ArtMethod* copy, ArtMethod* orig)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   ALWAYS_INLINE

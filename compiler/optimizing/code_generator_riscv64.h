@@ -56,12 +56,9 @@ static_assert(kQuietNaN == 0x200);
 static constexpr int32_t kFClassNaNMinValue = 0x100;
 
 #define UNIMPLEMENTED_INTRINSIC_LIST_RISCV64(V) \
-  V(IntegerReverse)                             \
-  V(LongReverse)                                \
   V(SystemArrayCopyByte)                        \
   V(SystemArrayCopyChar)                        \
   V(SystemArrayCopyInt)                         \
-  V(SystemArrayCopy)                            \
   V(FP16Ceil)                                   \
   V(FP16Compare)                                \
   V(FP16Floor)                                  \
@@ -79,9 +76,6 @@ static constexpr int32_t kFClassNaNMinValue = 0x100;
   V(StringGetCharsNoCheck)                      \
   V(StringStringIndexOf)                        \
   V(StringStringIndexOfAfter)                   \
-  V(StringNewStringFromBytes)                   \
-  V(StringNewStringFromChars)                   \
-  V(StringNewStringFromString)                  \
   V(StringBufferAppend)                         \
   V(StringBufferLength)                         \
   V(StringBufferToString)                       \
@@ -97,75 +91,18 @@ static constexpr int32_t kFClassNaNMinValue = 0x100;
   V(StringBuilderAppendDouble)                  \
   V(StringBuilderLength)                        \
   V(StringBuilderToString)                      \
-  V(UnsafeCASInt)                               \
-  V(UnsafeCASLong)                              \
-  V(UnsafeCASObject)                            \
-  V(UnsafeGet)                                  \
-  V(UnsafeGetVolatile)                          \
-  V(UnsafeGetObject)                            \
-  V(UnsafeGetObjectVolatile)                    \
-  V(UnsafeGetLong)                              \
-  V(UnsafeGetLongVolatile)                      \
-  V(UnsafePut)                                  \
-  V(UnsafePutOrdered)                           \
-  V(UnsafePutVolatile)                          \
-  V(UnsafePutObject)                            \
-  V(UnsafePutObjectOrdered)                     \
-  V(UnsafePutObjectVolatile)                    \
-  V(UnsafePutLong)                              \
-  V(UnsafePutLongOrdered)                       \
-  V(UnsafePutLongVolatile)                      \
-  V(UnsafeGetAndAddInt)                         \
-  V(UnsafeGetAndAddLong)                        \
-  V(UnsafeGetAndSetInt)                         \
-  V(UnsafeGetAndSetLong)                        \
-  V(UnsafeGetAndSetObject)                      \
-  V(JdkUnsafeCASInt)                            \
-  V(JdkUnsafeCASLong)                           \
-  V(JdkUnsafeCASObject)                         \
-  V(JdkUnsafeCompareAndSetInt)                  \
-  V(JdkUnsafeCompareAndSetLong)                 \
-  V(JdkUnsafeCompareAndSetReference)            \
-  V(JdkUnsafeGet)                               \
-  V(JdkUnsafeGetVolatile)                       \
-  V(JdkUnsafeGetAcquire)                        \
-  V(JdkUnsafeGetReference)                      \
-  V(JdkUnsafeGetReferenceVolatile)              \
-  V(JdkUnsafeGetReferenceAcquire)               \
-  V(JdkUnsafeGetLong)                           \
-  V(JdkUnsafeGetLongVolatile)                   \
-  V(JdkUnsafeGetLongAcquire)                    \
-  V(JdkUnsafePut)                               \
-  V(JdkUnsafePutOrdered)                        \
-  V(JdkUnsafePutRelease)                        \
-  V(JdkUnsafePutVolatile)                       \
-  V(JdkUnsafePutReference)                      \
-  V(JdkUnsafePutObjectOrdered)                  \
-  V(JdkUnsafePutReferenceVolatile)              \
-  V(JdkUnsafePutReferenceRelease)               \
-  V(JdkUnsafePutLong)                           \
-  V(JdkUnsafePutLongOrdered)                    \
-  V(JdkUnsafePutLongVolatile)                   \
-  V(JdkUnsafePutLongRelease)                    \
-  V(JdkUnsafeGetAndAddInt)                      \
-  V(JdkUnsafeGetAndAddLong)                     \
-  V(JdkUnsafeGetAndSetInt)                      \
-  V(JdkUnsafeGetAndSetLong)                     \
-  V(JdkUnsafeGetAndSetReference)                \
-  V(ReferenceGetReferent)                       \
-  V(ReferenceRefersTo)                          \
-  V(ThreadInterrupted)                          \
   V(CRC32Update)                                \
   V(CRC32UpdateBytes)                           \
   V(CRC32UpdateByteBuffer)                      \
   V(MethodHandleInvokeExact)                    \
-  V(MethodHandleInvoke)                         \
+  V(MethodHandleInvoke)
 
 // Method register on invoke.
 static const XRegister kArtMethodRegister = A0;
 
-// Helper used by codegen as well as intrinsics.
+// Helper functions used by codegen as well as intrinsics.
 XRegister InputXRegisterOrZero(Location location);
+int32_t ReadBarrierMarkEntrypointOffset(Location ref);
 
 class CodeGeneratorRISCV64;
 

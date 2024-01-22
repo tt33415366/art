@@ -22,6 +22,7 @@
 #include "base/hiddenapi_domain.h"
 #include "base/hiddenapi_flags.h"
 #include "base/locks.h"
+#include "base/macros.h"
 #include "dex/class_accessor.h"
 #include "intrinsics_enum.h"
 #include "jni/jni_internal.h"
@@ -30,7 +31,7 @@
 #include "reflection.h"
 #include "runtime.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace hiddenapi {
 
 // Hidden API enforcement policy
@@ -357,10 +358,12 @@ ALWAYS_INLINE inline uint32_t GetRuntimeFlags(ArtMethod* method)
       case Intrinsics::kJdkUnsafeFullFence:
       case Intrinsics::kJdkUnsafeGet:
       case Intrinsics::kJdkUnsafeGetLong:
+      case Intrinsics::kJdkUnsafeGetByte:
       case Intrinsics::kJdkUnsafeGetReference:
       case Intrinsics::kJdkUnsafePutLong:
       case Intrinsics::kJdkUnsafePut:
       case Intrinsics::kJdkUnsafePutReference:
+      case Intrinsics::kJdkUnsafePutByte:
         return 0u;
       case Intrinsics::kFP16Ceil:
       case Intrinsics::kFP16Compare:
@@ -376,10 +379,12 @@ ALWAYS_INLINE inline uint32_t GetRuntimeFlags(ArtMethod* method)
       case Intrinsics::kFP16Rint:
       case Intrinsics::kUnsafeGet:
       case Intrinsics::kUnsafeGetLong:
+      case Intrinsics::kUnsafeGetByte:
       case Intrinsics::kUnsafeGetObject:
       case Intrinsics::kUnsafePutLong:
       case Intrinsics::kUnsafePut:
       case Intrinsics::kUnsafePutObject:
+      case Intrinsics::kUnsafePutByte:
         return kAccCorePlatformApi;
       default:
         // Remaining intrinsics are public API. We DCHECK that in SetIntrinsic().

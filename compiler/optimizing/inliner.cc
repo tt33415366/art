@@ -144,11 +144,6 @@ bool HInliner::Run() {
   }
 
   bool did_inline = false;
-  // The inliner is the only phase that sets invokes as `always throwing`, and since we only run the
-  // inliner once per graph this value should always be false at the beginning of the inlining
-  // phase. This is important since we use `HasAlwaysThrowingInvokes` to know whether the inliner
-  // phase performed a relevant change in the graph.
-  DCHECK(!graph_->HasAlwaysThrowingInvokes());
 
   // Initialize the number of instructions for the method being compiled. Recursive calls
   // to HInliner::Run have already updated the instruction count.
@@ -208,8 +203,25 @@ bool HInliner::Run() {
     }
   }
 
+  if (run_extra_type_propagation_) {
+    ReferenceTypePropagation rtp_fixup(graph_,
+                                       outer_compilation_unit_.GetDexCache(),
+                                       /* is_first_run= */ false);
+    rtp_fixup.Run();
+  }
+
   // We return true if we either inlined at least one method, or we marked one of our methods as
   // always throwing.
+  // To check if we added an always throwing method we can either:
+  //   1) Pass a boolean throughout the pipeline and get an accurate result, or
+  //   2) Just check that the `HasAlwaysThrowingInvokes()` flag is true now. This is not 100%
+  //     accurate but the only other part where we set `HasAlwaysThrowingInvokes` is constant
+  //     folding the DivideUnsigned intrinsics for when the divisor is known to be 0. This case is
+  //     rare enough that changing the pipeline for this is not worth it. In the case of the false
+  //     positive (i.e. A) we didn't inline at all, B) the graph already had an always throwing
+  //     invoke, and C) we didn't set any new always throwing invokes), we will be running constant
+  //     folding, instruction simplifier, and dead code elimination one more time even though it
+  //     shouldn't change things. There's no false negative case.
   return did_inline || graph_->HasAlwaysThrowingInvokes();
 }
 
@@ -223,7 +235,7 @@ static bool IsMethodOrDeclaringClassFinal(ArtMethod* method)
  * the actual runtime target of an interface or virtual call.
  * Return nullptr if the runtime target cannot be proven.
  */
-static ArtMethod* FindVirtualOrInterfaceTarget(HInvoke* invoke)
+static ArtMethod* FindVirtualOrInterfaceTarget(HInvoke* invoke, ReferenceTypeInfo info)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   ArtMethod* resolved_method = invoke->GetResolvedMethod();
   if (IsMethodOrDeclaringClassFinal(resolved_method)) {
@@ -231,20 +243,7 @@ static ArtMethod* FindVirtualOrInterfaceTarget(HInvoke* invoke)
     return resolved_method;
   }
 
-  HInstruction* receiver = invoke->InputAt(0);
-  if (receiver->IsNullCheck()) {
-    // Due to multiple levels of inlining within the same pass, it might be that
-    // null check does not have the reference type of the actual receiver.
-    receiver = receiver->InputAt(0);
-  }
-  ReferenceTypeInfo info = receiver->GetReferenceTypeInfo();
-  DCHECK(info.IsValid()) << "Invalid RTI for " << receiver->DebugName();
-  if (!info.IsExact()) {
-    // We currently only support inlining with known receivers.
-    // TODO: Remove this check, we should be able to inline final methods
-    // on unknown receivers.
-    return nullptr;
-  } else if (info.GetTypeHandle()->IsInterface()) {
+  if (info.GetTypeHandle()->IsInterface()) {
     // Statically knowing that the receiver has an interface type cannot
     // help us find what is the target method.
     return nullptr;
@@ -472,15 +471,42 @@ bool HInliner::TryInline(HInvoke* invoke_instruction) {
     return false;
   }
 
-  ArtMethod* actual_method = invoke_instruction->IsInvokeStaticOrDirect()
-      ? invoke_instruction->GetResolvedMethod()
-      : FindVirtualOrInterfaceTarget(invoke_instruction);
+  ArtMethod* actual_method = nullptr;
+  ReferenceTypeInfo receiver_info = ReferenceTypeInfo::CreateInvalid();
+  if (invoke_instruction->GetInvokeType() == kStatic) {
+    actual_method = invoke_instruction->GetResolvedMethod();
+  } else {
+    HInstruction* receiver = invoke_instruction->InputAt(0);
+    while (receiver->IsNullCheck()) {
+      // Due to multiple levels of inlining within the same pass, it might be that
+      // null check does not have the reference type of the actual receiver.
+      receiver = receiver->InputAt(0);
+    }
+    receiver_info = receiver->GetReferenceTypeInfo();
+    if (!receiver_info.IsValid()) {
+      // We have to run the extra type propagation now as we are requiring the RTI.
+      DCHECK(run_extra_type_propagation_);
+      run_extra_type_propagation_ = false;
+      ReferenceTypePropagation rtp_fixup(graph_,
+                                         outer_compilation_unit_.GetDexCache(),
+                                         /* is_first_run= */ false);
+      rtp_fixup.Run();
+      receiver_info = receiver->GetReferenceTypeInfo();
+    }
+
+    DCHECK(receiver_info.IsValid()) << "Invalid RTI for " << receiver->DebugName();
+    if (invoke_instruction->IsInvokeStaticOrDirect()) {
+      actual_method = invoke_instruction->GetResolvedMethod();
+    } else {
+      actual_method = FindVirtualOrInterfaceTarget(invoke_instruction, receiver_info);
+    }
+  }
 
   if (actual_method != nullptr) {
     // Single target.
     bool result = TryInlineAndReplace(invoke_instruction,
                                       actual_method,
-                                      ReferenceTypeInfo::CreateInvalid(),
+                                      receiver_info,
                                       /* do_rtp= */ true,
                                       /* is_speculative= */ false);
     if (result) {
@@ -541,9 +567,10 @@ bool HInliner::TryInlineFromCHA(HInvoke* invoke_instruction) {
   uint32_t dex_pc = invoke_instruction->GetDexPc();
   HInstruction* cursor = invoke_instruction->GetPrevious();
   HBasicBlock* bb_cursor = invoke_instruction->GetBlock();
+  Handle<mirror::Class> cls = graph_->GetHandleCache()->NewHandle(method->GetDeclaringClass());
   if (!TryInlineAndReplace(invoke_instruction,
                            method,
-                           ReferenceTypeInfo::CreateInvalid(),
+                           ReferenceTypeInfo::Create(cls),
                            /* do_rtp= */ true,
                            /* is_speculative= */ true)) {
     return false;
@@ -660,9 +687,15 @@ HInliner::InlineCacheType HInliner::GetInlineCacheJIT(
     return kInlineCacheNoData;
   }
 
-  Runtime::Current()->GetJit()->GetCodeCache()->CopyInlineCacheInto(
-      *profiling_info->GetInlineCache(invoke_instruction->GetDexPc()),
-      classes);
+  InlineCache* cache = profiling_info->GetInlineCache(invoke_instruction->GetDexPc());
+  if (cache == nullptr) {
+    // This shouldn't happen, but we don't guarantee that method resolution
+    // between baseline compilation and optimizing compilation is identical. Be robust,
+    // warn about it, and return that we don't have any inline cache data.
+    LOG(WARNING) << "No inline cache found for " << caller->PrettyMethod();
+    return kInlineCacheNoData;
+  }
+  Runtime::Current()->GetJit()->GetCodeCache()->CopyInlineCacheInto(*cache, classes);
   return GetInlineCacheType(*classes);
 }
 
@@ -829,12 +862,9 @@ bool HInliner::TryInlineMonomorphicCall(
                invoke_instruction,
                /* with_deoptimization= */ true);
 
-  // Run type propagation to get the guard typed, and eventually propagate the
+  // Lazily run type propagation to get the guard typed, and eventually propagate the
   // type of the receiver.
-  ReferenceTypePropagation rtp_fixup(graph_,
-                                     outer_compilation_unit_.GetDexCache(),
-                                     /* is_first_run= */ false);
-  rtp_fixup.Run();
+  run_extra_type_propagation_ = true;
 
   MaybeRecordStat(stats_, MethodCompilationStat::kInlinedMonomorphicCall);
   return true;
@@ -1052,11 +1082,8 @@ bool HInliner::TryInlinePolymorphicCall(
 
   MaybeRecordStat(stats_, MethodCompilationStat::kInlinedPolymorphicCall);
 
-  // Run type propagation to get the guards typed.
-  ReferenceTypePropagation rtp_fixup(graph_,
-                                     outer_compilation_unit_.GetDexCache(),
-                                     /* is_first_run= */ false);
-  rtp_fixup.Run();
+  // Lazily run type propagation to get the guards typed.
+  run_extra_type_propagation_ = true;
   return true;
 }
 
@@ -1186,9 +1213,11 @@ bool HInliner::TryInlinePolymorphicCallToSameTarget(
   HBasicBlock* bb_cursor = invoke_instruction->GetBlock();
 
   HInstruction* return_replacement = nullptr;
+  Handle<mirror::Class> cls =
+      graph_->GetHandleCache()->NewHandle(actual_method->GetDeclaringClass());
   if (!TryBuildAndInline(invoke_instruction,
                          actual_method,
-                         ReferenceTypeInfo::CreateInvalid(),
+                         ReferenceTypeInfo::Create(cls),
                          &return_replacement,
                          /* is_speculative= */ true)) {
     return false;
@@ -1243,12 +1272,8 @@ bool HInliner::TryInlinePolymorphicCallToSameTarget(
     deoptimize->SetReferenceTypeInfo(receiver->GetReferenceTypeInfo());
   }
 
-  // Run type propagation to get the guard typed.
-  ReferenceTypePropagation rtp_fixup(graph_,
-                                     outer_compilation_unit_.GetDexCache(),
-                                     /* is_first_run= */ false);
-  rtp_fixup.Run();
-
+  // Lazily run type propagation to get the guard typed.
+  run_extra_type_propagation_ = true;
   MaybeRecordStat(stats_, MethodCompilationStat::kInlinedPolymorphicCall);
 
   LOG_SUCCESS() << "Inlined same polymorphic target " << actual_method->PrettyMethod();
@@ -2064,7 +2089,8 @@ bool HInliner::TryBuildAndInlineHelper(HInvoke* invoke_instruction,
                                        ReferenceTypeInfo receiver_type,
                                        HInstruction** return_replacement,
                                        bool is_speculative) {
-  DCHECK(!(resolved_method->IsStatic() && receiver_type.IsValid()));
+  DCHECK_IMPLIES(resolved_method->IsStatic(), !receiver_type.IsValid());
+  DCHECK_IMPLIES(!resolved_method->IsStatic(), receiver_type.IsValid());
   const dex::CodeItem* code_item = resolved_method->GetCodeItem();
   const DexFile& callee_dex_file = *resolved_method->GetDexFile();
   uint32_t method_index = resolved_method->GetDexMethodIndex();
