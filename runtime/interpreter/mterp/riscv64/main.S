@@ -626,6 +626,7 @@ NAME_END nterp_helper
 EndExecuteNterpImpl:
 
 // Entrypoints into runtime.
+NTERP_TRAMPOLINE nterp_allocate_object, NterpAllocateObject
 NTERP_TRAMPOLINE nterp_filled_new_array, NterpFilledNewArray
 NTERP_TRAMPOLINE nterp_filled_new_array_range, NterpFilledNewArrayRange
 NTERP_TRAMPOLINE nterp_get_class, NterpGetClass
@@ -653,7 +654,11 @@ artNterpAsmInstructionStart = .L_op_nop
     .hidden artNterpAsmInstructionEnd
     .global artNterpAsmInstructionEnd
 artNterpAsmInstructionEnd:
-    unimp
+    // artNterpAsmInstructionEnd is used as landing pad for exception handling.
+    // xPC (S3) for the exception handler was set just prior to the long jump coming here.
+    FETCH_INST
+    GET_INST_OPCODE t0
+    GOTO_OPCODE t0
 
 %def opcode_pre():
 %   pass
