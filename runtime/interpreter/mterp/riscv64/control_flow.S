@@ -9,20 +9,20 @@
 // Clobbers: t0
 %def op_return(is_object=False, is_void=False, is_wide=False):
 %  if is_void:
-      // Thread fence for constructor
-      fence w, w
+     // Thread fence for constructor
+     fence w, w
 %  else:
-      srliw t0, xINST, 8  // t0 := AA
+     srliw t0, xINST, 8  // t0 := AA
 %    if is_wide:
-        GET_VREG_WIDE a0, t0  // a0 := fp[AA:AA+1]
-        // The method may return to compiled code, so also place result in fa0.
-        fmv.d.x fa0, a0
+       GET_VREG_WIDE a0, t0  // a0 := fp[AA:AA+1]
+       // The method may return to compiled code, so also place result in fa0.
+       fmv.d.x fa0, a0
 %    elif is_object:
-        GET_VREG_OBJECT a0, t0  // a0 := refs[AA]
+       GET_VREG_OBJECT a0, t0  // a0 := refs[AA]
 %    else:
-%       get_vreg("a0", "t0")    #  a0 := fp[AA]
-        // The method may return to compiled code, so also place result in fa0.
-        fmv.w.x fa0, a0
+%      get_vreg("a0", "t0")    #  a0 := fp[AA]
+       // The method may return to compiled code, so also place result in fa0.
+       fmv.w.x fa0, a0
 %#:
 
    CFI_REMEMBER_STATE
@@ -58,6 +58,24 @@
    call art_quick_deliver_exception  // args a0, a1
    unimp
 
+// cmp-long vAA, vBB, vCC
+// Format 23x: AA|31 CC|BB
+%def op_cmp_long():
+   FETCH t1, count=1     // t1 := CC|BB
+   srliw t0, xINST, 8    // t0 := AA
+   srliw t2, t1, 8       // t2 := CC
+   andi t1, t1, 0xFF     // t1 := BB
+   GET_VREG_WIDE t1, t1  // t1 := fp[BB]
+   GET_VREG_WIDE t2, t2  // t2 := fp[CC]
+   // Note: Formula "(SLT r,l) - (SLT l,r)" lifted from compiler.
+   slt t3, t1, t2
+   slt t4, t2, t1
+   sub t4, t4, t3
+   FETCH_ADVANCE_INST 2
+%  set_vreg("t4", "t0", z0="t1")  # fp[AA] := t4
+   GET_INST_OPCODE t0
+   GOTO_OPCODE t0
+
 %def bincmp(condition=""):
     unimp
 
@@ -71,9 +89,6 @@
     unimp
 
 %def op_goto_32():
-    unimp
-
-%def op_cmp_long():
     unimp
 
 %def op_if_eq():
