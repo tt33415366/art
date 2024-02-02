@@ -20,10 +20,10 @@
 #include "entrypoints/quick/callee_save_frame.h"
 #include "interpreter/mterp/nterp.h"
 #include "nterp_helpers.h"
-#include "oat_quick_method_header.h"
+#include "oat/oat_quick_method_header.h"
 #include "quick/quick_method_frame_info.h"
 
-namespace art {
+namespace art HIDDEN {
 
 /**
  * An nterp frame follows the optimizing compiler's ABI conventions, with
@@ -238,9 +238,6 @@ bool CanMethodUseNterp(ArtMethod* method, InstructionSet isa) {
     if (method->GetDexFile()->IsCompactDexFile()) {
       return false;  // Riscv64 nterp does not support compact dex yet.
     }
-    if (method->DexInstructionData().TriesSize() != 0u) {
-      return false;  // Riscv64 nterp does not support exception handling yet.
-    }
     for (DexInstructionPcPair pair : method->DexInstructions()) {
       // TODO(riscv64): Add support for more instructions.
       // Remove the check when all instructions are supported.
@@ -272,8 +269,84 @@ bool CanMethodUseNterp(ArtMethod* method, InstructionSet isa) {
         case Instruction::CONST_WIDE_32:
         case Instruction::CONST_WIDE:
         case Instruction::CONST_WIDE_HIGH16:
+        case Instruction::CONST_STRING:
+        case Instruction::CONST_STRING_JUMBO:
+        case Instruction::CONST_CLASS:
+        case Instruction::MONITOR_ENTER:
+        case Instruction::MONITOR_EXIT:
+        case Instruction::CHECK_CAST:
+        case Instruction::INSTANCE_OF:
+        case Instruction::ARRAY_LENGTH:
+        case Instruction::NEW_INSTANCE:
+        case Instruction::NEW_ARRAY:
+        case Instruction::FILLED_NEW_ARRAY:
+        case Instruction::FILLED_NEW_ARRAY_RANGE:
+        case Instruction::FILL_ARRAY_DATA:
+        case Instruction::THROW:
+        case Instruction::GOTO:
+        case Instruction::GOTO_16:
+        case Instruction::GOTO_32:
+        case Instruction::PACKED_SWITCH:
+        case Instruction::SPARSE_SWITCH:
+        case Instruction::CMPL_FLOAT:
+        case Instruction::CMPG_FLOAT:
+        case Instruction::CMPL_DOUBLE:
+        case Instruction::CMPG_DOUBLE:
+        case Instruction::CMP_LONG:
+        case Instruction::IF_EQ:
+        case Instruction::IF_NE:
+        case Instruction::IF_LT:
+        case Instruction::IF_GE:
+        case Instruction::IF_GT:
+        case Instruction::IF_LE:
+        case Instruction::IF_EQZ:
+        case Instruction::IF_NEZ:
+        case Instruction::IF_LTZ:
+        case Instruction::IF_GEZ:
+        case Instruction::IF_GTZ:
+        case Instruction::IF_LEZ:
+        case Instruction::AGET:
+        case Instruction::AGET_WIDE:
+        case Instruction::AGET_OBJECT:
+        case Instruction::AGET_BOOLEAN:
+        case Instruction::AGET_BYTE:
+        case Instruction::AGET_CHAR:
+        case Instruction::AGET_SHORT:
+        case Instruction::APUT:
+        case Instruction::APUT_WIDE:
+        case Instruction::APUT_OBJECT:
+        case Instruction::APUT_BOOLEAN:
+        case Instruction::APUT_BYTE:
+        case Instruction::APUT_CHAR:
+        case Instruction::APUT_SHORT:
+        case Instruction::IGET:
+        case Instruction::IGET_WIDE:
+        case Instruction::IGET_OBJECT:
+        case Instruction::IGET_BOOLEAN:
+        case Instruction::IGET_BYTE:
+        case Instruction::IGET_CHAR:
+        case Instruction::IGET_SHORT:
+        case Instruction::IPUT:
+        case Instruction::IPUT_WIDE:
+        case Instruction::IPUT_OBJECT:
+        case Instruction::IPUT_BOOLEAN:
+        case Instruction::IPUT_BYTE:
+        case Instruction::IPUT_CHAR:
+        case Instruction::IPUT_SHORT:
+        case Instruction::SGET:
+        case Instruction::SGET_WIDE:
+        case Instruction::SGET_OBJECT:
+        case Instruction::SGET_BOOLEAN:
+        case Instruction::SGET_BYTE:
+        case Instruction::SGET_CHAR:
+        case Instruction::SGET_SHORT:
         case Instruction::SPUT:
+        case Instruction::SPUT_WIDE:
         case Instruction::SPUT_OBJECT:
+        case Instruction::SPUT_BOOLEAN:
+        case Instruction::SPUT_BYTE:
+        case Instruction::SPUT_CHAR:
+        case Instruction::SPUT_SHORT:
         case Instruction::INVOKE_VIRTUAL:
         case Instruction::INVOKE_SUPER:
         case Instruction::INVOKE_DIRECT:
@@ -388,6 +461,12 @@ bool CanMethodUseNterp(ArtMethod* method, InstructionSet isa) {
         case Instruction::SHL_INT_LIT8:
         case Instruction::SHR_INT_LIT8:
         case Instruction::USHR_INT_LIT8:
+        case Instruction::INVOKE_POLYMORPHIC:
+        case Instruction::INVOKE_POLYMORPHIC_RANGE:
+        case Instruction::INVOKE_CUSTOM:
+        case Instruction::INVOKE_CUSTOM_RANGE:
+        case Instruction::CONST_METHOD_HANDLE:
+        case Instruction::CONST_METHOD_TYPE:
           continue;
         default:
           return false;

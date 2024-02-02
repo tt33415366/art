@@ -545,13 +545,6 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
     StartAttributeStream("invoke_type") << "InvokePolymorphic";
   }
 
-  void VisitPredicatedInstanceFieldGet(HPredicatedInstanceFieldGet* iget) override {
-    StartAttributeStream("field_name") <<
-        iget->GetFieldInfo().GetDexFile().PrettyField(iget->GetFieldInfo().GetFieldIndex(),
-                                                      /* with type */ false);
-    StartAttributeStream("field_type") << iget->GetFieldType();
-  }
-
   void VisitInstanceFieldGet(HInstanceFieldGet* iget) override {
     StartAttributeStream("field_name") <<
         iget->GetFieldInfo().GetDexFile().PrettyField(iget->GetFieldInfo().GetFieldIndex(),
@@ -564,8 +557,6 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
         iset->GetFieldInfo().GetDexFile().PrettyField(iset->GetFieldInfo().GetFieldIndex(),
                                                       /* with type */ false);
     StartAttributeStream("field_type") << iset->GetFieldType();
-    StartAttributeStream("predicated")
-        << std::boolalpha << iset->GetIsPredicatedSet() << std::noboolalpha;
     StartAttributeStream("write_barrier_kind") << iset->GetWriteBarrierKind();
   }
 
@@ -876,7 +867,8 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
     std::ostringstream oss;
     oss << pass_name_;
     if (!IsDebugDump()) {
-      oss << " (" << (is_after_pass_ ? "after" : "before")
+      oss << " (" << (GetGraph()->IsCompilingBaseline() ? "baseline " : "")
+          << (is_after_pass_ ? "after" : "before")
           << (graph_in_bad_state_ ? ", bad_state" : "") << ")";
     }
     PrintProperty("name", oss.str().c_str());

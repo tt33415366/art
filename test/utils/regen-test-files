@@ -224,6 +224,11 @@ known_failing_tests = frozenset([
 # pre-submit SLOs. Monitor their post-submit runs before removing them
 # from this set (in order to promote them to presubmits).
 postsubmit_only_tests = frozenset([
+  "851-null-instanceof",
+  "853-checker-inlining",
+  "2266-checker-remove-empty-ifs",
+  "2268-checker-remove-dead-phis",
+  "2269-checker-constant-folding-instrinsics",
 ])
 
 known_failing_on_hwasan_tests = frozenset([
@@ -510,21 +515,26 @@ class Generator:
     else:
       test_config_template = "art-run-test-target-no-test-suite-tag-template"
 
-    # Define `test_suites`, if present in the test's metadata.
-    test_suites = ""
-    if metadata.get("test_suites"):
-      test_suites = f"""\
+    # Define the `test_suites` property, if test suites are present in
+    # the test's metadata.
+    test_suites_list = metadata.get("test_suites")
+    test_suites_prop = ""
+    if test_suites_list:
+      test_suites_joined = """,
+              """.join([f"\"{s}\"" for s in test_suites_list])
+      test_suites_prop = f"""\
 
-          test_suites: {json.dumps(metadata.get("test_suites"))},"""
+          test_suites: [
+              {test_suites_joined},
+          ],"""
 
+    include_srcs_prop = ""
     if is_checker_test(run_test):
-      include_src = """\
+      include_srcs_prop = """\
 
           // Include the Java source files in the test's artifacts, to make Checker assertions
           // available to the TradeFed test runner.
           include_srcs: true,"""
-    else:
-      include_src = ""
 
     # The default source directory is `src`, except if `src-art` exists.
     if os.path.isdir(os.path.join(run_test_path, "src-art")):
@@ -565,25 +575,47 @@ class Generator:
           data: [
               ":{run_test_module_name}-expected-stdout",
               ":{run_test_module_name}-expected-stderr",
-          ],{test_suites}{include_src}
-      }}
-
-      // Test's expected standard output.
-      genrule {{
-          name: "{run_test_module_name}-expected-stdout",
-          out: ["{run_test_module_name}-expected-stdout.txt"],
-          srcs: ["expected-stdout.txt"],
-          cmd: "cp -f $(in) $(out)",
-      }}
-
-      // Test's expected standard error.
-      genrule {{
-          name: "{run_test_module_name}-expected-stderr",
-          out: ["{run_test_module_name}-expected-stderr.txt"],
-          srcs: ["expected-stderr.txt"],
-          cmd: "cp -f $(in) $(out)",
+          ],{test_suites_prop}{include_srcs_prop}
       }}
       """))
+
+      def add_expected_output_genrule(type_str):
+        type_str_long = "standard output" if type_str == "stdout" else "standard error"
+        in_file = os.path.join(run_test_path, f"expected-{type_str}.txt")
+        if os.path.islink(in_file):
+          # Genrules are sandboxed, so if we just added the symlink to the srcs list, it would
+          # be a dangling symlink in the sandbox. Instead, if we see a symlink, depend on the
+          # genrule from the test that the symlink is pointing to instead of the symlink itself.
+          link_target = os.readlink(in_file)
+          basename = os.path.basename(in_file)
+          match = re.fullmatch('\.\./([a-zA-Z0-9_-]+)/' + re.escape(basename), link_target)
+          if not match:
+            sys.exit(f"Error: expected symlink to be '../something/{basename}', got {link_target}")
+          f.write(textwrap.dedent(f"""\
+
+            // Test's expected {type_str_long}.
+            genrule {{
+                name: "{run_test_module_name}-expected-{type_str}",
+                out: ["{run_test_module_name}-expected-{type_str}.txt"],
+                srcs: [":{ART_RUN_TEST_MODULE_NAME_PREFIX}{match.group(1)}-expected-{type_str}"],
+                cmd: "cp -f $(in) $(out)",
+            }}
+          """))
+        else:
+          f.write(textwrap.dedent(f"""\
+
+            // Test's expected {type_str_long}.
+            genrule {{
+                name: "{run_test_module_name}-expected-{type_str}",
+                out: ["{run_test_module_name}-expected-{type_str}.txt"],
+                srcs: ["expected-{type_str}.txt"],
+                cmd: "cp -f $(in) $(out)",
+            }}
+          """))
+
+      add_expected_output_genrule("stdout")
+      add_expected_output_genrule("stderr")
+
 
   def regen_test_mapping_file(self, art_run_tests):
     """Regenerate ART's `TEST_MAPPING`."""

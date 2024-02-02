@@ -34,7 +34,7 @@
 #include "graph_visualizer.h"
 #include "locations.h"
 #include "nodes.h"
-#include "oat_quick_method_header.h"
+#include "oat/oat_quick_method_header.h"
 #include "optimizing_compiler_stats.h"
 #include "read_barrier_option.h"
 #include "stack.h"
@@ -380,6 +380,11 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   bool EmitNonBakerReadBarrier() const;
   ReadBarrierOption GetCompilerReadBarrierOption() const;
 
+  // Returns true if we should check the GC card for consistency purposes.
+  bool ShouldCheckGCCard(DataType::Type type,
+                         HInstruction* value,
+                         WriteBarrierKind write_barrier_kind) const;
+
   // Get the ScopedArenaAllocator used for codegen memory allocation.
   ScopedArenaAllocator* GetScopedAllocator();
 
@@ -503,6 +508,11 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
     return type == DataType::Type::kReference && !value->IsNullConstant();
   }
 
+  // If we are compiling a graph with the WBE pass enabled, we want to honor the WriteBarrierKind
+  // set during the WBE pass.
+  bool StoreNeedsWriteBarrier(DataType::Type type,
+                              HInstruction* value,
+                              WriteBarrierKind write_barrier_kind) const;
 
   // Performs checks pertaining to an InvokeRuntime call.
   void ValidateInvokeRuntime(QuickEntrypointEnum entrypoint,
@@ -649,7 +659,8 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   static uint32_t GetBootImageOffset(ClassRoot class_root);
   static uint32_t GetBootImageOffsetOfIntrinsicDeclaringClass(HInvoke* invoke);
 
-  static void CreateSystemArrayCopyLocationSummary(HInvoke* invoke);
+  static LocationSummary* CreateSystemArrayCopyLocationSummary(
+      HInvoke* invoke, int32_t length_threshold = -1, size_t num_temps = 3);
 
   void SetDisassemblyInformation(DisassemblyInformation* info) { disasm_info_ = info; }
   DisassemblyInformation* GetDisassemblyInformation() const { return disasm_info_; }

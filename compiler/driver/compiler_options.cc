@@ -40,7 +40,6 @@ namespace art HIDDEN {
 CompilerOptions::CompilerOptions()
     : compiler_filter_(CompilerFilter::kDefaultCompilerFilter),
       huge_method_threshold_(kDefaultHugeMethodThreshold),
-      large_method_threshold_(kDefaultLargeMethodThreshold),
       inline_max_code_units_(kUnsetInlineMaxCodeUnits),
       instruction_set_(kRuntimeISA == InstructionSet::kArm ? InstructionSet::kThumb2 : kRuntimeISA),
       instruction_set_features_(nullptr),
@@ -64,6 +63,7 @@ CompilerOptions::CompilerOptions()
       dump_timings_(false),
       dump_pass_timings_(false),
       dump_stats_(false),
+      profile_branches_(false),
       profile_compilation_info_(nullptr),
       verbose_methods_(),
       abort_on_hard_verifier_failure_(false),

@@ -144,19 +144,8 @@ Location ARM64ReturnLocation(DataType::Type return_type);
   V(SystemArrayCopyByte)                      \
   V(SystemArrayCopyInt)                       \
   /* 1.8 */                                   \
-  V(UnsafeGetAndAddInt)                       \
-  V(UnsafeGetAndAddLong)                      \
-  V(UnsafeGetAndSetInt)                       \
-  V(UnsafeGetAndSetLong)                      \
-  V(UnsafeGetAndSetObject)                    \
   V(MethodHandleInvokeExact)                  \
-  V(MethodHandleInvoke)                       \
-  /* OpenJDK 11 */                            \
-  V(JdkUnsafeGetAndAddInt)                    \
-  V(JdkUnsafeGetAndAddLong)                   \
-  V(JdkUnsafeGetAndSetInt)                    \
-  V(JdkUnsafeGetAndSetLong)                   \
-  V(JdkUnsafeGetAndSetObject)
+  V(MethodHandleInvoke)
 
 class SlowPathCodeARM64 : public SlowPathCode {
  public:
@@ -669,10 +658,20 @@ class CodeGeneratorARM64 : public CodeGenerator {
   const Arm64Assembler& GetAssembler() const override { return assembler_; }
   vixl::aarch64::MacroAssembler* GetVIXLAssembler() { return GetAssembler()->GetVIXLAssembler(); }
 
-  // Emit a write barrier.
-  void MarkGCCard(vixl::aarch64::Register object,
-                  vixl::aarch64::Register value,
-                  bool emit_null_check);
+  // Emit a write barrier if:
+  // A) emit_null_check is false
+  // B) emit_null_check is true, and value is not null.
+  void MaybeMarkGCCard(vixl::aarch64::Register object,
+                       vixl::aarch64::Register value,
+                       bool emit_null_check);
+
+  // Emit a write barrier unconditionally.
+  void MarkGCCard(vixl::aarch64::Register object);
+
+  // Crash if the card table is not valid. This check is only emitted for the CC GC. We assert
+  // `(!clean || !self->is_gc_marking)`, since the card table should not be set to clean when the CC
+  // GC is marking for eliminated write barriers.
+  void CheckGCCardIsValid(vixl::aarch64::Register object);
 
   void GenerateMemoryBarrier(MemBarrierKind kind);
 
@@ -904,9 +903,9 @@ class CodeGeneratorARM64 : public CodeGenerator {
                                uint32_t offset,
                                vixl::aarch64::Label* fixup_label,
                                ReadBarrierOption read_barrier_option);
-  // Generate MOV for the `old_value` in intrinsic CAS and mark it with Baker read barrier.
-  void GenerateIntrinsicCasMoveWithBakerReadBarrier(vixl::aarch64::Register marked_old_value,
-                                                    vixl::aarch64::Register old_value);
+  // Generate MOV for the `old_value` in intrinsic and mark it with Baker read barrier.
+  void GenerateIntrinsicMoveWithBakerReadBarrier(vixl::aarch64::Register marked_old_value,
+                                                 vixl::aarch64::Register old_value);
   // Fast path implementation of ReadBarrier::Barrier for a heap
   // reference field load when Baker's read barriers are used.
   // Overload suitable for Unsafe.getObject/-Volatile() intrinsic.
@@ -1028,7 +1027,7 @@ class CodeGeneratorARM64 : public CodeGenerator {
   }
 
   void MaybeGenerateInlineCacheCheck(HInstruction* instruction, vixl::aarch64::Register klass);
-  void MaybeIncrementHotness(bool is_frame_entry);
+  void MaybeIncrementHotness(HSuspendCheck* suspend_check, bool is_frame_entry);
 
   bool CanUseImplicitSuspendCheck() const;
 

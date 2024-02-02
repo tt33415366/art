@@ -31,7 +31,7 @@
 #include "mirror/string-alloc-inl.h"
 #include "nterp_helpers.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace interpreter {
 
 bool IsNterpSupported() {
@@ -118,7 +118,7 @@ void CheckNterpAsmConstants() {
 inline void UpdateHotness(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_) {
   // The hotness we will add to a method when we perform a
   // field/method/class/string lookup.
-  constexpr uint16_t kNterpHotnessLookup = 0xf;
+  constexpr uint16_t kNterpHotnessLookup = 0xff;
   method->UpdateCounter(kNterpHotnessLookup);
 }
 

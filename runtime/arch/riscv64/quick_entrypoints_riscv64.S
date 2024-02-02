@@ -168,7 +168,7 @@ END art_deliver_pending_exception
 
     // Load this (if instance method) and record the number of GPRs to fill.
     .ifc \sfx, _instance
-        lw   a1, (t0)                  // Load "this" parameter,
+        lwu  a1, (t0)                  // Load "this" parameter,
         addi t0, t0, 4                 // and increment arg pointer.
         .equ NUM_GPRS_TO_FILL, 6
     .else
@@ -810,12 +810,12 @@ NO_ARG_RUNTIME_EXCEPTION_SAVE_EVERYTHING art_quick_throw_div_zero, artThrowDivZe
 
 
 // Called by managed code to create and deliver an ArrayIndexOutOfBoundsException.
-// Arg1 holds index, arg2 holds limit.
+// Arg0 holds index, arg1 holds limit.
 TWO_ARG_RUNTIME_EXCEPTION_SAVE_EVERYTHING art_quick_throw_array_bounds, artThrowArrayBoundsFromCode
 
 
 // Called by managed code to create and deliver a StringIndexOutOfBoundsException
-// as if thrown from a call to String.charAt(). Arg1 holds index, arg2 holds limit.
+// as if thrown from a call to String.charAt(). Arg0 holds index, arg1 holds limit.
 TWO_ARG_RUNTIME_EXCEPTION_SAVE_EVERYTHING \
         art_quick_throw_string_bounds, artThrowStringBoundsFromCode
 
@@ -1389,10 +1389,18 @@ ENTRY \name
     and t6, t6, t5
     CFI_REMEMBER_STATE
     bgez t6, .Lrb_full_\name
-    slliw \reg, t5, LOCK_WORD_STATE_FORWARDING_ADDRESS_SHIFT
+    // Extract and zero-extend the forwarding address.
+    slli \reg, t5, (LOCK_WORD_STATE_FORWARDING_ADDRESS_SHIFT + 32)
+    srli \reg, \reg, 32
+    .ifc \reg, t5
+      sd t5, (8*0)(sp)
+    .endif
+    .ifc \reg, t6
+      sd t6, (8*1)(sp)
+    .endif
 .Lrb_tmp_restore_\name:
-    RESTORE_GPR_NE \reg, t5, (8*0)
-    RESTORE_GPR_NE \reg, t6, (8*1)
+    RESTORE_GPR t5, (8*0)
+    RESTORE_GPR t6, (8*1)
     DECREASE_FRAME 16
 .Lrb_return_\name:
     ret
@@ -1557,6 +1565,13 @@ END \name
 .macro FOUR_ARG_DOWNCALL name, entrypoint, return
     N_ARG_DOWNCALL 4, \name, \entrypoint, \return
 .endm
+
+
+// Entry from managed code that calls artHandleFillArrayDataFromCode and
+// delivers exception on failure.
+TWO_ARG_DOWNCALL art_quick_handle_fill_data, \
+                 artHandleFillArrayDataFromCode, \
+                 RETURN_OR_DEOPT_IF_INT_RESULT_IS_ZERO_OR_DELIVER
 
 
 // Generate the allocation entrypoints for each allocator.
@@ -1780,7 +1795,7 @@ GENERATE_ALLOC_OBJECT_RESOLVED_TLAB \
     mv    a0, \temp0
     add   \temp0, \temp0, \temp1
     sd    \temp0, THREAD_LOCAL_POS_OFFSET(xSELF)            // Store new thread_local_pos.
-    POISON_HEAP_REF class
+    POISON_HEAP_REF \class
     sw    \class, MIRROR_OBJECT_CLASS_OFFSET(a0)            // Store the class pointer.
     sw    \count, MIRROR_ARRAY_LENGTH_OFFSET(a0)            // Store the array length.
 // new-array is special. The class is loaded and immediately goes to the Initialized state
@@ -1821,9 +1836,9 @@ END \name
     lwu   \temp0, MIRROR_CLASS_OBJECT_PRIMITIVE_TYPE_OFFSET(\temp0)
     srli  \temp0, \temp0, PRIMITIVE_TYPE_SIZE_SHIFT_SHIFT   // Component size shift is in high 16
                                                             // bits.
-                                                            // xCount is holding a 32 bit value,
+    zext.w \temp1, \count                                   // From \count we use a 32 bit value,
                                                             // it can not overflow.
-    sll   \temp1, \count, \temp0                            // Calculate data size
+    sll   \temp1, \temp1, \temp0                            // Calculate data size
     // Add array data offset and alignment.
     addi   \temp1, \temp1, (MIRROR_INT_ARRAY_DATA_OFFSET + OBJECT_ALIGNMENT_MASK)
 #if MIRROR_LONG_ARRAY_DATA_OFFSET != MIRROR_INT_ARRAY_DATA_OFFSET + 4

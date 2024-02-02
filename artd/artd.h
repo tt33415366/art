@@ -39,7 +39,7 @@
 #include "android/binder_auto_utils.h"
 #include "base/os.h"
 #include "exec_utils.h"
-#include "oat_file_assistant_context.h"
+#include "oat/oat_file_assistant_context.h"
 #include "tools/cmdline_builder.h"
 #include "tools/system_properties.h"
 
@@ -176,6 +176,20 @@ class Artd : public aidl::com::android::server::art::BnArtd {
   ndk::ScopedAStatus deleteRuntimeArtifacts(
       const aidl::com::android::server::art::RuntimeArtifactsPath& in_runtimeArtifactsPath,
       int64_t* _aidl_return) override;
+
+  ndk::ScopedAStatus getArtifactsSize(
+      const aidl::com::android::server::art::ArtifactsPath& in_artifactsPath,
+      int64_t* _aidl_return) override;
+
+  ndk::ScopedAStatus getVdexFileSize(const aidl::com::android::server::art::VdexPath& in_vdexPath,
+                                     int64_t* _aidl_return) override;
+
+  ndk::ScopedAStatus getRuntimeArtifactsSize(
+      const aidl::com::android::server::art::RuntimeArtifactsPath& in_runtimeArtifactsPath,
+      int64_t* _aidl_return) override;
+
+  ndk::ScopedAStatus getProfileSize(const aidl::com::android::server::art::ProfilePath& in_profile,
+                                    int64_t* _aidl_return) override;
 
   android::base::Result<void> Start();
 

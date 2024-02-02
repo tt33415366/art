@@ -41,7 +41,6 @@
 #include "dex/dex_file_types.h"
 #include "driver/compiler_options.h"
 #include "elf/elf_utils.h"
-#include "elf_file.h"
 #include "entrypoints/entrypoint_utils-inl.h"
 #include "gc/accounting/card_table-inl.h"
 #include "gc/accounting/heap_bitmap.h"
@@ -54,7 +53,6 @@
 #include "gc/space/space-inl.h"
 #include "gc/verification.h"
 #include "handle_scope-inl.h"
-#include "image-inl.h"
 #include "imt_conflict_table.h"
 #include "indirect_reference_table-inl.h"
 #include "intern_table-inl.h"
@@ -76,10 +74,13 @@
 #include "mirror/object_array-inl.h"
 #include "mirror/string-inl.h"
 #include "mirror/var_handle.h"
+#include "nterp_helpers-inl.h"
 #include "nterp_helpers.h"
-#include "oat.h"
-#include "oat_file.h"
-#include "oat_file_manager.h"
+#include "oat/elf_file.h"
+#include "oat/image-inl.h"
+#include "oat/oat.h"
+#include "oat/oat_file.h"
+#include "oat/oat_file_manager.h"
 #include "optimizing/intrinsic_objects.h"
 #include "runtime.h"
 #include "scoped_thread_state_change-inl.h"
@@ -188,7 +189,8 @@ class ReferenceFieldVisitor {
   void operator()(ObjPtr<mirror::Object> obj, MemberOffset offset, bool is_static) const
       REQUIRES_SHARED(Locks::mutator_lock_) {
     CHECK(!obj->IsObjectArray());
-    mirror::Object* field_obj = obj->GetFieldObject<mirror::Object>(offset);
+    mirror::Object* field_obj =
+        obj->GetFieldObject<mirror::Object, kVerifyNone, kWithoutReadBarrier>(offset);
     // Skip fields that contain null.
     if (field_obj == nullptr) {
       return;
@@ -205,7 +207,9 @@ class ReferenceFieldVisitor {
       CHECK(obj->IsClass());
       field = ArtField::FindStaticFieldWithOffset(obj->AsClass(), offset.Uint32Value());
     } else {
-      field = ArtField::FindInstanceFieldWithOffset(obj->GetClass(), offset.Uint32Value());
+      field = ArtField::
+          FindInstanceFieldWithOffset</*kExactOffset*/ true, kVerifyNone, kWithoutReadBarrier>(
+              obj->GetClass<kVerifyNone, kWithoutReadBarrier>(), offset.Uint32Value());
     }
     DCHECK(field != nullptr);
     visit_func_(*field_obj, *field);
@@ -283,9 +287,15 @@ HashMap<mirror::Object*, uint32_t> MatchDirtyObjectPaths(
       return nullptr;
     }
 
-    ObjPtr<mirror::Object> next_obj = array->GetWithoutChecks(idx);
+    ObjPtr<mirror::Object> next_obj =
+        array->GetWithoutChecks<kVerifyNone, kWithoutReadBarrier>(idx);
+    if (next_obj == nullptr) {
+      return nullptr;
+    }
+
     std::string temp;
-    if (next_obj == nullptr || next_obj->GetClass()->GetDescriptor(&temp) != ref_info.type) {
+    if (next_obj->GetClass<kVerifyNone, kWithoutReadBarrier>()->GetDescriptor(&temp) !=
+        ref_info.type) {
       return nullptr;
     }
     return next_obj.Ptr();
@@ -871,7 +881,7 @@ void ImageWriter::UpdateImageBinSlotOffset(mirror::Object* object,
 
 bool ImageWriter::AllocMemory() {
   for (ImageInfo& image_info : image_infos_) {
-    const size_t length = RoundUp(image_info.CreateImageSections().first, kPageSize);
+    const size_t length = RoundUp(image_info.CreateImageSections().first, kElfSegmentAlignment);
 
     std::string error_msg;
     image_info.image_ = MemMap::MapAnonymous("image writer image",
@@ -2577,7 +2587,7 @@ void ImageWriter::CalculateNewObjectOffsets() {
   for (ImageInfo& image_info : image_infos_) {
     image_info.image_begin_ = global_image_begin_ + image_offset;
     image_info.image_offset_ = image_offset;
-    image_info.image_size_ = RoundUp(image_info.CreateImageSections().first, kPageSize);
+    image_info.image_size_ = RoundUp(image_info.CreateImageSections().first, kElfSegmentAlignment);
     // There should be no gaps until the next image.
     image_offset += image_info.image_size_;
   }
@@ -2713,7 +2723,7 @@ void ImageWriter::CreateHeader(size_t oat_index, size_t component_count) {
   const uint8_t* oat_data_end = image_info.oat_data_begin_ + image_info.oat_size_;
 
   uint32_t image_reservation_size = image_info.image_size_;
-  DCHECK_ALIGNED(image_reservation_size, kPageSize);
+  DCHECK_ALIGNED(image_reservation_size, kElfSegmentAlignment);
   uint32_t current_component_count = 1u;
   if (compiler_options_.IsAppImage()) {
     DCHECK_EQ(oat_index, 0u);
@@ -2724,9 +2734,9 @@ void ImageWriter::CreateHeader(size_t oat_index, size_t component_count) {
     if (oat_index == 0u) {
       const ImageInfo& last_info = image_infos_.back();
       const uint8_t* end = last_info.oat_file_begin_ + last_info.oat_loaded_size_;
-      DCHECK_ALIGNED(image_info.image_begin_, kPageSize);
-      image_reservation_size =
-          dchecked_integral_cast<uint32_t>(RoundUp(end - image_info.image_begin_, kPageSize));
+      DCHECK_ALIGNED(image_info.image_begin_, kElfSegmentAlignment);
+      image_reservation_size = dchecked_integral_cast<uint32_t>(
+          RoundUp(end - image_info.image_begin_, kElfSegmentAlignment));
       current_component_count = component_count;
     } else {
       image_reservation_size = 0u;
@@ -2758,10 +2768,11 @@ void ImageWriter::CreateHeader(size_t oat_index, size_t component_count) {
   // Finally bitmap section.
   const size_t bitmap_bytes = image_info.image_bitmap_.Size();
   auto* bitmap_section = &sections[ImageHeader::kSectionImageBitmap];
-  // Bitmap section size doesn't have to be rounded up as it is located at the end of the file.
-  // When mapped to memory, if the last page of the mapping is only partially filled with data,
-  // the rest will be zero-filled.
-  *bitmap_section = ImageSection(RoundUp(image_end, kPageSize), bitmap_bytes);
+  // The offset of the bitmap section should be aligned to kElfSegmentAlignment to enable mapping
+  // the section from file to memory. However the section size doesn't have to be rounded up as it
+  // is located at the end of the file. When mapping file contents to memory, if the last page of
+  // the mapping is only partially filled with data, the rest will be zero-filled.
+  *bitmap_section = ImageSection(RoundUp(image_end, kElfSegmentAlignment), bitmap_bytes);
   if (VLOG_IS_ON(compiler)) {
     LOG(INFO) << "Creating header for " << oat_filenames_[oat_index];
     size_t idx = 0;
@@ -3458,6 +3469,7 @@ void ImageWriter::CopyAndFixupMethod(ArtMethod* orig,
 
   CopyAndFixupReference(copy->GetDeclaringClassAddressWithoutBarrier(),
                         orig->GetDeclaringClassUnchecked<kWithoutReadBarrier>());
+  ResetNterpFastPathFlags(copy, orig);
 
   // OatWriter replaces the code_ with an offset value. Here we re-adjust to a pointer relative to
   // oat_begin_
@@ -3749,6 +3761,33 @@ void ImageWriter::CopyAndFixupPointer(
 template <typename ValueType>
 void ImageWriter::CopyAndFixupPointer(void* object, MemberOffset offset, ValueType src_value) {
   return CopyAndFixupPointer(object, offset, src_value, target_ptr_size_);
+}
+
+void ImageWriter::ResetNterpFastPathFlags(ArtMethod* copy, ArtMethod* orig) {
+  DCHECK(copy != nullptr);
+  DCHECK(orig != nullptr);
+  if (orig->IsRuntimeMethod() || orig->IsProxyMethod()) {
+    return;  // !IsRuntimeMethod() and !IsProxyMethod() for GetShortyView()
+  }
+
+  // Clear old nterp fast path flags.
+  if (copy->HasNterpEntryPointFastPathFlag()) {
+    copy->ClearNterpEntryPointFastPathFlag();  // Flag has other uses, clear it conditionally.
+  }
+  copy->ClearNterpInvokeFastPathFlag();
+
+  // Check if nterp fast paths available on target ISA.
+  std::string_view shorty = orig->GetShortyView();  // Use orig, copy's class not yet ready.
+  uint32_t new_nterp_flags =
+      GetNterpFastPathFlags(shorty, copy->GetAccessFlags(), compiler_options_.GetInstructionSet());
+
+  // Set new nterp fast path flags, if approporiate.
+  if ((new_nterp_flags & kAccNterpEntryPointFastPathFlag) != 0) {
+    copy->SetNterpEntryPointFastPathFlag();
+  }
+  if ((new_nterp_flags & kAccNterpInvokeFastPathFlag) != 0) {
+    copy->SetNterpInvokeFastPathFlag();
+  }
 }
 
 }  // namespace linker

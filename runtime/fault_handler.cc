@@ -32,13 +32,13 @@
 #include "jit/jit_code_cache.h"
 #include "mirror/class.h"
 #include "mirror/object_reference.h"
-#include "oat_file.h"
-#include "oat_quick_method_header.h"
+#include "oat/oat_file.h"
+#include "oat/oat_quick_method_header.h"
 #include "sigchain.h"
 #include "thread-current-inl.h"
 #include "verify_object-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 // Static fault manger object accessed by signal handler.
 FaultManager fault_manager;
 

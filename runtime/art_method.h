@@ -39,7 +39,7 @@
 #include "offsets.h"
 #include "read_barrier_option.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class CodeItemDataAccessor;
 class CodeItemDebugInfoAccessor;
@@ -84,7 +84,7 @@ template <char Shorty> struct HandleShortyTraits;
 template <> struct HandleShortyTraits<'L'>;
 }  // namespace detail
 
-class ArtMethod final {
+class EXPORT ArtMethod final {
  public:
   // Should the class state be checked on sensitive operations?
   DECLARE_RUNTIME_DEBUG_FLAG(kCheckDeclaringClassState);
@@ -584,8 +584,17 @@ class ArtMethod final {
     AddAccessFlags(kAccNterpEntryPointFastPathFlag);
   }
 
+  void ClearNterpEntryPointFastPathFlag() REQUIRES_SHARED(Locks::mutator_lock_) {
+    DCHECK(!IsNative());
+    ClearAccessFlags(kAccNterpEntryPointFastPathFlag);
+  }
+
   void SetNterpInvokeFastPathFlag() REQUIRES_SHARED(Locks::mutator_lock_) {
     AddAccessFlags(kAccNterpInvokeFastPathFlag);
+  }
+
+  void ClearNterpInvokeFastPathFlag() REQUIRES_SHARED(Locks::mutator_lock_) {
+    ClearAccessFlags(kAccNterpInvokeFastPathFlag);
   }
 
   // Returns whether the method is a string constructor. The method must not

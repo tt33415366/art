@@ -853,11 +853,6 @@ void SchedulingLatencyVisitorARM::VisitDiv(HDiv* instruction) {
   }
 }
 
-void SchedulingLatencyVisitorARM::VisitPredicatedInstanceFieldGet(
-    HPredicatedInstanceFieldGet* instruction) {
-  HandleFieldGetLatencies(instruction, instruction->GetFieldInfo());
-}
-
 void SchedulingLatencyVisitorARM::VisitInstanceFieldGet(HInstanceFieldGet* instruction) {
   HandleFieldGetLatencies(instruction, instruction->GetFieldInfo());
 }
@@ -918,9 +913,7 @@ void SchedulingLatencyVisitorARM::VisitRem(HRem* instruction) {
 
 void SchedulingLatencyVisitorARM::HandleFieldGetLatencies(HInstruction* instruction,
                                                           const FieldInfo& field_info) {
-  DCHECK(instruction->IsInstanceFieldGet() ||
-         instruction->IsStaticFieldGet() ||
-         instruction->IsPredicatedInstanceFieldGet());
+  DCHECK(instruction->IsInstanceFieldGet() || instruction->IsStaticFieldGet());
   DCHECK(codegen_ != nullptr);
   bool is_volatile = field_info.IsVolatile();
   DataType::Type field_type = field_info.GetFieldType();
@@ -984,8 +977,6 @@ void SchedulingLatencyVisitorARM::HandleFieldSetLatencies(HInstruction* instruct
   DCHECK(codegen_ != nullptr);
   bool is_volatile = field_info.IsVolatile();
   DataType::Type field_type = field_info.GetFieldType();
-  bool needs_write_barrier =
-      CodeGenerator::StoreNeedsWriteBarrier(field_type, instruction->InputAt(1));
   bool atomic_ldrd_strd = codegen_->GetInstructionSetFeatures().HasAtomicLdrdAndStrd();
 
   switch (field_type) {
@@ -1004,7 +995,7 @@ void SchedulingLatencyVisitorARM::HandleFieldSetLatencies(HInstruction* instruct
 
     case DataType::Type::kInt32:
     case DataType::Type::kReference:
-      if (kPoisonHeapReferences && needs_write_barrier) {
+      if (kPoisonHeapReferences && field_type == DataType::Type::kReference) {
         last_visited_internal_latency_ += kArmIntegerOpLatency * 2;
       }
       last_visited_latency_ = kArmMemoryStoreLatency;

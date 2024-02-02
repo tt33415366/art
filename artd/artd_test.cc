@@ -58,7 +58,7 @@
 #include "exec_utils.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "oat_file.h"
+#include "oat/oat_file.h"
 #include "path_utils.h"
 #include "profman/profman_result.h"
 #include "testing.h"
@@ -1863,7 +1863,7 @@ TEST_F(ArtdTest, mergeProfiles) {
                           Contains(Flag("--reference-profile-file-fd=", FdHasContent("abc"))),
                           Contains(Flag("--apk-fd=", FdOf(dex_file_1))),
                           Contains(Flag("--apk-fd=", FdOf(dex_file_2))),
-                          Not(Contains("--force-merge")),
+                          Not(Contains("--force-merge-and-analyze")),
                           Not(Contains("--boot-image-merge")))),
                 HasKeepFdsFor("--profile-file-fd=", "--reference-profile-file-fd=", "--apk-fd=")),
           _,
@@ -1979,13 +1979,14 @@ TEST_F(ArtdTest, mergeProfilesWithOptionsForceMerge) {
 
   CreateFile(dex_file_);
 
-  EXPECT_CALL(
-      *mock_exec_utils_,
-      DoExecAndReturnCode(
-          WhenSplitBy("--", _, AllOf(Contains("--force-merge"), Contains("--boot-image-merge"))),
-          _,
-          _))
-      .WillOnce(Return(ProfmanResult::kSuccess));
+  EXPECT_CALL(*mock_exec_utils_,
+              DoExecAndReturnCode(WhenSplitBy("--",
+                                              _,
+                                              AllOf(Contains("--force-merge-and-analyze"),
+                                                    Contains("--boot-image-merge"))),
+                                  _,
+                                  _))
+      .WillOnce(Return(ProfmanResult::kCompile));
 
   bool result;
   EXPECT_TRUE(artd_
@@ -2284,6 +2285,25 @@ TEST_F(ArtdTest, deleteRuntimeArtifacts) {
   }
 }
 
+TEST_F(ArtdTest, deleteRuntimeArtifactsAndroidDataNotExist) {
+  // Will be cleaned up by `android_data_env_`
+  setenv("ANDROID_DATA", "/non-existing", /*replace=*/1);
+
+  auto scoped_set_logger = ScopedSetLogger(mock_logger_.AsStdFunction());
+  EXPECT_CALL(mock_logger_,
+              Call(_, _, _, _, _, HasSubstr("Failed to find directory /non-existing")));
+
+  int64_t aidl_return;
+  ASSERT_TRUE(
+      artd_
+          ->deleteRuntimeArtifacts(
+              {.packageName = "com.android.foo", .dexPath = "/a/b/base.apk", .isa = "arm64"},
+              &aidl_return)
+          .isOk());
+
+  EXPECT_EQ(aidl_return, 0);
+}
+
 TEST_F(ArtdTest, deleteRuntimeArtifactsSpecialChars) {
   std::vector<std::string> removed_files;
   std::vector<std::string> kept_files;
@@ -2328,6 +2348,92 @@ TEST_F(ArtdTest, deleteRuntimeArtifactsSpecialChars) {
   for (const std::string& path : kept_files) {
     EXPECT_TRUE(std::filesystem::exists(path)) << ART_FORMAT("'{}' should be kept", path);
   }
+}
+
+TEST_F(ArtdTest, getArtifactsSize) {
+  std::string oat_dir = scratch_path_ + "/a/oat/arm64";
+  CreateFile(oat_dir + "/b.odex", std::string(1, '*'));
+  CreateFile(oat_dir + "/b.vdex", std::string(2, '*'));
+  CreateFile(oat_dir + "/b.art", std::string(4, '*'));
+
+  // Irrelevant.
+  CreateFile(oat_dir + "/c.vdex", std::string(8, '*'));
+
+  int64_t aidl_return = -1;
+  ASSERT_TRUE(
+      artd_
+          ->getArtifactsSize(
+              {.dexPath = scratch_path_ + "/a/b.apk", .isa = "arm64", .isInDalvikCache = false},
+              &aidl_return)
+          .isOk());
+  EXPECT_EQ(aidl_return, 1 + 2 + 4);
+}
+
+TEST_F(ArtdTest, getVdexFileSize) {
+  std::string oat_dir = scratch_path_ + "/a/oat/arm64";
+  CreateFile(oat_dir + "/b.vdex", std::string(1, '*'));
+
+  // Irrelevant.
+  CreateFile(oat_dir + "/b.odex", std::string(2, '*'));
+  CreateFile(oat_dir + "/b.art", std::string(4, '*'));
+  CreateFile(oat_dir + "/c.vdex", std::string(8, '*'));
+
+  int64_t aidl_return = -1;
+  ASSERT_TRUE(artd_
+                  ->getVdexFileSize(ArtifactsPath{.dexPath = scratch_path_ + "/a/b.apk",
+                                                  .isa = "arm64",
+                                                  .isInDalvikCache = false},
+                                    &aidl_return)
+                  .isOk());
+  EXPECT_EQ(aidl_return, 1);
+}
+
+TEST_F(ArtdTest, getRuntimeArtifactsSize) {
+  CreateFile(android_data_ + "/user_de/0/com.android.foo/cache/oat_primary/arm64/base.art",
+             std::string(1, '*'));
+  CreateFile(android_data_ + "/user/0/com.android.foo/cache/oat_primary/arm64/base.art",
+             std::string(2, '*'));
+  CreateFile(android_data_ + "/user/1/com.android.foo/cache/oat_primary/arm64/base.art",
+             std::string(4, '*'));
+  CreateFile(
+      android_expand_ + "/123456-7890/user/1/com.android.foo/cache/oat_primary/arm64/base.art",
+      std::string(8, '*'));
+
+  // Irrelevant.
+  CreateFile(android_expand_ + "/user/0/com.android.foo/cache/oat_primary/arm64/different_dex.art",
+             std::string(16, '*'));
+
+  int64_t aidl_return = -1;
+  ASSERT_TRUE(
+      artd_
+          ->getRuntimeArtifactsSize(
+              {.packageName = "com.android.foo", .dexPath = "/a/b/base.apk", .isa = "arm64"},
+              &aidl_return)
+          .isOk());
+
+  EXPECT_EQ(aidl_return, 1 + 2 + 4 + 8);
+}
+
+TEST_F(ArtdTest, getProfileSize) {
+  CreateFile(android_data_ + "/misc/profiles/cur/0/com.android.foo/primary.prof",
+             std::string(1, '*'));
+
+  // Irrelevant.
+  CreateFile(android_data_ + "/misc/profiles/cur/0/com.android.foo/split_0.split.prof",
+             std::string(2, '*'));
+  CreateFile(android_data_ + "/misc/profiles/cur/0/com.android.bar/primary.prof",
+             std::string(4, '*'));
+  CreateFile(android_data_ + "/misc/profiles/ref/com.android.foo/primary.prof",
+             std::string(8, '*'));
+
+  int64_t aidl_return = -1;
+  ASSERT_TRUE(artd_
+                  ->getProfileSize(
+                      PrimaryCurProfilePath{
+                          .userId = 0, .packageName = "com.android.foo", .profileName = "primary"},
+                      &aidl_return)
+                  .isOk());
+  EXPECT_EQ(aidl_return, 1);
 }
 
 }  // namespace

@@ -22,6 +22,7 @@
 #include "data_type-inl.h"
 #include "driver/compiler_options.h"
 #include "escape.h"
+#include "intrinsic_objects.h"
 #include "intrinsics.h"
 #include "intrinsics_utils.h"
 #include "mirror/class-inl.h"
@@ -30,6 +31,7 @@
 #include "scoped_thread_state_change-inl.h"
 #include "sharpening.h"
 #include "string_builder_append.h"
+#include "well_known_classes.h"
 
 namespace art HIDDEN {
 
@@ -113,7 +115,7 @@ class InstructionSimplifierVisitor final : public HGraphDelegateVisitor {
   void VisitInvoke(HInvoke* invoke) override;
   void VisitDeoptimize(HDeoptimize* deoptimize) override;
   void VisitVecMul(HVecMul* instruction) override;
-  void VisitPredicatedInstanceFieldGet(HPredicatedInstanceFieldGet* instruction) override;
+  void SimplifyBoxUnbox(HInvoke* instruction, ArtField* field, DataType::Type type);
   void SimplifySystemArrayCopy(HInvoke* invoke);
   void SimplifyStringEquals(HInvoke* invoke);
   void SimplifyFP2Int(HInvoke* invoke);
@@ -361,6 +363,107 @@ bool InstructionSimplifierVisitor::TryCombineVecMultiplyAccumulate(HVecMul* mul)
   return true;
 }
 
+// Replace code looking like (x << N >>> N or x << N >> N):
+//    SHL tmp, x, N
+//    USHR/SHR dst, tmp, N
+// with the corresponding type conversion:
+//    TypeConversion<Unsigned<T>/Signed<T>> dst, x
+// if
+//    SHL has only one non environment use
+//    TypeOf(tmp) is not 64-bit type (they are not supported yet)
+//    N % kBitsPerByte = 0
+// where
+//    T = SignedIntegralTypeFromSize(source_integral_size)
+//    source_integral_size = ByteSize(tmp) - N / kBitsPerByte
+//
+//    We calculate source_integral_size from shift amount instead of
+//    assuming that it is equal to ByteSize(x) to be able to optimize
+//    cases like this:
+//        int x = ...
+//        int y = x << 24 >>> 24
+//    that is equavalent to
+//        int y = (unsigned byte) x
+//    in this case:
+//        N = 24
+//        tmp = x << 24
+//        source_integral_size is 1 (= 4 - 24 / 8) that corresponds to unsigned byte.
+static bool TryReplaceShiftsByConstantWithTypeConversion(HBinaryOperation *instruction) {
+  if (!instruction->IsUShr() && !instruction->IsShr()) {
+    return false;
+  }
+
+  if (DataType::Is64BitType(instruction->GetResultType())) {
+    return false;
+  }
+
+  HInstruction* shr_amount = instruction->GetRight();
+  if (!shr_amount->IsIntConstant()) {
+    return false;
+  }
+
+  int32_t shr_amount_cst = shr_amount->AsIntConstant()->GetValue();
+
+  // We assume that shift amount simplification was applied first so it doesn't
+  // exceed maximum distance that is kMaxIntShiftDistance as 64-bit shifts aren't
+  // supported.
+  DCHECK_LE(shr_amount_cst, kMaxIntShiftDistance);
+
+  if ((shr_amount_cst % kBitsPerByte) != 0) {
+    return false;
+  }
+
+  // Calculate size of the significant part of the input, e.g. a part that is not
+  // discarded due to left shift.
+  // Shift amount here should be less than size of right shift type.
+  DCHECK_GT(DataType::Size(instruction->GetType()), shr_amount_cst / kBitsPerByte);
+  size_t source_significant_part_size =
+      DataType::Size(instruction->GetType()) - shr_amount_cst / kBitsPerByte;
+
+  // Look for the smallest signed integer type that is suitable to store the
+  // significant part of the input.
+  DataType::Type source_integral_type =
+      DataType::SignedIntegralTypeFromSize(source_significant_part_size);
+
+  // If the size of the significant part of the input isn't equal to the size of the
+  // found type, shifts cannot be replaced by type conversion.
+  if (DataType::Size(source_integral_type) != source_significant_part_size) {
+    return false;
+  }
+
+  HInstruction* shr_value = instruction->GetLeft();
+  if (!shr_value->IsShl()) {
+    return false;
+  }
+
+  HShl *shl = shr_value->AsShl();
+  if (!shl->HasOnlyOneNonEnvironmentUse()) {
+    return false;
+  }
+
+  // Constants are unique so we just compare pointer here.
+  if (shl->GetRight() != shr_amount) {
+    return false;
+  }
+
+  // Type of shift's value is always int so sign/zero extension only
+  // depends on the type of the shift (shr/ushr).
+  bool is_signed = instruction->IsShr();
+  DataType::Type conv_type =
+      is_signed ? source_integral_type : DataType::ToUnsigned(source_integral_type);
+  HInstruction* shl_value = shl->GetLeft();
+  HBasicBlock *block = instruction->GetBlock();
+
+  HTypeConversion* new_conversion =
+      new (block->GetGraph()->GetAllocator()) HTypeConversion(conv_type, shl_value);
+
+  DCHECK(DataType::IsTypeConversionImplicit(conv_type, instruction->GetResultType()));
+
+  block->ReplaceAndRemoveInstructionWith(instruction, new_conversion);
+  shl->GetBlock()->RemoveInstruction(shl);
+
+  return true;
+}
+
 void InstructionSimplifierVisitor::VisitShift(HBinaryOperation* instruction) {
   DCHECK(instruction->IsShl() || instruction->IsShr() || instruction->IsUShr());
   HInstruction* shift_amount = instruction->GetRight();
@@ -391,6 +494,11 @@ void InstructionSimplifierVisitor::VisitShift(HBinaryOperation* instruction) {
       // optimizations do not need to special case for such situations.
       DCHECK_EQ(shift_amount->GetType(), DataType::Type::kInt32);
       instruction->ReplaceInput(GetGraph()->GetIntConstant(masked_cst), /* index= */ 1);
+      RecordSimplification();
+      return;
+    }
+
+    if (TryReplaceShiftsByConstantWithTypeConversion(instruction)) {
       RecordSimplification();
       return;
     }
@@ -947,67 +1055,6 @@ static HInstruction* AllowInMinMax(IfCondition cmp,
   return nullptr;
 }
 
-// TODO This should really be done by LSE itself since there is significantly
-// more information available there.
-void InstructionSimplifierVisitor::VisitPredicatedInstanceFieldGet(
-    HPredicatedInstanceFieldGet* pred_get) {
-  HInstruction* target = pred_get->GetTarget();
-  HInstruction* default_val = pred_get->GetDefaultValue();
-  if (target->IsNullConstant()) {
-    pred_get->ReplaceWith(default_val);
-    pred_get->GetBlock()->RemoveInstruction(pred_get);
-    RecordSimplification();
-    return;
-  } else if (!target->CanBeNull()) {
-    HInstruction* replace_with = new (GetGraph()->GetAllocator())
-        HInstanceFieldGet(pred_get->GetTarget(),
-                          pred_get->GetFieldInfo().GetField(),
-                          pred_get->GetFieldType(),
-                          pred_get->GetFieldOffset(),
-                          pred_get->IsVolatile(),
-                          pred_get->GetFieldInfo().GetFieldIndex(),
-                          pred_get->GetFieldInfo().GetDeclaringClassDefIndex(),
-                          pred_get->GetFieldInfo().GetDexFile(),
-                          pred_get->GetDexPc());
-    if (pred_get->GetType() == DataType::Type::kReference) {
-      replace_with->SetReferenceTypeInfoIfValid(pred_get->GetReferenceTypeInfo());
-    }
-    pred_get->GetBlock()->InsertInstructionBefore(replace_with, pred_get);
-    pred_get->ReplaceWith(replace_with);
-    pred_get->GetBlock()->RemoveInstruction(pred_get);
-    RecordSimplification();
-    return;
-  }
-  if (!target->IsPhi() || !default_val->IsPhi() || default_val->GetBlock() != target->GetBlock()) {
-    // The iget has already been reduced. We know the target or the phi
-    // selection will differ between the target and default.
-    return;
-  }
-  DCHECK_EQ(default_val->InputCount(), target->InputCount());
-  // In the same block both phis only one non-null we can remove the phi from default_val.
-  HInstruction* single_value = nullptr;
-  auto inputs = target->GetInputs();
-  for (auto [input, idx] : ZipCount(MakeIterationRange(inputs))) {
-    if (input->CanBeNull()) {
-      if (single_value == nullptr) {
-        single_value = default_val->InputAt(idx);
-      } else if (single_value != default_val->InputAt(idx) &&
-                 !single_value->Equals(default_val->InputAt(idx))) {
-        // Multiple values are associated with potential nulls, can't combine.
-        return;
-      }
-    }
-  }
-  DCHECK(single_value != nullptr) << "All target values are non-null but the phi as a whole still"
-                                  << " can be null? This should not be possible." << std::endl
-                                  << pred_get->DumpWithArgs();
-  if (single_value->StrictlyDominates(pred_get)) {
-    // Combine all the maybe null values into one.
-    pred_get->ReplaceInput(single_value, 0);
-    RecordSimplification();
-  }
-}
-
 void InstructionSimplifierVisitor::VisitSelect(HSelect* select) {
   HInstruction* replace_with = nullptr;
   HInstruction* condition = select->GetCondition();
@@ -1230,9 +1277,6 @@ static bool CanRemoveRedundantAnd(HConstant* and_right,
 static inline bool TryReplaceFieldOrArrayGetType(HInstruction* maybe_get, DataType::Type new_type) {
   if (maybe_get->IsInstanceFieldGet()) {
     maybe_get->AsInstanceFieldGet()->SetType(new_type);
-    return true;
-  } else if (maybe_get->IsPredicatedInstanceFieldGet()) {
-    maybe_get->AsPredicatedInstanceFieldGet()->SetType(new_type);
     return true;
   } else if (maybe_get->IsStaticFieldGet()) {
     maybe_get->AsStaticFieldGet()->SetType(new_type);
@@ -2407,6 +2451,29 @@ void InstructionSimplifierVisitor::VisitXor(HXor* instruction) {
   TryHandleAssociativeAndCommutativeOperation(instruction);
 }
 
+void InstructionSimplifierVisitor::SimplifyBoxUnbox(
+    HInvoke* instruction, ArtField* field, DataType::Type type) {
+  DCHECK(instruction->GetIntrinsic() == Intrinsics::kByteValueOf ||
+         instruction->GetIntrinsic() == Intrinsics::kShortValueOf ||
+         instruction->GetIntrinsic() == Intrinsics::kCharacterValueOf ||
+         instruction->GetIntrinsic() == Intrinsics::kIntegerValueOf);
+  const HUseList<HInstruction*>& uses = instruction->GetUses();
+  for (auto it = uses.begin(), end = uses.end(); it != end;) {
+    HInstruction* user = it->GetUser();
+    ++it;  // Increment the iterator before we potentially remove the node from the list.
+    if (user->IsInstanceFieldGet() &&
+        user->AsInstanceFieldGet()->GetFieldInfo().GetField() == field &&
+        // Note: Due to other simplifications, we may have an `HInstanceFieldGet` with
+        // a different type (Int8 vs. Uint8, Int16 vs. Uint16) for the same field.
+        // Do not optimize that case for now. (We would need to insert a `HTypeConversion`.)
+        user->GetType() == type) {
+      user->ReplaceWith(instruction->InputAt(0));
+      RecordSimplification();
+      // Do not remove `user` while we're iterating over the block's instructions. Let DCE do it.
+    }
+  }
+}
+
 void InstructionSimplifierVisitor::SimplifyStringEquals(HInvoke* instruction) {
   HInstruction* argument = instruction->InputAt(1);
   HInstruction* receiver = instruction->InputAt(0);
@@ -2445,7 +2512,9 @@ static bool IsArrayLengthOf(HInstruction* potential_length, HInstruction* potent
 
 void InstructionSimplifierVisitor::SimplifySystemArrayCopy(HInvoke* instruction) {
   HInstruction* source = instruction->InputAt(0);
+  HInstruction* source_pos = instruction->InputAt(1);
   HInstruction* destination = instruction->InputAt(2);
+  HInstruction* destination_pos = instruction->InputAt(3);
   HInstruction* count = instruction->InputAt(4);
   SystemArrayCopyOptimizations optimizations(instruction);
   if (CanEnsureNotNullAt(source, instruction)) {
@@ -2456,6 +2525,10 @@ void InstructionSimplifierVisitor::SimplifySystemArrayCopy(HInvoke* instruction)
   }
   if (destination == source) {
     optimizations.SetDestinationIsSource();
+  }
+
+  if (source_pos == destination_pos) {
+    optimizations.SetSourcePositionIsDestinationPosition();
   }
 
   if (IsArrayLengthOf(count, source)) {
@@ -3058,6 +3131,12 @@ bool InstructionSimplifierVisitor::CanUseKnownBootImageVarHandle(HInvoke* invoke
 
 void InstructionSimplifierVisitor::VisitInvoke(HInvoke* instruction) {
   switch (instruction->GetIntrinsic()) {
+#define SIMPLIFY_BOX_UNBOX(name, low, high, type, start_index) \
+    case Intrinsics::k ## name ## ValueOf: \
+      SimplifyBoxUnbox(instruction, WellKnownClasses::java_lang_##name##_value, type); \
+      break;
+    BOXED_TYPES(SIMPLIFY_BOX_UNBOX)
+#undef SIMPLIFY_BOX_UNBOX
     case Intrinsics::kStringEquals:
       SimplifyStringEquals(instruction);
       break;
