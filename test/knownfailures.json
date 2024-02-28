@@ -1238,6 +1238,7 @@
                   "2238-checker-polymorphic-recursive-inlining",
                   "2240-tracing-non-invokable-method",
                   "2246-trace-stream",
+                  "2246-trace-v2",
                   "2254-class-value-before-and-after-u",
                   "2261-badcleaner-in-systemcleaner",
                   "2263-method-trace-jit",
@@ -1571,7 +1572,7 @@
     },
     {
       "tests": ["2271-profile-inline-cache"],
-      "variant": "jit-on-first-use",
+      "variant": "jit-on-first-use | debuggable | trace |  stream",
       "description": ["Test relies on profiling done by baseline compiled code. Meanwhile, it",
                       "can't use --baseline because it has a test case checking the behavior when",
                       "a method is optimized compiled."]

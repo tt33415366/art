@@ -38,14 +38,14 @@ class WBEVisitor final : public HGraphVisitor {
     // We clear the map to perform this optimization only in the same block. Doing it across blocks
     // would entail non-trivial merging of states.
     current_write_barriers_.clear();
-    HGraphVisitor::VisitBasicBlock(block);
+    VisitNonPhiInstructions(block);
   }
 
   void VisitInstanceFieldSet(HInstanceFieldSet* instruction) override {
     DCHECK(!instruction->GetSideEffects().Includes(SideEffects::CanTriggerGC()));
 
     if (instruction->GetFieldType() != DataType::Type::kReference ||
-        instruction->GetValue()->IsNullConstant()) {
+        HuntForOriginalReference(instruction->GetValue())->IsNullConstant()) {
       instruction->SetWriteBarrierKind(WriteBarrierKind::kDontEmit);
       return;
     }
@@ -72,7 +72,7 @@ class WBEVisitor final : public HGraphVisitor {
     DCHECK(!instruction->GetSideEffects().Includes(SideEffects::CanTriggerGC()));
 
     if (instruction->GetFieldType() != DataType::Type::kReference ||
-        instruction->GetValue()->IsNullConstant()) {
+        HuntForOriginalReference(instruction->GetValue())->IsNullConstant()) {
       instruction->SetWriteBarrierKind(WriteBarrierKind::kDontEmit);
       return;
     }
@@ -100,7 +100,7 @@ class WBEVisitor final : public HGraphVisitor {
     }
 
     if (instruction->GetComponentType() != DataType::Type::kReference ||
-        instruction->GetValue()->IsNullConstant()) {
+        HuntForOriginalReference(instruction->GetValue())->IsNullConstant()) {
       instruction->SetWriteBarrierKind(WriteBarrierKind::kDontEmit);
       return;
     }
