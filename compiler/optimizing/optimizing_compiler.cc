@@ -897,6 +897,7 @@ CodeGenerator* OptimizingCompiler::TryCompile(ArenaAllocator* allocator,
           break;
         }
         case kAnalysisSuccess:
+          LOG(FATAL) << "Unreachable";
           UNREACHABLE();
       }
       pass_observer.SetGraphInBadState();
@@ -905,6 +906,7 @@ CodeGenerator* OptimizingCompiler::TryCompile(ArenaAllocator* allocator,
   }
 
   if (compilation_kind == CompilationKind::kBaseline && compiler_options.ProfileBranches()) {
+    graph->SetUsefulOptimizing();
     // Branch profiling currently doesn't support running optimizations.
     RunRequiredPasses(graph, codegen.get(), dex_compilation_unit, &pass_observer);
   } else {
@@ -917,6 +919,7 @@ CodeGenerator* OptimizingCompiler::TryCompile(ArenaAllocator* allocator,
   // this method already, do it now.
   if (jit != nullptr &&
       compilation_kind == CompilationKind::kBaseline &&
+      graph->IsUsefulOptimizing() &&
       graph->GetProfilingInfo() == nullptr) {
     ProfilingInfoBuilder(
         graph, codegen->GetCompilerOptions(), codegen.get(), compilation_stats_.get()).Run();
@@ -1222,7 +1225,7 @@ CompiledMethod* OptimizingCompiler::JniCompile(uint32_t access_flags,
   }
 
   JniCompiledMethod jni_compiled_method = ArtQuickJniCompileMethod(
-      compiler_options, access_flags, method_idx, dex_file, &allocator);
+      compiler_options, dex_file.GetMethodShortyView(method_idx), access_flags, &allocator);
   MaybeRecordStat(compilation_stats_.get(), MethodCompilationStat::kCompiledNativeStub);
 
   ScopedArenaAllocator stack_map_allocator(&arena_stack);  // Will hold the stack map.
@@ -1289,7 +1292,7 @@ bool OptimizingCompiler::JitCompile(Thread* self,
     DCHECK_IMPLIES(method->IsCriticalNative(), !runtime->IsJavaDebuggable());
 
     JniCompiledMethod jni_compiled_method = ArtQuickJniCompileMethod(
-        compiler_options, access_flags, method_idx, *dex_file, &allocator);
+        compiler_options, dex_file->GetMethodShortyView(method_idx), access_flags, &allocator);
     std::vector<Handle<mirror::Object>> roots;
     ArenaSet<ArtMethod*, std::less<ArtMethod*>> cha_single_implementation_list(
         allocator.Adapter(kArenaAllocCHA));
@@ -1446,6 +1449,11 @@ bool OptimizingCompiler::JitCompile(Thread* self,
     info.code_info = stack_map.size() == 0 ? nullptr : stack_map.data();
     info.cfi = ArrayRef<const uint8_t>(*codegen->GetAssembler()->cfi().data());
     debug_info = GenerateJitDebugInfo(info);
+  }
+
+  if (compilation_kind == CompilationKind::kBaseline &&
+      !codegen->GetGraph()->IsUsefulOptimizing()) {
+    compilation_kind = CompilationKind::kOptimized;
   }
 
   if (!code_cache->Commit(self,

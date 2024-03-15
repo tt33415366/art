@@ -199,7 +199,10 @@ enum class WeakRefAccessState : int32_t {
 
 // See Thread.tlsPtr_.active_suspend1_barriers below for explanation.
 struct WrappedSuspend1Barrier {
-  WrappedSuspend1Barrier() : barrier_(1), next_(nullptr) {}
+  // TODO(b/23668816): At least weaken CHECKs to DCHECKs once the bug is fixed.
+  static constexpr int kMagic = 0xba8;
+  WrappedSuspend1Barrier() : magic_(kMagic), barrier_(1), next_(nullptr) {}
+  int magic_;
   AtomicInteger barrier_;
   struct WrappedSuspend1Barrier* next_ GUARDED_BY(Locks::thread_suspend_count_lock_);
 };
@@ -300,8 +303,7 @@ class EXPORT Thread {
   void CheckEmptyCheckpointFromWeakRefAccess(BaseMutex* cond_var_mutex);
   void CheckEmptyCheckpointFromMutex();
 
-  static Thread* FromManagedThread(const ScopedObjectAccessAlreadyRunnable& ts,
-                                   ObjPtr<mirror::Object> thread_peer)
+  static Thread* FromManagedThread(Thread* self, ObjPtr<mirror::Object> thread_peer)
       REQUIRES(Locks::thread_list_lock_, !Locks::thread_suspend_count_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
   static Thread* FromManagedThread(const ScopedObjectAccessAlreadyRunnable& ts, jobject thread)
@@ -1430,21 +1432,18 @@ class EXPORT Thread {
   }
   // Remove the suspend trigger for this thread by making the suspend_trigger_ TLS value
   // equal to a valid pointer.
-  // TODO: does this need to atomic?  I don't think so.
   void RemoveSuspendTrigger() {
-    tlsPtr_.suspend_trigger = reinterpret_cast<uintptr_t*>(&tlsPtr_.suspend_trigger);
+    tlsPtr_.suspend_trigger.store(reinterpret_cast<uintptr_t*>(&tlsPtr_.suspend_trigger),
+                                  std::memory_order_relaxed);
   }
 
   // Trigger a suspend check by making the suspend_trigger_ TLS value an invalid pointer.
   // The next time a suspend check is done, it will load from the value at this address
   // and trigger a SIGSEGV.
-  // Only needed if Runtime::implicit_suspend_checks_ is true and fully implemented.  It currently
-  // is always false. Client code currently just looks at the thread flags directly to determine
-  // whether we should suspend, so this call is currently unnecessary.
-  void TriggerSuspend() {
-    tlsPtr_.suspend_trigger = nullptr;
-  }
-
+  // Only needed if Runtime::implicit_suspend_checks_ is true. On some platforms, and in the
+  // interpreter, client code currently just looks at the thread flags directly to determine
+  // whether we should suspend, so this call is not always necessary.
+  void TriggerSuspend() { tlsPtr_.suspend_trigger.store(nullptr, std::memory_order_release); }
 
   // Push an object onto the allocation stack.
   bool PushOnThreadLocalAllocationStack(mirror::Object* obj)
@@ -1762,9 +1761,20 @@ class EXPORT Thread {
 
   // Remove last-added entry from active_suspend1_barriers.
   // Only makes sense if we're still holding thread_suspend_count_lock_ since insertion.
-  ALWAYS_INLINE void RemoveFirstSuspend1Barrier() REQUIRES(Locks::thread_suspend_count_lock_);
+  // We redundantly pass in the barrier to be removed in order to enable a DCHECK.
+  ALWAYS_INLINE void RemoveFirstSuspend1Barrier(WrappedSuspend1Barrier* suspend1_barrier)
+      REQUIRES(Locks::thread_suspend_count_lock_);
+
+  // Remove the "barrier" from the list no matter where it appears. Called only under exceptional
+  // circumstances. The barrier must be in the list.
+  ALWAYS_INLINE void RemoveSuspend1Barrier(WrappedSuspend1Barrier* suspend1_barrier)
+      REQUIRES(Locks::thread_suspend_count_lock_);
 
   ALWAYS_INLINE bool HasActiveSuspendBarrier() REQUIRES(Locks::thread_suspend_count_lock_);
+
+  // CHECK that the given barrier is no longer on our list.
+  ALWAYS_INLINE void CheckBarrierInactive(WrappedSuspend1Barrier* suspend1_barrier)
+      REQUIRES(Locks::thread_suspend_count_lock_);
 
   // Registers the current thread as the jit sensitive thread. Should be called just once.
   static void SetJitSensitiveThread() {
@@ -1946,7 +1956,7 @@ class EXPORT Thread {
   // first if possible.
   /***********************************************************************************************/
 
-  struct PACKED(4) tls_32bit_sized_values {
+  struct alignas(4) tls_32bit_sized_values {
     // We have no control over the size of 'bool', but want our boolean fields
     // to be 4-byte quantities.
     using bool32_t = uint32_t;
@@ -2074,7 +2084,7 @@ class EXPORT Thread {
     uint32_t shared_method_hotness;
   } tls32_;
 
-  struct PACKED(8) tls_64bit_sized_values {
+  struct alignas(8) tls_64bit_sized_values {
     tls_64bit_sized_values() : trace_clock_base(0) {
     }
 
@@ -2084,7 +2094,7 @@ class EXPORT Thread {
     RuntimeStats stats;
   } tls64_;
 
-  struct PACKED(sizeof(void*)) tls_ptr_sized_values {
+  struct alignas(sizeof(void*)) tls_ptr_sized_values {
       tls_ptr_sized_values() : card_table(nullptr),
                                exception(nullptr),
                                stack_end(nullptr),
@@ -2144,8 +2154,12 @@ class EXPORT Thread {
     ManagedStack managed_stack;
 
     // In certain modes, setting this to 0 will trigger a SEGV and thus a suspend check.  It is
-    // normally set to the address of itself.
-    uintptr_t* suspend_trigger;
+    // normally set to the address of itself. It should be cleared with release semantics to ensure
+    // that prior state changes etc. are visible to any thread that faults as a result.
+    // We assume that the kernel ensures that such changes are then visible to the faulting
+    // thread, even if it is not an acquire load that faults. (Indeed, it seems unlikely that the
+    // ordering semantics associated with the faulting load has any impact.)
+    std::atomic<uintptr_t*> suspend_trigger;
 
     // Every thread may have an associated JNI environment
     JNIEnvExt* jni_env;
