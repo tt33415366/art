@@ -24,9 +24,9 @@
 
 #include "arch/riscv64/instruction_set_features_riscv64.h"
 #include "base/arena_containers.h"
-#include "base/enums.h"
 #include "base/globals.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "managed_register_riscv64.h"
 #include "utils/assembler.h"
 #include "utils/label.h"
@@ -246,7 +246,7 @@ class Riscv64Assembler final : public Assembler {
   size_t CodeSize() const override { return Assembler::CodeSize(); }
   DebugFrameOpCodeWriterForAssembler& cfi() { return Assembler::cfi(); }
 
-  bool IsExtensionEnabled(Riscv64Extension ext) {
+  bool IsExtensionEnabled(Riscv64Extension ext) const {
     return (enabled_extensions_ & Riscv64ExtensionBit(ext)) != 0u;
   }
 

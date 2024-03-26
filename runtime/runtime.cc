@@ -55,7 +55,6 @@
 #include "base/arena_allocator.h"
 #include "base/atomic.h"
 #include "base/dumpable.h"
-#include "base/enums.h"
 #include "base/file_utils.h"
 #include "base/flags.h"
 #include "base/malloc_arena_pool.h"
@@ -63,6 +62,7 @@
 #include "base/memory_tool.h"
 #include "base/mutex.h"
 #include "base/os.h"
+#include "base/pointer_size.h"
 #include "base/quasi_atomic.h"
 #include "base/sdk_version.h"
 #include "base/stl_util.h"
@@ -1251,10 +1251,13 @@ void Runtime::InitNonZygoteOrPostFork(
     }
   }
 
+  // We only used the runtime thread pool for loading app images. However the
+  // speed up that this brings in theory isn't there in practice b/328173302.
+  static constexpr bool kUseRuntimeThreadPool = false;
   // Create the thread pools.
   // Avoid creating the runtime thread pool for system server since it will not be used and would
   // waste memory.
-  if (!is_system_server) {
+  if (!is_system_server && kUseRuntimeThreadPool) {
     ScopedTrace timing("CreateThreadPool");
     constexpr size_t kStackSize = 64 * KB;
     constexpr size_t kMaxRuntimeWorkers = 4u;
