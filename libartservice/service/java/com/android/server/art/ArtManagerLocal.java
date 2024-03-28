@@ -865,7 +865,7 @@ public final class ArtManagerLocal {
      *         names</b>, e.g., {@code com.google.android.art}).
      */
     @SuppressLint("UnflaggedApi") // Flag support for mainline is not available.
-    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
     public void onApexStaged(@NonNull String[] stagedApexModuleNames) {
         // TODO(b/311377497): Check system requirements.
         mInjector.getPreRebootDexoptJob().schedule();
@@ -1048,7 +1048,7 @@ public final class ArtManagerLocal {
      *
      * @hide
      */
-    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
     @NonNull
     PreRebootDexoptJob getPreRebootDexoptJob() {
         return mInjector.getPreRebootDexoptJob();
@@ -1410,7 +1410,7 @@ public final class ArtManagerLocal {
             getUserManager();
             getDexUseManager();
             getStorageManager();
-            ArtModuleServiceInitializer.getArtModuleServiceManager();
+            GlobalInjector.getInstance().checkArtModuleServiceManager();
         }
 
         @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
@@ -1472,7 +1472,7 @@ public final class ArtManagerLocal {
             return mBgDexoptJob;
         }
 
-        @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+        @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
         @NonNull
         public synchronized PreRebootDexoptJob getPreRebootDexoptJob() {
             if (mPrDexoptJob == null) {
@@ -1490,8 +1490,7 @@ public final class ArtManagerLocal {
         @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
         @NonNull
         public DexUseManagerLocal getDexUseManager() {
-            return Objects.requireNonNull(
-                    LocalManagerRegistry.getManager(DexUseManagerLocal.class));
+            return GlobalInjector.getInstance().getDexUseManager();
         }
 
         @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)

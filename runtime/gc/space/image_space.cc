@@ -37,12 +37,12 @@
 #include "base/array_ref.h"
 #include "base/bit_memory_region.h"
 #include "base/callee_save_type.h"
-#include "base/enums.h"
 #include "base/file_utils.h"
 #include "base/globals.h"
 #include "base/macros.h"
 #include "base/memfd.h"
 #include "base/os.h"
+#include "base/pointer_size.h"
 #include "base/scoped_flock.h"
 #include "base/stl_util.h"
 #include "base/string_view_cpp20.h"
@@ -2618,6 +2618,9 @@ class ImageSpace::BootImageLoader {
       };
       image_header.VisitPackedImTables(method_table_visitor, space->Begin(), kPointerSize);
       image_header.VisitPackedImtConflictTables(method_table_visitor, space->Begin(), kPointerSize);
+      image_header.VisitJniStubMethods</*kUpdate=*/ true>(method_table_visitor,
+                                                          space->Begin(),
+                                                          kPointerSize);
 
       // Patch the intern table.
       if (image_header.GetInternedStringsSection().Size() != 0u) {
