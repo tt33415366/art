@@ -3744,10 +3744,67 @@ inline void EnsureThrowsInvocationError(ClassLinker* class_linker, ArtMethod* me
       class_linker->GetImagePointerSize());
 }
 
-static void LinkCode(ClassLinker* class_linker,
-                     ArtMethod* method,
-                     const OatFile::OatClass* oat_class,
-                     uint32_t class_def_method_index) REQUIRES_SHARED(Locks::mutator_lock_) {
+class ClassLinker::OatClassCodeIterator {
+ public:
+  explicit OatClassCodeIterator(const OatFile::OatClass& oat_class)
+      : begin_(oat_class.methods_pointer_ != nullptr && oat_class.oat_file_->IsExecutable()
+                   ? oat_class.oat_file_->Begin()
+                   : nullptr),
+        bitmap_(oat_class.bitmap_),
+        current_(oat_class.methods_pointer_ != nullptr && oat_class.oat_file_->IsExecutable()
+                     ? oat_class.methods_pointer_
+                     : nullptr),
+        method_index_(0u),
+        num_methods_(oat_class.num_methods_) {
+    DCHECK_EQ(bitmap_ != nullptr, oat_class.GetType() == OatClassType::kSomeCompiled);
+  }
+
+  const void* GetAndAdvance(uint32_t method_index) {
+    if (kIsDebugBuild) {
+      CHECK_EQ(method_index, method_index_);
+      ++method_index_;
+    }
+    if (current_ == nullptr) {
+      // We may not have a valid `num_methods_` to perform the next `DCHECK()`.
+      return nullptr;
+    }
+    DCHECK_LT(method_index, num_methods_);
+    DCHECK(begin_ != nullptr);
+    if (bitmap_ == nullptr || BitVector::IsBitSet(bitmap_, method_index)) {
+      DCHECK_NE(current_->code_offset_, 0u);
+      const void* result = begin_ + current_->code_offset_;
+      ++current_;
+      return result;
+    } else {
+      return nullptr;
+    }
+  }
+
+  void SkipAbstract(uint32_t method_index) {
+    if (kIsDebugBuild) {
+      CHECK_EQ(method_index, method_index_);
+      ++method_index_;
+      if (current_ != nullptr) {
+        CHECK_LT(method_index, num_methods_);
+        CHECK(bitmap_ != nullptr);
+        CHECK(!BitVector::IsBitSet(bitmap_, method_index));
+      }
+    }
+  }
+
+ private:
+  const uint8_t* const begin_;
+  const uint32_t* const bitmap_;
+  const OatMethodOffsets* current_;
+
+  // Debug mode members.
+  uint32_t method_index_;
+  const uint32_t num_methods_;
+};
+
+inline void ClassLinker::LinkCode(ArtMethod* method,
+                                  uint32_t class_def_method_index,
+                                  /*inout*/ OatClassCodeIterator* occi) {
   ScopedAssertNoThreadSuspension sants(__FUNCTION__);
   Runtime* const runtime = Runtime::Current();
   if (runtime->IsAotCompiler()) {
@@ -3760,19 +3817,14 @@ static void LinkCode(ClassLinker* class_linker,
   DCHECK(!method->GetDeclaringClass()->IsVisiblyInitialized());  // Actually ClassStatus::Idx.
 
   if (!method->IsInvokable()) {
-    EnsureThrowsInvocationError(class_linker, method);
+    EnsureThrowsInvocationError(this, method);
+    occi->SkipAbstract(class_def_method_index);
     return;
   }
 
-  const void* quick_code = nullptr;
-  if (oat_class != nullptr) {
-    // Every kind of method should at least get an invoke stub from the oat_method.
-    // non-abstract methods also get their code pointers.
-    const OatFile::OatMethod oat_method = oat_class->GetOatMethod(class_def_method_index);
-    quick_code = oat_method.GetQuickCode();
-  }
+  const void* quick_code = occi->GetAndAdvance(class_def_method_index);
   if (method->IsNative() && quick_code == nullptr) {
-    const void* boot_jni_stub = class_linker->FindBootJniStub(method);
+    const void* boot_jni_stub = FindBootJniStub(method);
     if (boot_jni_stub != nullptr) {
       // Use boot JNI stub if found.
       quick_code = boot_jni_stub;
@@ -3868,6 +3920,29 @@ LinearAlloc* ClassLinker::GetOrCreateAllocatorForClassLoader(ObjPtr<mirror::Clas
   return allocator;
 }
 
+// Helper class for iterating over method annotations, using their ordering in the dex file.
+// Since direct and virtual methods are separated (but each section is ordered), we shall use
+// separate iterators for loading direct and virtual methods.
+class ClassLinker::MethodAnnotationsIterator {
+ public:
+  MethodAnnotationsIterator(const DexFile& dex_file,
+                            const dex::AnnotationsDirectoryItem* annotations_dir)
+      : current_((annotations_dir != nullptr) ? dex_file.GetMethodAnnotations(annotations_dir)
+                                              : nullptr),
+        end_((annotations_dir != nullptr) ? current_ + annotations_dir->methods_size_ : nullptr) {}
+
+  const dex::MethodAnnotationsItem* AdvanceTo(uint32_t method_idx) {
+    while (current_ != end_ && current_->method_idx_ < method_idx) {
+      ++current_;
+    }
+    return (current_ != end_ && current_->method_idx_ == method_idx) ? current_ : nullptr;
+  }
+
+ private:
+  const dex::MethodAnnotationsItem* current_;
+  const dex::MethodAnnotationsItem* const end_;
+};
+
 void ClassLinker::LoadClass(Thread* self,
                             const DexFile& dex_file,
                             const dex::ClassDef& dex_class_def,
@@ -3903,7 +3978,7 @@ void ClassLinker::LoadClass(Thread* self,
     const OatFile::OatClass oat_class = (runtime->IsStarted() && !runtime->IsAotCompiler())
         ? OatFile::FindOatClass(dex_file, klass->GetDexClassDefIndex(), &has_oat_class)
         : OatFile::OatClass::Invalid();
-    const OatFile::OatClass* oat_class_ptr = has_oat_class ? &oat_class : nullptr;
+    OatClassCodeIterator occi(oat_class);
     klass->SetMethodsPtr(
         AllocArtMethodArray(self, allocator, accessor.NumMethods()),
         accessor.NumDirectMethods(),
@@ -3911,6 +3986,10 @@ void ClassLinker::LoadClass(Thread* self,
     size_t class_def_method_index = 0;
     uint32_t last_dex_method_index = dex::kDexNoIndex;
     size_t last_class_def_method_index = 0;
+
+    // Initialize separate `MethodAnnotationsIterator`s for direct and virtual methods.
+    MethodAnnotationsIterator mai_direct(dex_file, dex_file.GetAnnotationsDirectory(dex_class_def));
+    MethodAnnotationsIterator mai_virtual = mai_direct;
 
     uint16_t hotness_threshold = runtime->GetJITOptions()->GetWarmupThreshold();
     // Use the visitor since the ranged based loops are bit slower from seeking. Seeking to the
@@ -3935,8 +4014,8 @@ void ClassLinker::LoadClass(Thread* self,
         }, [&](const ClassAccessor::Method& method) REQUIRES_SHARED(Locks::mutator_lock_) {
           ArtMethod* art_method = klass->GetDirectMethodUnchecked(class_def_method_index,
               image_pointer_size_);
-          LoadMethod(dex_file, method, klass.Get(), art_method);
-          LinkCode(this, art_method, oat_class_ptr, class_def_method_index);
+          LoadMethod(dex_file, method, klass.Get(), &mai_direct, art_method);
+          LinkCode(art_method, class_def_method_index, &occi);
           uint32_t it_method_index = method.GetIndex();
           if (last_dex_method_index == it_method_index) {
             // duplicate case
@@ -3953,8 +4032,8 @@ void ClassLinker::LoadClass(Thread* self,
               class_def_method_index - accessor.NumDirectMethods(),
               image_pointer_size_);
           art_method->ResetCounter(hotness_threshold);
-          LoadMethod(dex_file, method, klass.Get(), art_method);
-          LinkCode(this, art_method, oat_class_ptr, class_def_method_index);
+          LoadMethod(dex_file, method, klass.Get(), &mai_virtual, art_method);
+          LinkCode(art_method, class_def_method_index, &occi);
           ++class_def_method_index;
         });
 
@@ -3996,7 +4075,8 @@ void ClassLinker::LoadField(const ClassAccessor::Field& field,
 void ClassLinker::LoadMethod(const DexFile& dex_file,
                              const ClassAccessor::Method& method,
                              ObjPtr<mirror::Class> klass,
-                             ArtMethod* dst) {
+                             /*inout*/ MethodAnnotationsIterator* mai,
+                             /*out*/ ArtMethod* dst) {
   ScopedAssertNoThreadSuspension sants(__FUNCTION__);
 
   const uint32_t dex_method_idx = method.GetIndex();
@@ -4045,9 +4125,11 @@ void ClassLinker::LoadMethod(const DexFile& dex_file,
 
   if (UNLIKELY((access_flags & kAccNative) != 0u)) {
     // Check if the native method is annotated with @FastNative or @CriticalNative.
-    const dex::ClassDef& class_def = dex_file.GetClassDef(klass->GetDexClassDefIndex());
-    access_flags |=
-        annotations::GetNativeMethodAnnotationAccessFlags(dex_file, class_def, dex_method_idx);
+    const dex::MethodAnnotationsItem* method_annotations = mai->AdvanceTo(dex_method_idx);
+    if (method_annotations != nullptr) {
+      access_flags |=
+          annotations::GetNativeMethodAnnotationAccessFlags(dex_file, *method_annotations);
+    }
     dst->SetAccessFlags(access_flags);
     DCHECK(!dst->IsAbstract());
     DCHECK(!dst->HasCodeItem());
@@ -4064,8 +4146,9 @@ void ClassLinker::LoadMethod(const DexFile& dex_file,
     DCHECK_EQ(method.GetCodeItemOffset(), 0u);
     dst->SetDataPtrSize(nullptr, image_pointer_size_);  // Single implementation not set yet.
   } else {
-    const dex::ClassDef& class_def = dex_file.GetClassDef(klass->GetDexClassDefIndex());
-    if (annotations::MethodIsNeverCompile(dex_file, class_def, dex_method_idx)) {
+    const dex::MethodAnnotationsItem* method_annotations = mai->AdvanceTo(dex_method_idx);
+    if (method_annotations != nullptr &&
+        annotations::MethodIsNeverCompile(dex_file, *method_annotations)) {
       access_flags |= kAccCompileDontBother;
     }
     dst->SetAccessFlags(access_flags);

@@ -924,6 +924,8 @@ class EXPORT ClassLinker {
   class LinkFieldsHelper;
   template <PointerSize kPointerSize>
   class LinkMethodsHelper;
+  class MethodAnnotationsIterator;
+  class OatClassCodeIterator;
   class VisiblyInitializedCallback;
 
   struct ClassLoaderData {
@@ -1043,8 +1045,13 @@ class EXPORT ClassLinker {
   void LoadMethod(const DexFile& dex_file,
                   const ClassAccessor::Method& method,
                   ObjPtr<mirror::Class> klass,
-                  ArtMethod* dst)
+                  /*inout*/ MethodAnnotationsIterator* mai,
+                  /*out*/ ArtMethod* dst)
       REQUIRES_SHARED(Locks::mutator_lock_);
+
+  void LinkCode(ArtMethod* method,
+                uint32_t class_def_method_index,
+                /*inout*/ OatClassCodeIterator* occi) REQUIRES_SHARED(Locks::mutator_lock_);
 
   void FixupStaticTrampolines(Thread* self, ObjPtr<mirror::Class> klass)
       REQUIRES_SHARED(Locks::mutator_lock_);
