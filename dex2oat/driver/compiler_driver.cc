@@ -687,7 +687,7 @@ static void InitializeTypeCheckBitstrings(CompilerDriver* driver,
       case Instruction::INSTANCE_OF: {
         dex::TypeIndex type_index(
             (inst->Opcode() == Instruction::CHECK_CAST) ? inst->VRegB_21c() : inst->VRegC_22c());
-        const char* descriptor = dex_file.StringByTypeIdx(type_index);
+        const char* descriptor = dex_file.GetTypeDescriptor(type_index);
         // We currently do not use the bitstring type check for array or final (including
         // primitive) classes. We may reconsider this in future if it's deemed to be beneficial.
         // And we cannot use it for classes outside the boot image as we do not know the runtime
@@ -835,24 +835,27 @@ void CompilerDriver::PreCompile(jobject class_loader,
   LoadImageClasses(timings, image_classes);
   VLOG(compiler) << "LoadImageClasses: " << GetMemoryUsageString(false);
 
-  if (compiler_options_->IsAnyCompilationEnabled()) {
-    // Avoid adding the dex files in the case where we aren't going to add compiled methods.
-    // This reduces RAM usage for this case.
-    for (const DexFile* dex_file : dex_files) {
-      // Can be already inserted. This happens for gtests.
-      if (!compiled_methods_.HaveDexFile(dex_file)) {
-        compiled_methods_.AddDexFile(dex_file);
-      }
-    }
-    // Resolve eagerly to prepare for compilation.
-    Resolve(class_loader, dex_files, timings);
-    VLOG(compiler) << "Resolve: " << GetMemoryUsageString(false);
-  }
-
   if (compiler_options_->AssumeClassesAreVerified()) {
     VLOG(compiler) << "Verify none mode specified, skipping verification.";
     SetVerified(class_loader, dex_files, timings);
-  } else if (compiler_options_->IsVerificationEnabled()) {
+  } else {
+    DCHECK(compiler_options_->IsVerificationEnabled());
+
+    if (compiler_options_->IsAnyCompilationEnabled()) {
+      // Avoid adding the dex files in the case where we aren't going to add compiled methods.
+      // This reduces RAM usage for this case.
+      for (const DexFile* dex_file : dex_files) {
+        // Can be already inserted. This happens for gtests.
+        if (!compiled_methods_.HaveDexFile(dex_file)) {
+          compiled_methods_.AddDexFile(dex_file);
+        }
+      }
+    }
+
+    // Resolve eagerly as both verification and compilation benefit from this.
+    Resolve(class_loader, dex_files, timings);
+    VLOG(compiler) << "Resolve: " << GetMemoryUsageString(false);
+
     Verify(class_loader, dex_files, timings);
     VLOG(compiler) << "Verify: " << GetMemoryUsageString(false);
 
@@ -2097,7 +2100,7 @@ class InitializeClassVisitor : public CompilationVisitor {
     const DexFile& dex_file = *manager_->GetDexFile();
     const dex::ClassDef& class_def = dex_file.GetClassDef(class_def_index);
     const dex::TypeId& class_type_id = dex_file.GetTypeId(class_def.class_idx_);
-    const char* descriptor = dex_file.StringDataByIdx(class_type_id.descriptor_idx_);
+    const char* descriptor = dex_file.GetStringData(class_type_id.descriptor_idx_);
 
     ScopedObjectAccess soa(Thread::Current());
     StackHandleScope<3> hs(soa.Self());
@@ -2124,7 +2127,7 @@ class InitializeClassVisitor : public CompilationVisitor {
     const DexFile& dex_file = klass->GetDexFile();
     const dex::ClassDef* class_def = klass->GetClassDef();
     const dex::TypeId& class_type_id = dex_file.GetTypeId(class_def->class_idx_);
-    const char* descriptor = dex_file.StringDataByIdx(class_type_id.descriptor_idx_);
+    const char* descriptor = dex_file.GetStringData(class_type_id.descriptor_idx_);
     StackHandleScope<3> hs(self);
     ClassLinker* const class_linker = manager_->GetClassLinker();
     Runtime* const runtime = Runtime::Current();
