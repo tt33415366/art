@@ -766,11 +766,7 @@ class EXPORT ArtMethod final {
   }
   ALWAYS_INLINE void SetEntryPointFromQuickCompiledCodePtrSize(
       const void* entry_point_from_quick_compiled_code, PointerSize pointer_size)
-      REQUIRES_SHARED(Locks::mutator_lock_) {
-    SetNativePointer(EntryPointFromQuickCompiledCodeOffset(pointer_size),
-                     entry_point_from_quick_compiled_code,
-                     pointer_size);
-  }
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   static constexpr MemberOffset DataOffset(PointerSize pointer_size) {
     return MemberOffset(PtrSizedFieldsOffset(pointer_size) + OFFSETOF_MEMBER(
@@ -926,8 +922,6 @@ class EXPORT ArtMethod final {
 
   const dex::CodeItem* GetCodeItem() REQUIRES_SHARED(Locks::mutator_lock_);
 
-  bool IsResolvedTypeIdx(dex::TypeIndex type_idx) REQUIRES_SHARED(Locks::mutator_lock_);
-
   int32_t GetLineNumFromDexPC(uint32_t dex_pc) REQUIRES_SHARED(Locks::mutator_lock_);
 
   const dex::ProtoId& GetPrototype() REQUIRES_SHARED(Locks::mutator_lock_);
@@ -1017,9 +1011,6 @@ class EXPORT ArtMethod final {
   // Get compiled code for the method, return null if no code exists.
   const void* GetOatMethodQuickCode(PointerSize pointer_size)
       REQUIRES_SHARED(Locks::mutator_lock_);
-
-  // Returns whether the method has any compiled code, JIT or AOT.
-  bool HasAnyCompiledCode() REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Returns a human-readable signature for 'm'. Something like "a.b.C.m" or
   // "a.b.C.m(II)V" (depending on the value of 'with_signature').
@@ -1194,6 +1185,8 @@ class EXPORT ArtMethod final {
 
   // Used by GetName and GetNameView to share common code.
   const char* GetRuntimeMethodName() REQUIRES_SHARED(Locks::mutator_lock_);
+
+  friend class RuntimeImageHelper;  // For SetNativePointer.
 
   DISALLOW_COPY_AND_ASSIGN(ArtMethod);  // Need to use CopyFrom to deal with 32 vs 64 bits.
 };
