@@ -78,6 +78,9 @@ android::base::Result<std::string> BuildSecondaryCurProfilePath(
     const aidl::com::android::server::art::ProfilePath::SecondaryCurProfilePath&
         secondary_cur_profile_path);
 
+android::base::Result<std::string> BuildWritableProfilePath(
+    const aidl::com::android::server::art::ProfilePath::WritableProfilePath& profile_path);
+
 android::base::Result<std::string> BuildFinalProfilePath(
     const aidl::com::android::server::art::ProfilePath::TmpProfilePath& tmp_profile_path);
 
@@ -124,6 +127,8 @@ bool PreRebootFlag(const aidl::com::android::server::art::OutputProfile& profile
 bool PreRebootFlag(const aidl::com::android::server::art::ArtifactsPath& artifacts_path);
 bool PreRebootFlag(const aidl::com::android::server::art::OutputArtifacts& artifacts);
 bool PreRebootFlag(const aidl::com::android::server::art::VdexPath& vdex_path);
+
+bool IsPreRebootStagedFile(std::string_view filename);
 
 // Sets the root dir for `ListManagedFiles` and `ListRuntimeImageFiles`.
 // The passed string must be alive until the test ends.

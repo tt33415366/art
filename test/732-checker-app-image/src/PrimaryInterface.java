@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018 The Android Open Source Project
+ * Copyright (C) 2024 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,19 +14,4 @@
  * limitations under the License.
  */
 
-// The interpreter function takes considerable time to compile and link.
-// We compile the explicit definitions separately to speed up the build.
-
-#include "interpreter_switch_impl-inl.h"
-
-#include "active_transaction_checker.h"
-
-namespace art HIDDEN {
-namespace interpreter {
-
-// Explicit definition of ExecuteSwitchImplCpp.
-template
-void ExecuteSwitchImplCpp<true>(SwitchImplContext* ctx);
-
-}  // namespace interpreter
-}  // namespace art
+public interface PrimaryInterface {}

@@ -117,6 +117,7 @@ using ::android::base::ReadFileToString;
 using ::android::base::Result;
 using ::android::base::Split;
 using ::android::base::StringReplace;
+using ::android::base::Tokenize;
 using ::android::base::WriteStringToFd;
 using ::android::base::WriteStringToFile;
 using ::android::fs_mgr::FstabEntry;
@@ -129,6 +130,7 @@ using ::art::tools::NonFatal;
 using ::ndk::ScopedAStatus;
 
 using TmpProfilePath = ProfilePath::TmpProfilePath;
+using WritableProfilePath = ProfilePath::WritableProfilePath;
 
 constexpr const char* kServiceName = "artd";
 constexpr const char* kPreRebootServiceName = "artd_pre_reboot";
@@ -604,8 +606,7 @@ ndk::ScopedAStatus Artd::isProfileUsable(const ProfilePath& in_profile,
 
   FdLogger fd_logger;
 
-  CmdlineBuilder art_exec_args;
-  art_exec_args.Add(OR_RETURN_FATAL(GetArtExec())).Add("--drop-capabilities");
+  CmdlineBuilder art_exec_args = OR_RETURN_FATAL(GetArtExecCmdlineBuilder());
 
   CmdlineBuilder args;
   args.Add(OR_RETURN_FATAL(GetProfman()));
@@ -657,8 +658,7 @@ ndk::ScopedAStatus Artd::CopyAndRewriteProfileImpl(File src,
 
   FdLogger fd_logger;
 
-  CmdlineBuilder art_exec_args;
-  art_exec_args.Add(OR_RETURN_FATAL(GetArtExec())).Add("--drop-capabilities");
+  CmdlineBuilder art_exec_args = OR_RETURN_FATAL(GetArtExecCmdlineBuilder());
 
   CmdlineBuilder args;
   args.Add(OR_RETURN_FATAL(GetProfman())).Add("--copy-and-update-profile-key");
@@ -831,8 +831,7 @@ ndk::ScopedAStatus Artd::mergeProfiles(const std::vector<ProfilePath>& in_profil
 
   FdLogger fd_logger;
 
-  CmdlineBuilder art_exec_args;
-  art_exec_args.Add(OR_RETURN_FATAL(GetArtExec())).Add("--drop-capabilities");
+  CmdlineBuilder art_exec_args = OR_RETURN_FATAL(GetArtExecCmdlineBuilder());
 
   CmdlineBuilder args;
   args.Add(OR_RETURN_FATAL(GetProfman()));
@@ -1026,8 +1025,7 @@ ndk::ScopedAStatus Artd::dexopt(
 
   FdLogger fd_logger;
 
-  CmdlineBuilder art_exec_args;
-  art_exec_args.Add(OR_RETURN_FATAL(GetArtExec())).Add("--drop-capabilities");
+  CmdlineBuilder art_exec_args = OR_RETURN_FATAL(GetArtExecCmdlineBuilder());
 
   CmdlineBuilder args;
   args.Add(OR_RETURN_FATAL(GetDex2Oat()));
@@ -1248,6 +1246,7 @@ ScopedAStatus Artd::cleanup(const std::vector<ProfilePath>& in_profilesToKeep,
                             const std::vector<ArtifactsPath>& in_artifactsToKeep,
                             const std::vector<VdexPath>& in_vdexFilesToKeep,
                             const std::vector<RuntimeArtifactsPath>& in_runtimeArtifactsToKeep,
+                            bool in_keepPreRebootStagedFiles,
                             int64_t* _aidl_return) {
   RETURN_FATAL_IF_PRE_REBOOT(options_);
   std::unordered_set<std::string> files_to_keep;
@@ -1276,7 +1275,8 @@ ScopedAStatus Artd::cleanup(const std::vector<ProfilePath>& in_profilesToKeep,
   }
   *_aidl_return = 0;
   for (const std::string& file : ListManagedFiles(android_data, android_expand)) {
-    if (files_to_keep.find(file) == files_to_keep.end()) {
+    if (files_to_keep.find(file) == files_to_keep.end() &&
+        (!in_keepPreRebootStagedFiles || !IsPreRebootStagedFile(file))) {
       LOG(INFO) << ART_FORMAT("Cleaning up obsolete file '{}'", file);
       *_aidl_return += GetSizeAndDeleteFile(file);
     }
@@ -1367,6 +1367,61 @@ ScopedAStatus Artd::getProfileSize(const ProfilePath& in_profile, int64_t* _aidl
   RETURN_FATAL_IF_ARG_IS_PRE_REBOOT(in_profile, "profile");
   std::string profile_path = OR_RETURN_FATAL(BuildProfileOrDmPath(in_profile));
   *_aidl_return = GetSize(profile_path).value_or(0);
+  return ScopedAStatus::ok();
+}
+
+ScopedAStatus Artd::commitPreRebootStagedFiles(
+    const std::vector<ArtifactsPath>& in_artifacts,
+    const std::vector<WritableProfilePath>& in_profiles) {
+  RETURN_FATAL_IF_PRE_REBOOT(options_);
+
+  std::vector<std::pair<std::string, std::string>> files_to_move;
+  std::vector<std::string> files_to_remove;
+
+  for (const ArtifactsPath& artifacts : in_artifacts) {
+    RETURN_FATAL_IF_ARG_IS_PRE_REBOOT(artifacts, "artifacts");
+
+    ArtifactsPath pre_reboot_artifacts = artifacts;
+    pre_reboot_artifacts.isPreReboot = true;
+
+    auto src_artifacts = std::make_unique<RawArtifactsPath>(
+        OR_RETURN_FATAL(BuildArtifactsPath(pre_reboot_artifacts)));
+    auto dst_artifacts =
+        std::make_unique<RawArtifactsPath>(OR_RETURN_FATAL(BuildArtifactsPath(artifacts)));
+
+    if (OS::FileExists(src_artifacts->oat_path.c_str())) {
+      files_to_move.emplace_back(src_artifacts->oat_path, dst_artifacts->oat_path);
+      files_to_move.emplace_back(src_artifacts->vdex_path, dst_artifacts->vdex_path);
+      if (OS::FileExists(src_artifacts->art_path.c_str())) {
+        files_to_move.emplace_back(src_artifacts->art_path, dst_artifacts->art_path);
+      } else {
+        files_to_remove.push_back(dst_artifacts->art_path);
+      }
+    }
+  }
+
+  for (const WritableProfilePath& profile : in_profiles) {
+    RETURN_FATAL_IF_ARG_IS_PRE_REBOOT(profile, "profiles");
+
+    WritableProfilePath pre_reboot_profile = profile;
+    PreRebootFlag(pre_reboot_profile) = true;
+
+    auto src_profile = std::make_unique<std::string>(
+        OR_RETURN_FATAL(BuildWritableProfilePath(pre_reboot_profile)));
+    auto dst_profile =
+        std::make_unique<std::string>(OR_RETURN_FATAL(BuildWritableProfilePath(profile)));
+
+    if (OS::FileExists(src_profile->c_str())) {
+      files_to_move.emplace_back(*src_profile, *dst_profile);
+    }
+  }
+
+  OR_RETURN_NON_FATAL(MoveAllOrAbandon(files_to_move, files_to_remove));
+
+  for (const auto& [src_path, dst_path] : files_to_move) {
+    LOG(INFO) << ART_FORMAT("Committed Pre-reboot staged file '{}' to '{}'", src_path, dst_path);
+  }
+
   return ScopedAStatus::ok();
 }
 
@@ -1490,7 +1545,13 @@ bool Artd::DenyArtApexDataFilesLocked() {
 
 Result<std::string> Artd::GetProfman() { return BuildArtBinPath("profman"); }
 
-Result<std::string> Artd::GetArtExec() { return BuildArtBinPath("art_exec"); }
+Result<CmdlineBuilder> Artd::GetArtExecCmdlineBuilder() {
+  CmdlineBuilder args;
+  args.Add(OR_RETURN(BuildArtBinPath("art_exec")))
+      .Add("--drop-capabilities")
+      .AddIf(options_.is_pre_reboot, "--process-name-suffix=Pre-reboot Dexopt chroot");
+  return args;
+}
 
 bool Artd::ShouldUseDex2Oat64() {
   return !props_->GetOrEmpty("ro.product.cpu.abilist64").empty() &&
@@ -1538,8 +1599,7 @@ void Artd::AddCompilerConfigFlags(const std::string& instruction_set,
                      props_->GetOrEmpty("dalvik.vm.dex2oat-very-large"))
       .AddIfNonEmpty(
           "--resolve-startup-const-strings=%s",
-          props_->GetOrEmpty("persist.device_config.runtime.dex2oat_resolve_startup_strings",
-                             "dalvik.vm.dex2oat-resolve-startup-strings"));
+          props_->GetOrEmpty("dalvik.vm.dex2oat-resolve-startup-strings"));
 
   args.AddIf(dexopt_options.debuggable, "--debuggable")
       .AddIf(props_->GetBool("debug.generate-debug-info", /*default_value=*/false),
@@ -1589,6 +1649,11 @@ void Artd::AddPerfConfigFlags(PriorityClass priority_class,
   // It takes longer but reduces the memory footprint.
   dex2oat_args.AddIf(props_->GetBool("ro.config.low_ram", /*default_value=*/false),
                      "--compile-individually");
+
+  for (const std::string& flag :
+       Tokenize(props_->GetOrEmpty("dalvik.vm.dex2oat-flags"), /*delimiters=*/" ")) {
+    dex2oat_args.AddIfNonEmpty("%s", flag);
+  }
 }
 
 Result<int> Artd::ExecAndReturnCode(const std::vector<std::string>& args,
@@ -1719,10 +1784,8 @@ Result<void> Artd::PreRebootInitDeriveClasspath(const std::string& path) {
     return ErrnoErrorf("Failed to create '{}'", path);
   }
 
-  CmdlineBuilder args;
-  args.Add(OR_RETURN(GetArtExec()))
-      .Add("--drop-capabilities")
-      .Add("--keep-fds=%d", output->Fd())
+  CmdlineBuilder args = OR_RETURN(GetArtExecCmdlineBuilder());
+  args.Add("--keep-fds=%d", output->Fd())
       .Add("--")
       .Add("/apex/com.android.sdkext/bin/derive_classpath")
       .Add("/proc/self/fd/%d", output->Fd());
@@ -1748,10 +1811,8 @@ Result<void> Artd::PreRebootInitDeriveClasspath(const std::string& path) {
 }
 
 Result<void> Artd::PreRebootInitBootImages() {
-  CmdlineBuilder args;
-  args.Add(OR_RETURN(GetArtExec()))
-      .Add("--drop-capabilities")
-      .Add("--")
+  CmdlineBuilder args = OR_RETURN(GetArtExecCmdlineBuilder());
+  args.Add("--")
       .Add(OR_RETURN(BuildArtBinPath("odrefresh")))
       .Add("--only-boot-images")
       .Add("--compile");

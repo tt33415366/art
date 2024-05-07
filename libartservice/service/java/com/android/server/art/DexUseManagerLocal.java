@@ -30,7 +30,6 @@ import android.os.Process;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.os.UserHandle;
-import android.util.Log;
 
 import androidx.annotation.RequiresApi;
 
@@ -94,7 +93,6 @@ import java.util.stream.Collectors;
 @SystemApi(client = SystemApi.Client.SYSTEM_SERVER)
 @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
 public class DexUseManagerLocal {
-    private static final String TAG = ArtManagerLocal.TAG;
     private static final String FILENAME = "/data/system/package-dex-usage.pb";
 
     /**
@@ -169,6 +167,7 @@ public class DexUseManagerLocal {
     /** Notifies dex use manager that {@link Context#registerReceiver} is ready for use. */
     public void systemReady() {
         Utils.check(!mInjector.isPreReboot());
+        mInjector.getArtManagerLocal().systemReady();
         // Save the data when the device is being shut down. The receiver is blocking, with a
         // 10s timeout.
         mInjector.getContext().registerReceiver(new BroadcastReceiver() {
@@ -556,7 +555,7 @@ public class DexUseManagerLocal {
                 }
             }
         } catch (IOException e) {
-            Log.e(TAG, "Failed to save dex use data", e);
+            AsLog.e("Failed to save dex use data", e);
         } finally {
             Utils.deleteIfExistsSafe(tempFile);
         }
@@ -574,7 +573,7 @@ public class DexUseManagerLocal {
             proto = DexUseProto.parseFrom(in);
         } catch (IOException e) {
             // Nothing else we can do but to start from scratch.
-            Log.e(TAG, "Failed to load dex use data", e);
+            AsLog.e("Failed to load dex use data", e);
         }
         synchronized (mLock) {
             if (mDexUse != null) {
@@ -635,7 +634,7 @@ public class DexUseManagerLocal {
         try {
             return mInjector.getArtd().getDexFileVisibility(dexPath);
         } catch (ServiceSpecificException | RemoteException e) {
-            Log.e(TAG, "Failed to get visibility of " + dexPath, e);
+            AsLog.e("Failed to get visibility of " + dexPath, e);
             return FileVisibility.NOT_FOUND;
         }
     }
@@ -953,7 +952,7 @@ public class DexUseManagerLocal {
                 // Skip invalid dex paths persisted by previous versions.
                 String errorMsg = validateDexPath.apply(dexFile);
                 if (errorMsg != null) {
-                    Log.e(TAG, errorMsg);
+                    AsLog.e(errorMsg);
                     continue;
                 }
 
@@ -1017,7 +1016,7 @@ public class DexUseManagerLocal {
                 String errorMsg = validateClassLoaderContext.apply(
                         Utils.assertNonEmpty(recordProto.getClassLoaderContext()));
                 if (errorMsg != null) {
-                    Log.e(TAG, errorMsg);
+                    AsLog.e(errorMsg);
                     continue;
                 }
 
@@ -1026,10 +1025,9 @@ public class DexUseManagerLocal {
 
                 if (!Utils.isNativeAbi(record.mAbiName)) {
                     // The native ABI set has changed by an OTA since the ABI name was recorded.
-                    Log.i(TAG,
-                            String.format("Ignoring secondary dex use record with non-native ABI "
-                                            + "'%s' for '%s'",
-                                    record.mAbiName, proto.getDexFile()));
+                    AsLog.i(String.format("Ignoring secondary dex use record with non-native ABI "
+                                    + "'%s' for '%s'",
+                            record.mAbiName, proto.getDexFile()));
                     continue;
                 }
 
@@ -1220,6 +1218,11 @@ public class DexUseManagerLocal {
         private PackageManagerLocal getPackageManagerLocal() {
             return Objects.requireNonNull(
                     LocalManagerRegistry.getManager(PackageManagerLocal.class));
+        }
+
+        @NonNull
+        public ArtManagerLocal getArtManagerLocal() {
+            return Objects.requireNonNull(LocalManagerRegistry.getManager(ArtManagerLocal.class));
         }
     }
 }
