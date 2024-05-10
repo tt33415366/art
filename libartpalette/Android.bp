@@ -21,6 +21,7 @@ package {
     // to get the below license kinds:
     //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["art_license"],
+    default_team: "trendy_team_art_mainline",
 }
 
 cc_defaults {
@@ -52,10 +53,13 @@ art_cc_library {
         // libdexfile hence depends on the source instead.
         // TODO(b/172480617): Alternatively, clean up when we no longer need to
         // support both prebuilts and sources present simultaneously.
-        "//prebuilts/module_sdk/art/current/host-exports",
+        "//prebuilts/module_sdk/art:__subpackages__",
     ],
     header_libs: [
         "libbase_headers",
+        "jni_headers",
+    ],
+    export_header_lib_headers: [
         "jni_headers",
     ],
     target: {
@@ -111,10 +115,6 @@ art_cc_library {
 art_cc_defaults {
     name: "art_libartpalette_tests_defaults",
     srcs: ["apex/palette_test.cc"],
-    shared_libs: [
-        "libartpalette",
-        "libnativehelper",
-    ],
     target: {
         android: {
             static_libs: ["libmodules-utils-build"],
@@ -142,5 +142,8 @@ art_cc_test {
         "art_libartpalette_tests_defaults",
     ],
     test_config_template: ":art-gtests-target-standalone-cts-template",
-    test_suites: ["cts"],
+    test_suites: [
+        "cts",
+        "mcts-art",
+    ],
 }

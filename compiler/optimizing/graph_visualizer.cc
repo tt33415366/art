@@ -109,13 +109,12 @@ std::ostream& operator<<(std::ostream& os, const StringList& list) {
   switch (list.format_) {
     case StringList::kArrayBrackets: return os << "[" << list.sstream_.str() << "]";
     case StringList::kSetBrackets:   return os << "{" << list.sstream_.str() << "}";
-    default:
-      LOG(FATAL) << "Invalid StringList format";
-      UNREACHABLE();
   }
 }
 
-#ifndef ART_STATIC_LIBART_COMPILER
+// On target: load `libart-disassembler` only when required (to save on memory).
+// On host: `libart-disassembler` should be linked directly (either as a static or dynamic lib)
+#ifdef ART_TARGET
 using create_disasm_prototype = Disassembler*(InstructionSet, DisassemblerOptions*);
 #endif
 
@@ -125,7 +124,7 @@ class HGraphVisualizerDisassembler {
                                const uint8_t* base_address,
                                const uint8_t* end_address)
       : instruction_set_(instruction_set), disassembler_(nullptr) {
-#ifndef ART_STATIC_LIBART_COMPILER
+#ifdef ART_TARGET
     constexpr const char* libart_disassembler_so_name =
         kIsDebugBuild ? "libartd-disassembler.so" : "libart-disassembler.so";
     libart_disassembler_handle_ = dlopen(libart_disassembler_so_name, RTLD_NOW);
@@ -159,7 +158,7 @@ class HGraphVisualizerDisassembler {
   ~HGraphVisualizerDisassembler() {
     // We need to call ~Disassembler() before we close the library.
     disassembler_.reset();
-#ifndef ART_STATIC_LIBART_COMPILER
+#ifdef ART_TARGET
     if (libart_disassembler_handle_ != nullptr) {
       dlclose(libart_disassembler_handle_);
     }
@@ -184,7 +183,7 @@ class HGraphVisualizerDisassembler {
   InstructionSet instruction_set_;
   std::unique_ptr<Disassembler> disassembler_;
 
-#ifndef ART_STATIC_LIBART_COMPILER
+#ifdef ART_TARGET
   void* libart_disassembler_handle_;
 #endif
 };
@@ -193,7 +192,7 @@ class HGraphVisualizerDisassembler {
 /**
  * HGraph visitor to generate a file suitable for the c1visualizer tool and IRHydra.
  */
-class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
+class HGraphVisualizerPrinter final : public HGraphDelegateVisitor {
  public:
   HGraphVisualizerPrinter(HGraph* graph,
                           std::ostream& output,
@@ -409,6 +408,7 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
 
   void VisitLoadClass(HLoadClass* load_class) override {
     StartAttributeStream("load_kind") << load_class->GetLoadKind();
+    StartAttributeStream("in_image") << std::boolalpha << load_class->IsInImage();
     StartAttributeStream("class_name")
         << load_class->GetDexFile().PrettyType(load_class->GetTypeIndex());
     StartAttributeStream("gen_clinit_check")
@@ -490,6 +490,15 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
     StartAttributeStream("bias") << compare->GetBias();
   }
 
+  void VisitCondition(HCondition* condition) override {
+    StartAttributeStream("bias") << condition->GetBias();
+  }
+
+  void VisitIf(HIf* if_instr) override {
+    StartAttributeStream("true_count") << if_instr->GetTrueCount();
+    StartAttributeStream("false_count") << if_instr->GetFalseCount();
+  }
+
   void VisitInvoke(HInvoke* invoke) override {
     StartAttributeStream("dex_file_index") << invoke->GetMethodReference().index;
     ArtMethod* method = invoke->GetResolvedMethod();
@@ -534,13 +543,6 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
     StartAttributeStream("invoke_type") << "InvokePolymorphic";
   }
 
-  void VisitPredicatedInstanceFieldGet(HPredicatedInstanceFieldGet* iget) override {
-    StartAttributeStream("field_name") <<
-        iget->GetFieldInfo().GetDexFile().PrettyField(iget->GetFieldInfo().GetFieldIndex(),
-                                                      /* with type */ false);
-    StartAttributeStream("field_type") << iget->GetFieldType();
-  }
-
   void VisitInstanceFieldGet(HInstanceFieldGet* iget) override {
     StartAttributeStream("field_name") <<
         iget->GetFieldInfo().GetDexFile().PrettyField(iget->GetFieldInfo().GetFieldIndex(),
@@ -553,8 +555,6 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
         iset->GetFieldInfo().GetDexFile().PrettyField(iset->GetFieldInfo().GetFieldIndex(),
                                                       /* with type */ false);
     StartAttributeStream("field_type") << iset->GetFieldType();
-    StartAttributeStream("predicated")
-        << std::boolalpha << iset->GetIsPredicatedSet() << std::noboolalpha;
     StartAttributeStream("write_barrier_kind") << iset->GetWriteBarrierKind();
   }
 
@@ -606,6 +606,7 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
   }
 
   void VisitVecMemoryOperation(HVecMemoryOperation* vec_mem_operation) override {
+    VisitVecOperation(vec_mem_operation);
     StartAttributeStream("alignment") << vec_mem_operation->GetAlignment().ToString();
   }
 
@@ -641,6 +642,12 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
     if (HDataProcWithShifterOp::IsShiftOp(instruction->GetOpKind())) {
       StartAttributeStream("shift") << instruction->GetShiftAmount();
     }
+  }
+#endif
+
+#if defined(ART_ENABLE_CODEGEN_riscv64)
+  void VisitRiscv64ShiftAdd(HRiscv64ShiftAdd* instruction) override {
+    StartAttributeStream("distance") << instruction->GetDistance();
   }
 #endif
 
@@ -864,7 +871,8 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
     std::ostringstream oss;
     oss << pass_name_;
     if (!IsDebugDump()) {
-      oss << " (" << (is_after_pass_ ? "after" : "before")
+      oss << " (" << (GetGraph()->IsCompilingBaseline() ? "baseline " : "")
+          << (is_after_pass_ ? "after" : "before")
           << (graph_in_bad_state_ ? ", bad_state" : "") << ")";
     }
     PrintProperty("name", oss.str().c_str());

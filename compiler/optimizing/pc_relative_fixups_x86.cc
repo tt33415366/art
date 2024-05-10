@@ -24,7 +24,7 @@ namespace x86 {
 /**
  * Finds instructions that need the constant area base as an input.
  */
-class PCRelativeHandlerVisitor : public HGraphVisitor {
+class PCRelativeHandlerVisitor final : public HGraphVisitor {
  public:
   PCRelativeHandlerVisitor(HGraph* graph, CodeGenerator* codegen)
       : HGraphVisitor(graph),
@@ -62,7 +62,7 @@ class PCRelativeHandlerVisitor : public HGraphVisitor {
   }
 
   void VisitReturn(HReturn* ret) override {
-    HConstant* value = ret->InputAt(0)->AsConstant();
+    HConstant* value = ret->InputAt(0)->AsConstantOrNull();
     if ((value != nullptr && DataType::IsFloatingPointType(value->GetType()))) {
       ReplaceInput(ret, value, 0, true);
     }
@@ -95,7 +95,7 @@ class PCRelativeHandlerVisitor : public HGraphVisitor {
   }
 
   void BinaryFP(HBinaryOperation* bin) {
-    HConstant* rhs = bin->InputAt(1)->AsConstant();
+    HConstant* rhs = bin->InputAt(1)->AsConstantOrNull();
     if (rhs != nullptr && DataType::IsFloatingPointType(rhs->GetType())) {
       ReplaceInput(bin, rhs, 1, false);
     }
@@ -193,10 +193,10 @@ class PCRelativeHandlerVisitor : public HGraphVisitor {
   }
 
   void HandleInvoke(HInvoke* invoke) {
-    HInvokeStaticOrDirect* invoke_static_or_direct = invoke->AsInvokeStaticOrDirect();
+    HInvokeStaticOrDirect* invoke_static_or_direct = invoke->AsInvokeStaticOrDirectOrNull();
 
     // If this is an invoke-static/-direct with PC-relative addressing (within boot image
-    // or using .bss or .data.bimg.rel.ro), we need the PC-relative address base.
+    // or using .bss or .data.img.rel.ro), we need the PC-relative address base.
     bool base_added = false;
     if (invoke_static_or_direct != nullptr &&
         invoke_static_or_direct->HasPcRelativeMethodLoadKind() &&
@@ -207,7 +207,7 @@ class PCRelativeHandlerVisitor : public HGraphVisitor {
       base_added = true;
     }
 
-    HInvokeInterface* invoke_interface = invoke->AsInvokeInterface();
+    HInvokeInterface* invoke_interface = invoke->AsInvokeInterfaceOrNull();
     if (invoke_interface != nullptr &&
         IsPcRelativeMethodLoadKind(invoke_interface->GetHiddenArgumentLoadKind())) {
       HX86ComputeBaseMethodAddress* method_address = GetPCRelativeBasePointer(invoke);
@@ -219,7 +219,7 @@ class PCRelativeHandlerVisitor : public HGraphVisitor {
     // Ensure that we can load FP arguments from the constant area.
     HInputsRef inputs = invoke->GetInputs();
     for (size_t i = 0; i < inputs.size(); i++) {
-      HConstant* input = inputs[i]->AsConstant();
+      HConstant* input = inputs[i]->AsConstantOrNull();
       if (input != nullptr && DataType::IsFloatingPointType(input->GetType())) {
         ReplaceInput(invoke, input, i, true);
       }
@@ -235,9 +235,12 @@ class PCRelativeHandlerVisitor : public HGraphVisitor {
         LOG(FATAL) << "Unreachable min/max/abs: intrinsics should have been lowered "
                       "to IR nodes by instruction simplifier";
         UNREACHABLE();
+      case Intrinsics::kByteValueOf:
+      case Intrinsics::kShortValueOf:
+      case Intrinsics::kCharacterValueOf:
       case Intrinsics::kIntegerValueOf:
         // This intrinsic can be call free if it loads the address of the boot image object.
-        // If we're compiling PIC, we need the address base for loading from .data.bimg.rel.ro.
+        // If we're compiling PIC, we need the address base for loading from .data.img.rel.ro.
         if (!codegen_->GetCompilerOptions().GetCompilePic()) {
           break;
         }

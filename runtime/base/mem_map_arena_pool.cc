@@ -28,8 +28,9 @@
 #include "base/arena_allocator-inl.h"
 #include "base/mem_map.h"
 #include "base/systrace.h"
+#include "runtime_globals.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class MemMapArena final : public Arena {
  public:
@@ -46,8 +47,8 @@ class MemMapArena final : public Arena {
 MemMapArena::MemMapArena(size_t size, bool low_4gb, const char* name)
     : map_(Allocate(size, low_4gb, name)) {
   memory_ = map_.Begin();
-  static_assert(ArenaAllocator::kArenaAlignment <= kPageSize,
-                "Arena should not need stronger alignment than kPageSize.");
+  static_assert(ArenaAllocator::kArenaAlignment <= kMinPageSize,
+                "Arena should not need stronger alignment than kMinPageSize.");
   DCHECK_ALIGNED(memory_, ArenaAllocator::kArenaAlignment);
   size_ = map_.Size();
 }
@@ -55,15 +56,26 @@ MemMapArena::MemMapArena(size_t size, bool low_4gb, const char* name)
 MemMap MemMapArena::Allocate(size_t size, bool low_4gb, const char* name) {
   // Round up to a full page as that's the smallest unit of allocation for mmap()
   // and we want to be able to use all memory that we actually allocate.
-  size = RoundUp(size, kPageSize);
+  size = RoundUp(size, gPageSize);
   std::string error_msg;
-  MemMap map = MemMap::MapAnonymous(name,
-                                    size,
-                                    PROT_READ | PROT_WRITE,
-                                    low_4gb,
-                                    &error_msg);
-  CHECK(map.IsValid()) << error_msg;
-  return map;
+  // TODO(b/278665389): remove this retry logic if the root cause is found.
+  constexpr int MAX_RETRY_CNT = 3;
+  int retry_cnt = 0;
+  while (true) {
+    MemMap map = MemMap::MapAnonymous(name, size, PROT_READ | PROT_WRITE, low_4gb, &error_msg);
+    if (map.IsValid()) {
+      if (retry_cnt > 0) {
+        LOG(WARNING) << "Succeed with retry(cnt=" << retry_cnt << ")";
+      }
+      return map;
+    } else {
+      if (retry_cnt == MAX_RETRY_CNT) {
+        CHECK(map.IsValid()) << error_msg << "(retried " << retry_cnt << " times)";
+      }
+    }
+    retry_cnt++;
+    LOG(ERROR) << error_msg << " but retry(cnt=" << retry_cnt << ")";
+  }
 }
 
 MemMapArena::~MemMapArena() {

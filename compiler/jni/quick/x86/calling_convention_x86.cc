@@ -84,32 +84,25 @@ ArrayRef<const ManagedRegister> X86JniCallingConvention::CalleeSaveScratchRegist
 
 ArrayRef<const ManagedRegister> X86JniCallingConvention::ArgumentScratchRegisters() const {
   DCHECK(!IsCriticalNative());
-  // Exclude EAX or EAX/EDX if they are used as return registers.
-  // Due to the odd ordering of argument registers, use a re-ordered array (pull EDX forward).
-  static constexpr ManagedRegister kArgumentRegisters[] = {
-      X86ManagedRegister::FromCpuRegister(EAX),
-      X86ManagedRegister::FromCpuRegister(EDX),
+  // Exclude return registers (EAX/EDX) even if unused. Using the same scratch registers helps
+  // making more JNI stubs identical for better reuse, such as deduplicating them in oat files.
+  // Due to the odd ordering of argument registers, use a separate register array.
+  static constexpr ManagedRegister kArgumentScratchRegisters[] = {
       X86ManagedRegister::FromCpuRegister(ECX),
       X86ManagedRegister::FromCpuRegister(EBX),
   };
-  static_assert(arraysize(kArgumentRegisters) == kManagedCoreArgumentRegistersCount);
-  static_assert(kManagedCoreArgumentRegisters[0].Equals(kArgumentRegisters[0]));
-  static_assert(kManagedCoreArgumentRegisters[1].Equals(kArgumentRegisters[2]));
-  static_assert(kManagedCoreArgumentRegisters[2].Equals(kArgumentRegisters[1]));
-  static_assert(kManagedCoreArgumentRegisters[3].Equals(kArgumentRegisters[3]));
-  ArrayRef<const ManagedRegister> scratch_regs(kArgumentRegisters);
-  X86ManagedRegister return_reg = ReturnRegister().AsX86();
-  auto return_reg_overlaps = [return_reg](ManagedRegister reg) {
-    return return_reg.Overlaps(reg.AsX86());
-  };
-  if (return_reg_overlaps(scratch_regs[0])) {
-    scratch_regs = scratch_regs.SubArray(/*pos=*/ return_reg_overlaps(scratch_regs[1]) ? 2u : 1u);
-  }
-  DCHECK(std::none_of(scratch_regs.begin(), scratch_regs.end(), return_reg_overlaps));
+  static_assert(kManagedCoreArgumentRegisters[1].Equals(kArgumentScratchRegisters[0]));
+  static_assert(kManagedCoreArgumentRegisters[3].Equals(kArgumentScratchRegisters[1]));
+  ArrayRef<const ManagedRegister> scratch_regs(kArgumentScratchRegisters);
+  DCHECK(std::none_of(scratch_regs.begin(),
+                      scratch_regs.end(),
+                      [return_reg = ReturnRegister().AsX86()](ManagedRegister reg) {
+                        return return_reg.Overlaps(reg.AsX86());
+                      }));
   return scratch_regs;
 }
 
-static ManagedRegister ReturnRegisterForShorty(const char* shorty, bool jni) {
+static ManagedRegister ReturnRegisterForShorty(std::string_view shorty, bool jni) {
   if (shorty[0] == 'F' || shorty[0] == 'D') {
     if (jni) {
       return X86ManagedRegister::FromX87Register(ST0);
@@ -212,7 +205,7 @@ X86JniCallingConvention::X86JniCallingConvention(bool is_static,
                                                  bool is_synchronized,
                                                  bool is_fast_native,
                                                  bool is_critical_native,
-                                                 const char* shorty)
+                                                 std::string_view shorty)
     : JniCallingConvention(is_static,
                            is_synchronized,
                            is_fast_native,
@@ -274,14 +267,14 @@ size_t X86JniCallingConvention::OutFrameSize() const {
       static_assert(kFramePointerSize < kNativeStackAlignment);
       // The stub frame size is considered 0 in the callee where the return PC is a part of
       // the callee frame but it is kPointerSize in the compiled stub before the tail call.
-      DCHECK_EQ(0u, GetCriticalNativeStubFrameSize(GetShorty(), NumArgs() + 1u));
+      DCHECK_EQ(0u, GetCriticalNativeStubFrameSize(GetShorty()));
       return kFramePointerSize;
     }
   }
 
   size_t out_args_size = RoundUp(size, kNativeStackAlignment);
   if (UNLIKELY(IsCriticalNative())) {
-    DCHECK_EQ(out_args_size, GetCriticalNativeStubFrameSize(GetShorty(), NumArgs() + 1u));
+    DCHECK_EQ(out_args_size, GetCriticalNativeStubFrameSize(GetShorty()));
   }
   return out_args_size;
 }

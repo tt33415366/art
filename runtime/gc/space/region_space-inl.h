@@ -17,18 +17,16 @@
 #ifndef ART_RUNTIME_GC_SPACE_REGION_SPACE_INL_H_
 #define ART_RUNTIME_GC_SPACE_REGION_SPACE_INL_H_
 
-#include "region_space.h"
-
 #include "base/mutex-inl.h"
 #include "mirror/object-inl.h"
 #include "region_space.h"
 #include "thread-current-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace gc {
 namespace space {
 
-inline mirror::Object* RegionSpace::Alloc(Thread* self ATTRIBUTE_UNUSED,
+inline mirror::Object* RegionSpace::Alloc([[maybe_unused]] Thread* self,
                                           size_t num_bytes,
                                           /* out */ size_t* bytes_allocated,
                                           /* out */ size_t* usable_size,

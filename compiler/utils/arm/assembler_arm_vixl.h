@@ -19,15 +19,12 @@
 
 #include <android-base/logging.h>
 
-#include "base/arena_containers.h"
 #include "base/macros.h"
 #include "constants_arm.h"
 #include "dwarf/register.h"
 #include "offsets.h"
-#include "utils/arm/assembler_arm_shared.h"
 #include "utils/arm/managed_register_arm.h"
 #include "utils/assembler.h"
-#include "utils/jni_macro_assembler.h"
 
 // TODO(VIXL): Make VIXL compile with -Wshadow and remove pragmas.
 #pragma GCC diagnostic push
@@ -47,6 +44,26 @@ inline dwarf::Reg DWARFReg(vixl32::Register reg) {
 inline dwarf::Reg DWARFReg(vixl32::SRegister reg) {
   return dwarf::Reg::ArmFp(static_cast<int>(reg.GetCode()));
 }
+
+enum LoadOperandType {
+  kLoadSignedByte,
+  kLoadUnsignedByte,
+  kLoadSignedHalfword,
+  kLoadUnsignedHalfword,
+  kLoadWord,
+  kLoadWordPair,
+  kLoadSWord,
+  kLoadDWord
+};
+
+enum StoreOperandType {
+  kStoreByte,
+  kStoreHalfword,
+  kStoreWord,
+  kStoreWordPair,
+  kStoreSWord,
+  kStoreDWord
+};
 
 class ArmVIXLMacroAssembler final : public vixl32::MacroAssembler {
  public:
@@ -156,6 +173,30 @@ class ArmVIXLMacroAssembler final : public vixl32::MacroAssembler {
     }
   }
   using MacroAssembler::Vmov;
+
+  // TODO(b/281982421): Move the implementation of Mrrc to vixl and remove this implementation.
+  void Mrrc(vixl32::Register r1, vixl32::Register r2, int coproc, int opc1, int crm) {
+    // See ARM A-profile A32/T32 Instruction set architecture
+    // https://developer.arm.com/documentation/ddi0597/2022-09/Base-Instructions/MRRC--Move-to-two-general-purpose-registers-from-System-register-
+    CHECK(coproc == 15 || coproc == 14);
+    if (IsUsingT32()) {
+      uint32_t inst = (0b111011000101 << 20) |
+                      (r2.GetCode() << 16) |
+                      (r1.GetCode() << 12) |
+                      (coproc << 8) |
+                      (opc1 << 4) |
+                      crm;
+      EmitT32_32(inst);
+    } else {
+      uint32_t inst = (0b000011000101 << 20) |
+                      (r2.GetCode() << 16) |
+                      (r1.GetCode() << 12) |
+                      (coproc << 8) |
+                      (opc1 << 4) |
+                      crm;
+      EmitA32(inst);
+    }
+  }
 };
 
 class ArmVIXLAssembler final : public Assembler {
@@ -177,12 +218,12 @@ class ArmVIXLAssembler final : public Assembler {
   const uint8_t* CodeBufferBaseAddress() const override;
 
   // Copy instructions out of assembly buffer into the given region of memory.
-  void FinalizeInstructions(const MemoryRegion& region) override;
+  void CopyInstructions(const MemoryRegion& region) override;
 
-  void Bind(Label* label ATTRIBUTE_UNUSED) override {
+  void Bind([[maybe_unused]] Label* label) override {
     UNIMPLEMENTED(FATAL) << "Do not use Bind(Label*) for ARM";
   }
-  void Jump(Label* label ATTRIBUTE_UNUSED) override {
+  void Jump([[maybe_unused]] Label* label) override {
     UNIMPLEMENTED(FATAL) << "Do not use Jump(Label*) for ARM";
   }
 

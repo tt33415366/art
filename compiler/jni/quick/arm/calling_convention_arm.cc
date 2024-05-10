@@ -296,7 +296,7 @@ ArmJniCallingConvention::ArmJniCallingConvention(bool is_static,
                                                  bool is_synchronized,
                                                  bool is_fast_native,
                                                  bool is_critical_native,
-                                                 const char* shorty)
+                                                 std::string_view shorty)
     : JniCallingConvention(is_static,
                            is_synchronized,
                            is_fast_native,
@@ -409,18 +409,17 @@ ArrayRef<const ManagedRegister> ArmJniCallingConvention::CalleeSaveScratchRegist
 
 ArrayRef<const ManagedRegister> ArmJniCallingConvention::ArgumentScratchRegisters() const {
   DCHECK(!IsCriticalNative());
-  // Exclude r0 or r0-r1 if they are used as return registers.
+  ArrayRef<const ManagedRegister> scratch_regs(kHFCoreArgumentRegisters);
+  // Exclude return registers (R0-R1) even if unused. Using the same scratch registers helps
+  // making more JNI stubs identical for better reuse, such as deduplicating them in oat files.
   static_assert(kHFCoreArgumentRegisters[0].Equals(ArmManagedRegister::FromCoreRegister(R0)));
   static_assert(kHFCoreArgumentRegisters[1].Equals(ArmManagedRegister::FromCoreRegister(R1)));
-  ArrayRef<const ManagedRegister> scratch_regs(kHFCoreArgumentRegisters);
-  ArmManagedRegister return_reg = ReturnRegister().AsArm();
-  auto return_reg_overlaps = [return_reg](ManagedRegister reg) {
-    return return_reg.Overlaps(reg.AsArm());
-  };
-  if (return_reg_overlaps(scratch_regs[0])) {
-    scratch_regs = scratch_regs.SubArray(/*pos=*/ return_reg_overlaps(scratch_regs[1]) ? 2u : 1u);
-  }
-  DCHECK(std::none_of(scratch_regs.begin(), scratch_regs.end(), return_reg_overlaps));
+  scratch_regs = scratch_regs.SubArray(/*pos=*/ 2u);
+  DCHECK(std::none_of(scratch_regs.begin(),
+                      scratch_regs.end(),
+                      [return_reg = ReturnRegister().AsArm()](ManagedRegister reg) {
+                        return return_reg.Overlaps(reg.AsArm());
+                      }));
   return scratch_regs;
 }
 
@@ -463,7 +462,7 @@ size_t ArmJniCallingConvention::OutFrameSize() const {
   }
   size_t out_args_size = RoundUp(size, kAapcsStackAlignment);
   if (UNLIKELY(IsCriticalNative())) {
-    DCHECK_EQ(out_args_size, GetCriticalNativeStubFrameSize(GetShorty(), NumArgs() + 1u));
+    DCHECK_EQ(out_args_size, GetCriticalNativeStubFrameSize(GetShorty()));
   }
   return out_args_size;
 }

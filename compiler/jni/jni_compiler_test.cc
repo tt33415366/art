@@ -28,6 +28,7 @@
 #include "common_compiler_test.h"
 #include "compiler.h"
 #include "dex/dex_file.h"
+#include "driver/compiler_options.h"
 #include "entrypoints/entrypoint_utils-inl.h"
 #include "gtest/gtest.h"
 #include "indirect_reference_table.h"
@@ -41,7 +42,7 @@
 #include "mirror/stack_trace_element-inl.h"
 #include "nativehelper/ScopedLocalRef.h"
 #include "nativeloader/native_loader.h"
-#include "oat_quick_method_header.h"
+#include "oat/oat_quick_method_header.h"
 #include "runtime.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread-inl.h"
@@ -174,9 +175,8 @@ size_t count_nonnull_refs_single_helper(T arg,
 
 // SFINAE for non-ref-types. Always 0.
 template <typename T>
-size_t count_nonnull_refs_single_helper(T arg ATTRIBUTE_UNUSED,
-                                        typename std::enable_if<!jni_type_traits<T>::is_ref>::type*
-                                            = nullptr) {
+size_t count_nonnull_refs_single_helper(
+    [[maybe_unused]] T arg, typename std::enable_if<!jni_type_traits<T>::is_ref>::type* = nullptr) {
   return 0;
 }
 
@@ -590,10 +590,9 @@ struct ScopedCheckHandleScope {
 
 class CountReferencesVisitor : public RootVisitor {
  public:
-  void VisitRoots(mirror::Object*** roots ATTRIBUTE_UNUSED,
+  void VisitRoots([[maybe_unused]] mirror::Object*** roots,
                   size_t count,
-                  const RootInfo& info) override
-      REQUIRES_SHARED(Locks::mutator_lock_) {
+                  const RootInfo& info) override REQUIRES_SHARED(Locks::mutator_lock_) {
     if (info.GetType() == art::RootType::kRootJavaFrame) {
       const JavaFrameRootInfo& jrfi = static_cast<const JavaFrameRootInfo&>(info);
       if (jrfi.GetVReg() == JavaFrameRootInfo::kNativeReferenceArgument) {
@@ -603,10 +602,9 @@ class CountReferencesVisitor : public RootVisitor {
     }
   }
 
-  void VisitRoots(mirror::CompressedReference<mirror::Object>** roots ATTRIBUTE_UNUSED,
-                  size_t count ATTRIBUTE_UNUSED,
-                  const RootInfo& info) override
-      REQUIRES_SHARED(Locks::mutator_lock_) {
+  void VisitRoots([[maybe_unused]] mirror::CompressedReference<mirror::Object>** roots,
+                  [[maybe_unused]] size_t count,
+                  const RootInfo& info) override REQUIRES_SHARED(Locks::mutator_lock_) {
     CHECK_NE(info.GetType(), art::RootType::kRootJavaFrame);
   }
 
@@ -979,8 +977,8 @@ void JniCompilerTest::CompileAndRunIntObjectObjectMethodImpl() {
 JNI_TEST(CompileAndRunIntObjectObjectMethod)
 
 int gJava_MyClassNatives_fooSII_calls[kJniKindCount] = {};
-jint Java_MyClassNatives_fooSII(JNIEnv* env ATTRIBUTE_UNUSED,
-                                jclass klass ATTRIBUTE_UNUSED,
+jint Java_MyClassNatives_fooSII([[maybe_unused]] JNIEnv* env,
+                                [[maybe_unused]] jclass klass,
                                 jint x,
                                 jint y) {
   gJava_MyClassNatives_fooSII_calls[gCurrentJni]++;
@@ -1002,8 +1000,8 @@ void JniCompilerTest::CompileAndRunStaticIntIntMethodImpl() {
 JNI_TEST_CRITICAL(CompileAndRunStaticIntIntMethod)
 
 int gJava_MyClassNatives_fooSDD_calls[kJniKindCount] = {};
-jdouble Java_MyClassNatives_fooSDD(JNIEnv* env ATTRIBUTE_UNUSED,
-                                   jclass klass ATTRIBUTE_UNUSED,
+jdouble Java_MyClassNatives_fooSDD([[maybe_unused]] JNIEnv* env,
+                                   [[maybe_unused]] jclass klass,
                                    jdouble x,
                                    jdouble y) {
   gJava_MyClassNatives_fooSDD_calls[gCurrentJni]++;
@@ -1553,6 +1551,10 @@ jobject Java_MyClassNatives_staticMethodThatShouldReturnClass(JNIEnv* env, jclas
 }
 
 void JniCompilerTest::UpcallReturnTypeChecking_InstanceImpl() {
+  // Set debuggable so that the JNI compiler does not emit a fast-path that would skip the
+  // runtime call where we do these checks. Note that while normal gtests use the debug build
+  // which disables the fast path, `art_standalone_compiler_tests` run in the release build.
+  compiler_options_->SetDebuggable(true);
   SetUpForTest(false, "instanceMethodThatShouldReturnClass", "()Ljava/lang/Class;",
                CURRENT_JNI_WRAPPER(Java_MyClassNatives_instanceMethodThatShouldReturnClass));
 
@@ -1580,6 +1582,10 @@ void JniCompilerTest::UpcallReturnTypeChecking_InstanceImpl() {
 JNI_TEST(UpcallReturnTypeChecking_Instance)
 
 void JniCompilerTest::UpcallReturnTypeChecking_StaticImpl() {
+  // Set debuggable so that the JNI compiler does not emit a fast-path that would skip the
+  // runtime call where we do these checks. Note that while normal gtests use the debug build
+  // which disables the fast path, `art_standalone_compiler_tests` run in the release build.
+  compiler_options_->SetDebuggable(true);
   SetUpForTest(true, "staticMethodThatShouldReturnClass", "()Ljava/lang/Class;",
                CURRENT_JNI_WRAPPER(Java_MyClassNatives_staticMethodThatShouldReturnClass));
 
@@ -1667,8 +1673,8 @@ void JniCompilerTest::CompileAndRunFloatFloatMethodImpl() {
 
 JNI_TEST(CompileAndRunFloatFloatMethod)
 
-void Java_MyClassNatives_checkParameterAlign(JNIEnv* env ATTRIBUTE_UNUSED,
-                                             jobject thisObj ATTRIBUTE_UNUSED,
+void Java_MyClassNatives_checkParameterAlign([[maybe_unused]] JNIEnv* env,
+                                             [[maybe_unused]] jobject thisObj,
                                              jint i1,
                                              jlong l1) {
   EXPECT_EQ(i1, 1234);

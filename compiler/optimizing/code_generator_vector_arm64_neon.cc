@@ -61,11 +61,9 @@ inline bool NEONCanEncodeConstantAsImmediate(HConstant* constant, HInstruction* 
 //  - constant location - if 'constant' is an actual constant and its value can be
 //    encoded into the instruction.
 //  - register location otherwise.
-inline Location NEONEncodableConstantOrRegister(HInstruction* constant,
-                                                HInstruction* instr) {
-  if (constant->IsConstant()
-      && NEONCanEncodeConstantAsImmediate(constant->AsConstant(), instr)) {
-    return Location::ConstantLocation(constant->AsConstant());
+inline Location NEONEncodableConstantOrRegister(HInstruction* constant, HInstruction* instr) {
+  if (constant->IsConstant() && NEONCanEncodeConstantAsImmediate(constant->AsConstant(), instr)) {
+    return Location::ConstantLocation(constant);
   }
 
   return Location::RequiresRegister();
@@ -94,7 +92,7 @@ void LocationsBuilderARM64Neon::VisitVecReplicateScalar(HVecReplicateScalar* ins
     case DataType::Type::kFloat64:
       if (input->IsConstant() &&
           NEONCanEncodeConstantAsImmediate(input->AsConstant(), instruction)) {
-        locations->SetInAt(0, Location::ConstantLocation(input->AsConstant()));
+        locations->SetInAt(0, Location::ConstantLocation(input));
         locations->SetOut(Location::RequiresFpuRegister());
       } else {
         locations->SetInAt(0, Location::RequiresFpuRegister());
@@ -881,7 +879,7 @@ static void CreateVecShiftLocations(ArenaAllocator* allocator, HVecBinaryOperati
     case DataType::Type::kInt32:
     case DataType::Type::kInt64:
       locations->SetInAt(0, Location::RequiresFpuRegister());
-      locations->SetInAt(1, Location::ConstantLocation(instruction->InputAt(1)->AsConstant()));
+      locations->SetInAt(1, Location::ConstantLocation(instruction->InputAt(1)));
       locations->SetOut(Location::RequiresFpuRegister(), Location::kNoOutputOverlap);
       break;
     default:
@@ -1008,13 +1006,13 @@ void LocationsBuilderARM64Neon::VisitVecSetScalars(HVecSetScalars* instruction) 
     case DataType::Type::kInt16:
     case DataType::Type::kInt32:
     case DataType::Type::kInt64:
-      locations->SetInAt(0, is_zero ? Location::ConstantLocation(input->AsConstant())
+      locations->SetInAt(0, is_zero ? Location::ConstantLocation(input)
                                     : Location::RequiresRegister());
       locations->SetOut(Location::RequiresFpuRegister());
       break;
     case DataType::Type::kFloat32:
     case DataType::Type::kFloat64:
-      locations->SetInAt(0, is_zero ? Location::ConstantLocation(input->AsConstant())
+      locations->SetInAt(0, is_zero ? Location::ConstantLocation(input)
                                     : Location::RequiresFpuRegister());
       locations->SetOut(Location::RequiresFpuRegister());
       break;
@@ -1533,12 +1531,32 @@ void InstructionCodeGeneratorARM64Neon::VisitVecPredWhile(HVecPredWhile* instruc
   UNREACHABLE();
 }
 
-void LocationsBuilderARM64Neon::VisitVecPredCondition(HVecPredCondition* instruction) {
+void LocationsBuilderARM64Neon::VisitVecPredToBoolean(HVecPredToBoolean* instruction) {
   LOG(FATAL) << "No SIMD for " << instruction->GetId();
   UNREACHABLE();
 }
 
-void InstructionCodeGeneratorARM64Neon::VisitVecPredCondition(HVecPredCondition* instruction) {
+void InstructionCodeGeneratorARM64Neon::VisitVecPredToBoolean(HVecPredToBoolean* instruction) {
+  LOG(FATAL) << "No SIMD for " << instruction->GetId();
+  UNREACHABLE();
+}
+
+void LocationsBuilderARM64Neon::VisitVecCondition(HVecCondition* instruction) {
+  LOG(FATAL) << "No SIMD for " << instruction->GetId();
+  UNREACHABLE();
+}
+
+void InstructionCodeGeneratorARM64Neon::VisitVecCondition(HVecCondition* instruction) {
+  LOG(FATAL) << "No SIMD for " << instruction->GetId();
+  UNREACHABLE();
+}
+
+void LocationsBuilderARM64Neon::VisitVecPredNot(HVecPredNot* instruction) {
+  LOG(FATAL) << "No SIMD for " << instruction->GetId();
+  UNREACHABLE();
+}
+
+void InstructionCodeGeneratorARM64Neon::VisitVecPredNot(HVecPredNot* instruction) {
   LOG(FATAL) << "No SIMD for " << instruction->GetId();
   UNREACHABLE();
 }

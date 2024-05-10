@@ -26,9 +26,9 @@
 #include "dexopt_test.h"
 #include "intern_table-inl.h"
 #include "noop_compiler_callbacks.h"
-#include "oat_file.h"
+#include "oat/oat_file.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace gc {
 namespace space {
 
@@ -50,7 +50,7 @@ class ImageSpaceTest : public CommonRuntimeTest {
 };
 
 TEST_F(ImageSpaceTest, StringDeduplication) {
-  const char* const kBaseNames[] = { "Extension1", "Extension2" };
+  const char* const kBaseNames[] = {"Extension1", "Extension2"};
 
   ScratchDir scratch;
   const std::string& scratch_dir = scratch.GetPath();
@@ -58,17 +58,10 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
   int mkdir_result = mkdir(image_dir.c_str(), 0700);
   ASSERT_EQ(0, mkdir_result);
 
-  // Prepare boot class path variables, exclude core-icu4j and conscrypt
-  // which are not in the primary boot image.
+  // Prepare boot class path variables.
   std::vector<std::string> bcp = GetLibCoreDexFileNames();
   std::vector<std::string> bcp_locations = GetLibCoreDexLocations();
   CHECK_EQ(bcp.size(), bcp_locations.size());
-  ASSERT_NE(std::string::npos, bcp.back().find("conscrypt"));
-  bcp.pop_back();
-  bcp_locations.pop_back();
-  ASSERT_NE(std::string::npos, bcp.back().find("core-icu4j"));
-  bcp.pop_back();
-  bcp_locations.pop_back();
   std::string base_bcp_string = android::base::Join(bcp, ':');
   std::string base_bcp_locations_string = android::base::Join(bcp_locations, ':');
   std::string base_image_location = GetImageLocation();
@@ -77,25 +70,26 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
   std::vector<std::string> extension_image_locations;
   for (const char* base_name : kBaseNames) {
     std::string jar_name = GetTestDexFileName(base_name);
-    ArrayRef<const std::string> dex_files(&jar_name, /*size=*/ 1u);
+    ArrayRef<const std::string> dex_files(&jar_name, /*size=*/1u);
     ScratchFile profile_file;
     GenerateBootProfile(dex_files, profile_file.GetFile());
     std::vector<std::string> extra_args = {
         "--profile-file=" + profile_file.GetFilename(),
         "--runtime-arg",
-        "-Xbootclasspath:" + base_bcp_string + ':' + jar_name,
+        ART_FORMAT("-Xbootclasspath:{}:{}", base_bcp_string, jar_name),
         "--runtime-arg",
-        "-Xbootclasspath-locations:" + base_bcp_locations_string + ':' + jar_name,
+        ART_FORMAT("-Xbootclasspath-locations:{}:{}", base_bcp_locations_string, jar_name),
         "--boot-image=" + base_image_location,
     };
     std::string prefix = GetFilenameBase(base_image_location);
     std::string error_msg;
-    bool success = CompileBootImage(extra_args, image_dir + '/' + prefix, dex_files, &error_msg);
+    bool success =
+        CompileBootImage(extra_args, ART_FORMAT("{}/{}", image_dir, prefix), dex_files, &error_msg);
     ASSERT_TRUE(success) << error_msg;
     bcp.push_back(jar_name);
     bcp_locations.push_back(jar_name);
-    extension_image_locations.push_back(
-        scratch_dir + prefix + '-' + GetFilenameBase(jar_name) + ".art");
+    extension_image_locations.push_back(scratch_dir + prefix + '-' + GetFilenameBase(jar_name) +
+                                        ".art");
   }
 
   // Also compile the second extension as an app with app image.
@@ -104,26 +98,27 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
   std::string app_odex_name = scratch_dir + app_base_name + ".odex";
   std::string app_image_name = scratch_dir + app_base_name + ".art";
   {
-    ArrayRef<const std::string> dex_files(&app_jar_name, /*size=*/ 1u);
+    ArrayRef<const std::string> dex_files(&app_jar_name, /*size=*/1u);
     ScratchFile profile_file;
     GenerateProfile(dex_files, profile_file.GetFile());
     std::vector<std::string> argv;
     std::string error_msg;
-    bool success = StartDex2OatCommandLine(&argv, &error_msg, /*use_runtime_bcp_and_image=*/ false);
+    bool success = StartDex2OatCommandLine(&argv, &error_msg, /*use_runtime_bcp_and_image=*/false);
     ASSERT_TRUE(success) << error_msg;
-    argv.insert(argv.end(), {
-        "--profile-file=" + profile_file.GetFilename(),
-        "--runtime-arg",
-        "-Xbootclasspath:" + base_bcp_string,
-        "--runtime-arg",
-        "-Xbootclasspath-locations:" + base_bcp_locations_string,
-        "--boot-image=" + base_image_location,
-        "--dex-file=" + app_jar_name,
-        "--dex-location=" + app_jar_name,
-        "--oat-file=" + app_odex_name,
-        "--app-image-file=" + app_image_name,
-        "--initialize-app-image-classes=true",
-    });
+    argv.insert(argv.end(),
+                {
+                    "--profile-file=" + profile_file.GetFilename(),
+                    "--runtime-arg",
+                    "-Xbootclasspath:" + base_bcp_string,
+                    "--runtime-arg",
+                    "-Xbootclasspath-locations:" + base_bcp_locations_string,
+                    "--boot-image=" + base_image_location,
+                    "--dex-file=" + app_jar_name,
+                    "--dex-location=" + app_jar_name,
+                    "--oat-file=" + app_odex_name,
+                    "--app-image-file=" + app_image_name,
+                    "--initialize-app-image-classes=true",
+                });
     success = RunDex2Oat(argv, &error_msg);
     ASSERT_TRUE(success) << error_msg;
   }
@@ -134,33 +129,35 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
   auto load_boot_image = [&]() REQUIRES_SHARED(Locks::mutator_lock_) {
     boot_image_spaces.clear();
     extra_reservation = MemMap::Invalid();
-    return ImageSpace::LoadBootImage(bcp,
-                                     bcp_locations,
-                                     /*boot_class_path_fds=*/ std::vector<int>(),
-                                     /*boot_class_path_image_fds=*/ std::vector<int>(),
-                                     /*boot_class_path_vdex_fds=*/ std::vector<int>(),
-                                     /*boot_class_path_oat_fds=*/ std::vector<int>(),
-                                     full_image_locations,
-                                     kRuntimeISA,
-                                     /*relocate=*/ false,
-                                     /*executable=*/ true,
-                                     /*extra_reservation_size=*/ 0u,
-                                     /*allow_in_memory_compilation=*/ false,
-                                     &boot_image_spaces,
-                                     &extra_reservation);
+    return ImageSpace::LoadBootImage(
+        bcp,
+        bcp_locations,
+        /*boot_class_path_files=*/{},
+        /*boot_class_path_image_files=*/{},
+        /*boot_class_path_vdex_files=*/{},
+        /*boot_class_path_oat_files=*/{},
+        full_image_locations,
+        kRuntimeISA,
+        /*relocate=*/false,
+        /*executable=*/true,
+        /*extra_reservation_size=*/0u,
+        /*allow_in_memory_compilation=*/false,
+        Runtime::GetApexVersions(ArrayRef<const std::string>(bcp_locations)),
+        &boot_image_spaces,
+        &extra_reservation);
   };
 
   const char test_string[] = "SharedBootImageExtensionTestString";
   size_t test_string_length = std::size(test_string) - 1u;  // Equals UTF-16 length.
   uint32_t hash = InternTable::Utf8String::Hash(test_string_length, test_string);
   InternTable::Utf8String utf8_test_string(test_string_length, test_string);
-  auto contains_test_string = [utf8_test_string, hash](ImageSpace* space)
-      REQUIRES_SHARED(Locks::mutator_lock_) {
+  auto contains_test_string = [utf8_test_string,
+                               hash](ImageSpace* space) REQUIRES_SHARED(Locks::mutator_lock_) {
     const ImageHeader& image_header = space->GetImageHeader();
     if (image_header.GetInternedStringsSection().Size() != 0u) {
       const uint8_t* data = space->Begin() + image_header.GetInternedStringsSection().Offset();
       size_t read_count;
-      InternTable::UnorderedSet temp_set(data, /*make_copy_of_data=*/ false, &read_count);
+      InternTable::UnorderedSet temp_set(data, /*make_copy_of_data=*/false, &read_count);
       return temp_set.FindWithHash(utf8_test_string, hash) != temp_set.end();
     } else {
       return false;
@@ -171,8 +168,7 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
   ScopedObjectAccess soa(Thread::Current());
   ASSERT_EQ(2u, extension_image_locations.size());
   full_image_locations = {
-    base_image_location, extension_image_locations[0], extension_image_locations[1]
-  };
+      base_image_location, extension_image_locations[0], extension_image_locations[1]};
   bool success = load_boot_image();
   ASSERT_TRUE(success);
   ASSERT_EQ(bcp.size(), boot_image_spaces.size());
@@ -184,8 +180,7 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
   std::swap(bcp[bcp.size() - 2u], bcp[bcp.size() - 1u]);
   std::swap(bcp_locations[bcp_locations.size() - 2u], bcp_locations[bcp_locations.size() - 1u]);
   full_image_locations = {
-    base_image_location, extension_image_locations[1], extension_image_locations[0]
-  };
+      base_image_location, extension_image_locations[1], extension_image_locations[0]};
   success = load_boot_image();
   ASSERT_TRUE(success);
   ASSERT_EQ(bcp.size(), boot_image_spaces.size());
@@ -204,21 +199,21 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
 
   // Load the app odex file and app image.
   std::string error_msg;
-  std::unique_ptr<OatFile> odex_file(OatFile::Open(/*zip_fd=*/ -1,
-                                                   app_odex_name.c_str(),
-                                                   app_odex_name.c_str(),
-                                                   /*executable=*/ false,
-                                                   /*low_4gb=*/ false,
+  std::unique_ptr<OatFile> odex_file(OatFile::Open(/*zip_fd=*/-1,
+                                                   app_odex_name,
+                                                   app_odex_name,
+                                                   /*executable=*/false,
+                                                   /*low_4gb=*/false,
                                                    app_jar_name,
                                                    &error_msg));
   ASSERT_TRUE(odex_file != nullptr) << error_msg;
   std::vector<ImageSpace*> non_owning_boot_image_spaces =
       MakeNonOwningPointerVector(boot_image_spaces);
-  std::unique_ptr<ImageSpace> app_image_space = ImageSpace::CreateFromAppImage(
-      app_image_name.c_str(),
-      odex_file.get(),
-      ArrayRef<ImageSpace* const>(non_owning_boot_image_spaces),
-      &error_msg);
+  std::unique_ptr<ImageSpace> app_image_space =
+      ImageSpace::CreateFromAppImage(app_image_name.c_str(),
+                                     odex_file.get(),
+                                     ArrayRef<ImageSpace* const>(non_owning_boot_image_spaces),
+                                     &error_msg);
   ASSERT_TRUE(app_image_space != nullptr) << error_msg;
 
   // The string in the app image should be replaced and removed from interned string section.
@@ -243,25 +238,25 @@ TEST_F(DexoptTest, ValidateOatFile) {
   args.push_back("--oat-file=" + oat_location);
   ASSERT_TRUE(Dex2Oat(args, &error_msg)) << error_msg;
 
-  std::unique_ptr<OatFile> oat(OatFile::Open(/*zip_fd=*/ -1,
-                                             oat_location.c_str(),
-                                             oat_location.c_str(),
-                                             /*executable=*/ false,
-                                             /*low_4gb=*/ false,
+  std::unique_ptr<OatFile> oat(OatFile::Open(/*zip_fd=*/-1,
+                                             oat_location,
+                                             oat_location,
+                                             /*executable=*/false,
+                                             /*low_4gb=*/false,
                                              &error_msg));
   ASSERT_TRUE(oat != nullptr) << error_msg;
 
   {
     // Test opening the oat file also with explicit dex filenames.
-    std::vector<std::string> dex_filenames{ dex1, multidex1, dex2 };
-    std::unique_ptr<OatFile> oat2(OatFile::Open(/*zip_fd=*/ -1,
-                                                oat_location.c_str(),
-                                                oat_location.c_str(),
-                                                /*executable=*/ false,
-                                                /*low_4gb=*/ false,
+    std::vector<std::string> dex_filenames{dex1, multidex1, dex2};
+    std::unique_ptr<OatFile> oat2(OatFile::Open(/*zip_fd=*/-1,
+                                                oat_location,
+                                                oat_location,
+                                                /*executable=*/false,
+                                                /*low_4gb=*/false,
                                                 ArrayRef<const std::string>(dex_filenames),
-                                                /*dex_fds=*/ ArrayRef<const int>(),
-                                                /*reservation=*/ nullptr,
+                                                /*dex_files=*/{},
+                                                /*reservation=*/nullptr,
                                                 &error_msg));
     ASSERT_TRUE(oat2 != nullptr) << error_msg;
   }

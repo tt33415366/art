@@ -53,6 +53,42 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
 // these are not clobbered by any direct call to native code (such as math intrinsics).
 static constexpr FloatRegister non_volatile_xmm_regs[] = { XMM12, XMM13, XMM14, XMM15 };
 
+#define UNIMPLEMENTED_INTRINSIC_LIST_X86_64(V) \
+  V(CRC32Update)                               \
+  V(CRC32UpdateBytes)                          \
+  V(CRC32UpdateByteBuffer)                     \
+  V(FP16ToFloat)                               \
+  V(FP16ToHalf)                                \
+  V(FP16Floor)                                 \
+  V(FP16Ceil)                                  \
+  V(FP16Rint)                                  \
+  V(FP16Greater)                               \
+  V(FP16GreaterEquals)                         \
+  V(FP16Less)                                  \
+  V(FP16LessEquals)                            \
+  V(FP16Compare)                               \
+  V(FP16Min)                                   \
+  V(FP16Max)                                   \
+  V(StringStringIndexOf)                       \
+  V(StringStringIndexOfAfter)                  \
+  V(StringBufferAppend)                        \
+  V(StringBufferLength)                        \
+  V(StringBufferToString)                      \
+  V(StringBuilderAppendObject)                 \
+  V(StringBuilderAppendString)                 \
+  V(StringBuilderAppendCharSequence)           \
+  V(StringBuilderAppendCharArray)              \
+  V(StringBuilderAppendBoolean)                \
+  V(StringBuilderAppendChar)                   \
+  V(StringBuilderAppendInt)                    \
+  V(StringBuilderAppendLong)                   \
+  V(StringBuilderAppendFloat)                  \
+  V(StringBuilderAppendDouble)                 \
+  V(StringBuilderLength)                       \
+  V(StringBuilderToString)                     \
+  /* 1.8 */                                    \
+  V(MethodHandleInvokeExact)                   \
+  V(MethodHandleInvoke)
 
 class InvokeRuntimeCallingConvention : public CallingConvention<Register, FloatRegister> {
  public:
@@ -115,16 +151,16 @@ class FieldAccessCallingConventionX86_64 : public FieldAccessCallingConvention {
   Location GetFieldIndexLocation() const override {
     return Location::RegisterLocation(RDI);
   }
-  Location GetReturnLocation(DataType::Type type ATTRIBUTE_UNUSED) const override {
+  Location GetReturnLocation([[maybe_unused]] DataType::Type type) const override {
     return Location::RegisterLocation(RAX);
   }
-  Location GetSetValueLocation(DataType::Type type ATTRIBUTE_UNUSED, bool is_instance)
-      const override {
+  Location GetSetValueLocation([[maybe_unused]] DataType::Type type,
+                               bool is_instance) const override {
     return is_instance
         ? Location::RegisterLocation(RDX)
         : Location::RegisterLocation(RSI);
   }
-  Location GetFpuLocation(DataType::Type type ATTRIBUTE_UNUSED) const override {
+  Location GetFpuLocation([[maybe_unused]] DataType::Type type) const override {
     return Location::FpuRegisterLocation(XMM0);
   }
 
@@ -201,7 +237,9 @@ class LocationsBuilderX86_64 : public HGraphVisitor {
   void HandleBitwiseOperation(HBinaryOperation* operation);
   void HandleCondition(HCondition* condition);
   void HandleShift(HBinaryOperation* operation);
-  void HandleFieldSet(HInstruction* instruction, const FieldInfo& field_info);
+  void HandleFieldSet(HInstruction* instruction,
+                      const FieldInfo& field_info,
+                      WriteBarrierKind write_barrier_kind);
   void HandleFieldGet(HInstruction* instruction);
   bool CpuHasAvxFeatureFlag();
   bool CpuHasAvx2FeatureFlag();
@@ -421,7 +459,7 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   void SetupBlockedRegisters() const override;
   void DumpCoreRegister(std::ostream& stream, int reg) const override;
   void DumpFloatingPointRegister(std::ostream& stream, int reg) const override;
-  void Finalize(CodeAllocator* allocator) override;
+  void Finalize() override;
 
   InstructionSet GetInstructionSet() const override {
     return InstructionSet::kX86_64;
@@ -433,12 +471,22 @@ class CodeGeneratorX86_64 : public CodeGenerator {
 
   const X86_64InstructionSetFeatures& GetInstructionSetFeatures() const;
 
-  // Emit a write barrier.
-  void MarkGCCard(CpuRegister temp,
-                  CpuRegister card,
-                  CpuRegister object,
-                  CpuRegister value,
-                  bool emit_null_check);
+  // Emit a write barrier if:
+  // A) emit_null_check is false
+  // B) emit_null_check is true, and value is not null.
+  void MaybeMarkGCCard(CpuRegister temp,
+                       CpuRegister card,
+                       CpuRegister object,
+                       CpuRegister value,
+                       bool emit_null_check);
+
+  // Emit a write barrier unconditionally.
+  void MarkGCCard(CpuRegister temp, CpuRegister card, CpuRegister object);
+
+  // Crash if the card table is not valid. This check is only emitted for the CC GC. We assert
+  // `(!clean || !self->is_gc_marking)`, since the card table should not be set to clean when the CC
+  // GC is marking for eliminated write barriers.
+  void CheckGCCardIsValid(CpuRegister temp, CpuRegister card, CpuRegister object);
 
   void GenerateMemoryBarrier(MemBarrierKind kind);
 
@@ -455,9 +503,7 @@ class CodeGeneratorX86_64 : public CodeGenerator {
     block_labels_ = CommonInitializeLabels<Label>();
   }
 
-  bool NeedsTwoRegisters(DataType::Type type ATTRIBUTE_UNUSED) const override {
-    return false;
-  }
+  bool NeedsTwoRegisters([[maybe_unused]] DataType::Type type) const override { return false; }
 
   // Check if the desired_string_load_kind is supported. If it is, return it,
   // otherwise return a fall-back kind that should be used instead.
@@ -486,9 +532,11 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   void RecordBootImageMethodPatch(HInvoke* invoke);
   void RecordMethodBssEntryPatch(HInvoke* invoke);
   void RecordBootImageTypePatch(const DexFile& dex_file, dex::TypeIndex type_index);
+  void RecordAppImageTypePatch(const DexFile& dex_file, dex::TypeIndex type_index);
   Label* NewTypeBssEntryPatch(HLoadClass* load_class);
   void RecordBootImageStringPatch(HLoadString* load_string);
   Label* NewStringBssEntryPatch(HLoadString* load_string);
+  Label* NewMethodTypeBssEntryPatch(HLoadMethodType* load_method_type);
   void RecordBootImageJniEntrypointPatch(HInvokeStaticOrDirect* invoke);
   Label* NewJitRootStringPatch(const DexFile& dex_file,
                                dex::StringIndex string_index,
@@ -660,7 +708,7 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   void GenerateExplicitNullCheck(HNullCheck* instruction) override;
   void MaybeGenerateInlineCacheCheck(HInstruction* instruction, CpuRegister cls);
 
-  void MaybeIncrementHotness(bool is_frame_entry);
+  void MaybeIncrementHotness(HSuspendCheck* suspend_check, bool is_frame_entry);
 
   static void BlockNonVolatileXmmRegisters(LocationSummary* locations);
 
@@ -691,6 +739,8 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   ArenaDeque<PatchInfo<Label>> method_bss_entry_patches_;
   // PC-relative type patch info for kBootImageLinkTimePcRelative.
   ArenaDeque<PatchInfo<Label>> boot_image_type_patches_;
+  // PC-relative type patch info for kAppImageRelRo.
+  ArenaDeque<PatchInfo<Label>> app_image_type_patches_;
   // PC-relative type patch info for kBssEntry.
   ArenaDeque<PatchInfo<Label>> type_bss_entry_patches_;
   // PC-relative public type patch info for kBssEntryPublic.
@@ -701,6 +751,8 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   ArenaDeque<PatchInfo<Label>> boot_image_string_patches_;
   // PC-relative String patch info for kBssEntry.
   ArenaDeque<PatchInfo<Label>> string_bss_entry_patches_;
+  // PC-relative MethodType patch info for kBssEntry.
+  ArenaDeque<PatchInfo<Label>> method_type_bss_entry_patches_;
   // PC-relative method patch info for kBootImageLinkTimePcRelative+kCallCriticalNative.
   ArenaDeque<PatchInfo<Label>> boot_image_jni_entrypoint_patches_;
   // PC-relative patch info for IntrinsicObjects for the boot image,

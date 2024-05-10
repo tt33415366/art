@@ -7,6 +7,29 @@ package {
     // to get the below license kinds:
     //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["art_license"],
+    default_team: "trendy_team_art_mainline",
+}
+
+cc_library_headers {
+    name: "libnativeloader-headers",
+    defaults: ["art_defaults"],
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.art",
+        "com.android.art.debug",
+        "com.android.media",
+    ],
+    visibility: [
+        "//art:__subpackages__",
+        // TODO(b/133140750): Clean this up.
+        "//frameworks/av/media/libstagefright",
+        "//frameworks/native/libs/graphicsenv",
+        "//frameworks/native/vulkan/libvulkan",
+    ],
+    host_supported: true,
+    export_include_dirs: ["include"],
+    header_libs: ["jni_headers"],
+    export_header_lib_headers: ["jni_headers"],
 }
 
 cc_defaults {
@@ -27,12 +50,14 @@ art_cc_library {
     apex_available: [
         "com.android.art",
         "com.android.art.debug",
+        "test_broken_com.android.art",
     ],
     host_supported: true,
     srcs: [
         "native_loader.cpp",
     ],
     header_libs: [
+        "art_libartbase_headers",
         "libnativehelper_header_only",
     ],
     shared_libs: [
@@ -65,6 +90,7 @@ art_cc_library {
             ],
             static_libs: [
                 "libPlatformProperties",
+                "libmodules-utils-build",
             ],
         },
     },
@@ -74,6 +100,9 @@ art_cc_library {
     },
 }
 
+// Wrapper that loads nativeloader.so lazily, to be used to deal with layer
+// inversion in places like in early boot where libnativeloader and/or
+// libnativebridge aren't available.
 // TODO(b/124250621) eliminate the need for this library
 cc_library {
     name: "libnativeloader_lazy",
@@ -94,92 +123,91 @@ cc_library {
     shared_libs: ["liblog"],
 }
 
-cc_library_headers {
-    name: "libnativeloader-headers",
-    defaults: ["art_defaults"],
-    apex_available: [
-        "//apex_available:platform",
-        "com.android.art",
-        "com.android.art.debug",
-        "com.android.media",
-    ],
-    visibility: [
-        "//art:__subpackages__",
-        // TODO(b/133140750): Clean this up.
-        "//frameworks/av/media/libstagefright",
-        "//frameworks/native/libs/graphicsenv",
-        "//frameworks/native/vulkan/libvulkan",
-    ],
-    host_supported: true,
-    export_include_dirs: ["include"],
-    header_libs: ["jni_headers"],
-    export_header_lib_headers: ["jni_headers"],
-}
-
-cc_defaults {
-    name: "libnativeloader-test-defaults",
+art_cc_test {
+    name: "libnativeloader_test",
     defaults: [
         "art_module_source_build_defaults",
-        "art_test_defaults",
+        // Cannot use art_standalone_gtest_defaults because it makes us link
+        // libnativebridge statically through libart-gtest, but we need to mock
+        // its symbols here.
+        "art_standalone_test_defaults",
     ],
     host_supported: false,
 
-    cflags: ["-DANDROID"],
-
-    // The tests mock libdl_android and libnativebridge symbols, so export them
-    // to override the ones loaded from their libs.
-    ldflags: [
-        "-Wl,--export-dynamic-symbol=android_*",
-        "-Wl,--export-dynamic-symbol=NativeBridge*",
-    ],
+    // Ordinarily, symbols are only exported if they are referenced by some
+    // shared object dependency. Instead, export everything using
+    // --export-dynamic, then restrict the visibility using the version script.
+    ldflags: ["-Wl,--export-dynamic"],
+    version_script: "libnativeloader_test.map",
 
     header_libs: [
         "libnativebridge-headers",
         "libnativehelper_header_only",
     ],
+    shared_libs: [
+        "liblog", // libbase dependency
+        "libnativeloader",
+    ],
     static_libs: [
+        "libbase",
         "libgmock",
     ],
-    shared_libs: [
-        "libbase",
-    ],
 
-    test_suites: ["device-tests"],
-}
-
-art_cc_test {
-    name: "libnativeloader_test",
-    defaults: [
-        "art_standalone_test_defaults",
-        "libnativeloader-test-defaults",
-    ],
     tidy_timeout_srcs: [
         "native_loader_test.cpp",
     ],
     srcs: [
+        "library_namespaces_test.cpp",
         "native_loader_api_test.c",
         "native_loader_test.cpp",
     ],
+
+    test_for: [
+        "com.android.art",
+        "com.android.art.debug",
+    ],
+    test_suites: [
+        "general-tests",
+        "mts-art",
+    ],
+}
+
+cc_defaults {
+    name: "libnativeloader_api_test_defaults",
+    defaults: ["art_standalone_test_defaults"],
+
+    srcs: ["native_loader_api_test.cpp"],
+    header_libs: [
+        "libnativebridge-headers",
+        "libnativehelper_header_only",
+    ],
+    static_libs: [
+        "libbase",
+        "libgmock",
+    ],
+}
+
+art_cc_test {
+    name: "art_libnativeloader_cts_test",
+    defaults: ["libnativeloader_api_test_defaults"],
     shared_libs: [
         "libnativeloader",
     ],
-
-    // Added to CTS for API coverage of libnativeloader which is backed by the
-    // ART module.
     test_config_template: ":art-gtests-target-standalone-cts-template",
     test_suites: [
         "cts",
-        "mts-art",
+        "mcts-art",
     ],
 }
 
 art_cc_test {
     name: "libnativeloader_lazy_test",
-    defaults: ["libnativeloader-test-defaults"],
-    srcs: [
-        "native_loader_lazy_test.cpp",
-    ],
+    defaults: ["libnativeloader_api_test_defaults"],
     static_libs: [
         "libnativeloader_lazy",
+    ],
+    test_suites: [
+        "general-tests",
+        "mts-art",
     ],
 }

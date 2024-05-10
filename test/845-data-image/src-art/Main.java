@@ -18,9 +18,30 @@ import dalvik.system.DexFile;
 import dalvik.system.VMRuntime;
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Array;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
+import java.math.BigInteger;
 import java.util.concurrent.CyclicBarrier;
+
+// This class helps testing that we don't mark `InheritsBigInteger` as initialized,
+// given we do not expect `BigInteger` to be initialized in the boot image.
+class InheritsBigInteger extends BigInteger {
+  InheritsBigInteger(String value) {
+    super(value);
+  }
+}
+
+class SuperClass {}
+
+class ClassWithStatics extends SuperClass {
+  public static final String STATIC_STRING = "foo";
+  public static final int STATIC_INT = 42;
+}
+
+class ClassWithStaticType {
+  public static final Class<?> STATIC_TYPE = Object.class;
+}
 
 // Add an interface for testing generating classes and interfaces.
 interface Itf {
@@ -87,6 +108,9 @@ interface Itf2 {
 class Itf2Impl implements Itf2 {
 }
 
+class ClassWithDefaultConflict implements IfaceWithSayHi, IfaceWithSayHiAtRuntime {
+}
+
 public class Main implements Itf {
   static String myString = "MyString";
 
@@ -138,7 +162,7 @@ public class Main implements Itf {
 
     if (args.length == 2 && "--second-run".equals(args[1])) {
       DexFile.OptimizationInfo info = VMRuntime.getBaseApkOptimizationInfo();
-      if (!info.isOptimized()) {
+      if (!info.isOptimized() && !isInImageSpace(Main.class)) {
         throw new Error("Expected image to be loaded");
       }
     }
@@ -197,6 +221,9 @@ public class Main implements Itf {
 
   public static Itf itf = new Main();
   public static Itf2 itf2 = new Itf2Impl();
+  public static ClassWithStatics statics = new ClassWithStatics();
+  public static ClassWithStaticType staticType = new ClassWithStaticType();
+  public static ClassWithDefaultConflict defaultConflict = new ClassWithDefaultConflict();
 
   public static void runClassTests() {
     // Test Class.getName, app images expect all strings to have hash codes.
@@ -213,6 +240,25 @@ public class Main implements Itf {
     Itf foo = (Itf) MyProxy.newInstance(new Main());
     assertEquals(3, foo.someMethod());
     assertEquals(42, foo.someDefaultMethod());
+
+    // Test with array classes.
+    assertEquals("[LMain;", Main[].class.getName());
+    assertEquals("[[LMain;", Main[][].class.getName());
+
+    assertEquals("[LMain;", new Main[4].getClass().getName());
+    assertEquals("[[LMain;", new Main[1][2].getClass().getName());
+
+    Main array[] = new Main[] { new Main() };
+    assertEquals("[LMain;", array.getClass().getName());
+
+    assertEquals(Object[][][][].class, Array.newInstance(Object.class, 0, 0, 0, 0).getClass());
+    assertEquals("int", int.class.getName());
+    assertEquals("[I", int[].class.getName());
+
+    assertEquals("foo", statics.STATIC_STRING);
+    assertEquals(42, statics.STATIC_INT);
+
+    assertEquals(Object.class, staticType.STATIC_TYPE);
 
     // Call all interface methods to trigger the creation of a imt conflict method.
     itf2.defaultMethod1();
@@ -266,6 +312,9 @@ public class Main implements Itf {
     itf2.defaultMethod49();
     itf2.defaultMethod50();
     itf2.defaultMethod51();
+
+    InheritsBigInteger bigInteger = new InheritsBigInteger("42");
+    assertEquals("42", bigInteger.toString());
   }
 
   private static void assertEquals(int expected, int actual) {
@@ -274,7 +323,7 @@ public class Main implements Itf {
     }
   }
 
-  private static void assertEquals(String expected, String actual) {
+  private static void assertEquals(Object expected, Object actual) {
     if (!expected.equals(actual)) {
       throw new Error("Expected \"" + expected + "\", got \"" + actual + "\"");
     }
@@ -287,6 +336,7 @@ public class Main implements Itf {
   private static native boolean hasOatFile();
   private static native boolean hasImage();
   private static native String getCompilerFilter(Class<?> cls);
+  private static native boolean isInImageSpace(Class<?> cls);
 
   private static final String TEMP_FILE_NAME_PREFIX = "temp";
   private static final String TEMP_FILE_NAME_SUFFIX = "-file";

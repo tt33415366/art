@@ -30,7 +30,6 @@
 #include "managed_register_x86_64.h"
 #include "offsets.h"
 #include "utils/assembler.h"
-#include "utils/jni_macro_assembler.h"
 
 namespace art HIDDEN {
 namespace x86_64 {
@@ -123,7 +122,7 @@ class Operand : public ValueObject {
         return disp32();
       default:
         // Mod 11b means reg/reg, so there is no address and consequently no displacement.
-        DCHECK(false) << "there is no displacement in x86_64 reg/reg operand";
+        LOG(FATAL) << "there is no displacement in x86_64 reg/reg operand";
         UNREACHABLE();
     }
   }
@@ -853,7 +852,9 @@ class X86_64Assembler final : public Assembler {
   void addl(CpuRegister reg, const Address& address);
   void addl(const Address& address, CpuRegister reg);
   void addl(const Address& address, const Immediate& imm);
+  void addw(CpuRegister reg, const Immediate& imm);
   void addw(const Address& address, const Immediate& imm);
+  void addw(const Address& address, CpuRegister reg);
 
   void addq(CpuRegister reg, const Immediate& imm);
   void addq(CpuRegister dst, CpuRegister src);
@@ -964,6 +965,8 @@ class X86_64Assembler final : public Assembler {
   void popcntl(CpuRegister dst, const Address& src);
   void popcntq(CpuRegister dst, CpuRegister src);
   void popcntq(CpuRegister dst, const Address& src);
+
+  void rdtsc();
 
   void rorl(CpuRegister reg, const Immediate& imm);
   void rorl(CpuRegister operand, CpuRegister shifter);

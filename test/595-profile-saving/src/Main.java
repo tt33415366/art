@@ -23,10 +23,28 @@ public class Main {
   public static void main(String[] args) throws Exception {
     System.loadLibrary(args[0]);
 
+    if (!hasJit()) {
+      // Test requires JIT for creating profiling infos.
+      return;
+    }
+
     File file = null;
+    File file2 = null;
+    File file3 = null;
     try {
+      // Register `file2` with an empty jar. Even though `file2` is registered before `file`, the
+      // runtime should not write bootclasspath methods to `file2`, and it should not even create
+      // `file2`.
+      file2 = createTempFile();
+      String emptyJarPath =
+          System.getenv("DEX_LOCATION") + "/res/art-gtest-jars-MainEmptyUncompressed.jar";
+      VMRuntime.registerAppInfo("test.app",
+                                file2.getPath(),
+                                file2.getPath(),
+                                new String[] {emptyJarPath},
+                                VMRuntime.CODE_PATH_TYPE_SPLIT_APK);
+
       file = createTempFile();
-      // String codePath = getDexBaseLocation();
       String codePath = System.getenv("DEX_LOCATION") + "/595-profile-saving.jar";
       VMRuntime.registerAppInfo("test.app",
                                 file.getPath(),
@@ -34,13 +52,35 @@ public class Main {
                                 new String[] {codePath},
                                 VMRuntime.CODE_PATH_TYPE_PRIMARY_APK);
 
-      // Test that the profile saves an app method with a profiling info.
+      file3 = createTempFile();
+      String dexPath = System.getenv("DEX_LOCATION") + "/res/art-gtest-jars-Main.dex";
+      VMRuntime.registerAppInfo("test.app",
+                                file3.getPath(),
+                                file3.getPath(),
+                                new String[] {dexPath},
+                                VMRuntime.CODE_PATH_TYPE_SPLIT_APK);
+
+      // Delete the files so that we can check if the runtime creates them. The runtime should
+      // create `file` and `file3` but not `file2`.
+      file.delete();
+      file2.delete();
+      file3.delete();
+
+      // Test that the runtime saves the profiling info of an app method in a .jar file.
       Method appMethod = Main.class.getDeclaredMethod("testAddMethodToProfile",
           File.class, Method.class);
       testAddMethodToProfile(file, appMethod);
 
-      // Test that the profile saves a boot class path method with a profiling info.
-      Method bootMethod = File.class.getDeclaredMethod("delete");
+      // Test that the runtime saves the profiling info of an app method in a .dex file.
+      ClassLoader dexClassLoader = (ClassLoader) Class.forName("dalvik.system.PathClassLoader")
+                                           .getDeclaredConstructor(String.class, ClassLoader.class)
+                                           .newInstance(dexPath, null /* parent */);
+      Class<?> c = Class.forName("Main", true /* initialize */, dexClassLoader);
+      Method methodInDex = c.getMethod("main", (new String[0]).getClass());
+      testAddMethodToProfile(file3, methodInDex);
+
+      // Test that the runtime saves the profiling info of a bootclasspath method.
+      Method bootMethod = File.class.getDeclaredMethod("exists");
       if (bootMethod.getDeclaringClass().getClassLoader() != Object.class.getClassLoader()) {
         System.out.println("Class loader does not match boot class");
       }
@@ -51,10 +91,17 @@ public class Main {
       Method bootNotInProfileMethod = System.class.getDeclaredMethod("console");
       testMethodNotInProfile(file, bootNotInProfileMethod);
 
-      System.out.println("IsForBootImage: " + isForBootImage(file.getPath()));
+      testProfileNotExist(file2);
+
+      if (!isForBootImage(file.getPath())) {
+        throw new Error("Expected profile to be for boot image");
+      }
     } finally {
       if (file != null) {
         file.delete();
+      }
+      if (file2 != null) {
+        file2.delete();
       }
     }
   }
@@ -79,14 +126,27 @@ public class Main {
     }
   }
 
+  static void testProfileNotExist(File file) {
+    // Make sure the profile saving has been attempted.
+    ensureProfileProcessing();
+    // Verify that the profile does not exist.
+    if (file.exists()) {
+      throw new RuntimeException("Did not expect " + file + " to exist");
+    }
+  }
+
   // Ensure a method has a profiling info.
-  public static native void ensureProfilingInfo(Method method);
+  public static void ensureProfilingInfo(Method method) {
+    ensureJitBaselineCompiled(method.getDeclaringClass(), method.getName());
+  }
+  public static native void ensureJitBaselineCompiled(Class<?> cls, String methodName);
   // Ensures the profile saver does its usual processing.
   public static native void ensureProfileProcessing();
   // Checks if the profiles saver knows about the method.
   public static native boolean presentInProfile(String profile, Method method);
   // Returns true if the profile is for the boot image.
   public static native boolean isForBootImage(String profile);
+  public static native boolean hasJit();
 
   private static final String TEMP_FILE_NAME_PREFIX = "temp";
   private static final String TEMP_FILE_NAME_SUFFIX = "-file";
@@ -109,7 +169,8 @@ public class Main {
   }
 
   private static class VMRuntime {
-    public static final int CODE_PATH_TYPE_PRIMARY_APK = 1;
+    public static final int CODE_PATH_TYPE_PRIMARY_APK = 1 << 0;
+    public static final int CODE_PATH_TYPE_SPLIT_APK = 1 << 1;
     private static final Method registerAppInfoMethod;
 
     static {

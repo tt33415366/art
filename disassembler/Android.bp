@@ -21,6 +21,7 @@ package {
     // to get the below license kinds:
     //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["art_license"],
+    default_team: "trendy_team_art_performance",
 }
 
 art_cc_defaults {
@@ -36,6 +37,9 @@ art_cc_defaults {
         },
         arm64: {
             srcs: ["disassembler_arm64.cc"],
+        },
+        riscv64: {
+            srcs: ["disassembler_riscv64.cc"],
         },
         x86: {
             srcs: ["disassembler_x86.cc"],

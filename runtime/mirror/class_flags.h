@@ -19,7 +19,9 @@
 
 #include <stdint.h>
 
-namespace art {
+#include "base/macros.h"
+
+namespace art HIDDEN {
 namespace mirror {
 
 // Normal instance with at least one ref field other than the class.
@@ -55,6 +57,9 @@ static constexpr uint32_t kClassFlagFinalizerReference = 0x00000200;
 
 // Class is the phantom reference class.
 static constexpr uint32_t kClassFlagPhantomReference   = 0x00000400;
+
+// Class is a record class. See doc at java.lang.Class#isRecord().
+static constexpr uint32_t kClassFlagRecord             = 0x00000800;
 
 // Combination of flags to figure out if the class is either the weak/soft/phantom/finalizer
 // reference class.

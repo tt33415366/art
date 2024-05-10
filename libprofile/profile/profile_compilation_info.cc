@@ -16,6 +16,7 @@
 
 #include "profile_compilation_info.h"
 
+#include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -31,10 +32,14 @@
 #include <numeric>
 #include <random>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "android-base/file.h"
+#include "android-base/properties.h"
 #include "android-base/scopeguard.h"
+#include "android-base/strings.h"
 #include "android-base/unique_fd.h"
 #include "base/arena_allocator.h"
 #include "base/bit_utils.h"
@@ -52,6 +57,7 @@
 #include "base/unix_file/fd_file.h"
 #include "base/utils.h"
 #include "base/zip_archive.h"
+#include "dex/code_item_accessors-inl.h"
 #include "dex/descriptors_names.h"
 #include "dex/dex_file_loader.h"
 
@@ -671,9 +677,10 @@ ProfileCompilationInfo::ProfileSampleAnnotation ProfileCompilationInfo::GetAnnot
 
 bool ProfileCompilationInfo::AddMethods(const std::vector<ProfileMethodInfo>& methods,
                                         MethodHotness::Flag flags,
-                                        const ProfileSampleAnnotation& annotation) {
+                                        const ProfileSampleAnnotation& annotation,
+                                        bool is_test) {
   for (const ProfileMethodInfo& method : methods) {
-    if (!AddMethod(method, flags, annotation)) {
+    if (!AddMethod(method, flags, annotation, is_test)) {
       return false;
     }
   }
@@ -689,7 +696,7 @@ dex::TypeIndex ProfileCompilationInfo::FindOrCreateTypeIndex(const DexFile& dex_
     return class_ref.TypeIndex();
   }
   // Try to find a `TypeId` in the method's dex file.
-  const char* descriptor = class_ref.dex_file->StringByTypeIdx(class_ref.TypeIndex());
+  const char* descriptor = class_ref.dex_file->GetTypeDescriptor(class_ref.TypeIndex());
   return FindOrCreateTypeIndex(dex_file, descriptor);
 }
 
@@ -782,6 +789,9 @@ bool ProfileCompilationInfo::Load(const std::string& filename, bool clear_if_inv
       LockedFile::Open(filename.c_str(), flags, /*block=*/false, &error);
 
   if (profile_file.get() == nullptr) {
+    if (clear_if_invalid && errno == ENOENT) {
+      return true;
+    }
     LOG(WARNING) << "Couldn't lock the profile file " << filename << ": " << error;
     return false;
   }
@@ -799,6 +809,8 @@ bool ProfileCompilationInfo::Load(const std::string& filename, bool clear_if_inv
        (status == ProfileLoadStatus::kBadData))) {
     LOG(WARNING) << "Clearing bad or obsolete profile data from file "
                  << filename << ": " << error;
+    // When ART Service is enabled, this is the only place where we mutate a profile in place.
+    // TODO(jiakaiz): Get rid of this.
     if (profile_file->ClearContent()) {
       return true;
     } else {
@@ -818,7 +830,12 @@ bool ProfileCompilationInfo::Save(const std::string& filename, uint64_t* bytes_w
   return SaveFallback(filename, bytes_written);
 #else
   // Prior to U, SELinux policy doesn't allow apps to create profile files.
-  if (!android::modules::sdklevel::IsAtLeastU()) {
+  // Additionally, when installd is being used for dexopt, it acquires a flock when working on a
+  // profile. It's unclear to us whether the flock means that the file at the fd shouldn't change or
+  // that the file at the path shouldn't change, especially when the installd code is modified by
+  // partners. Therefore, we fall back to using a flock as well just to be safe.
+  if (!android::modules::sdklevel::IsAtLeastU() ||
+      !android::base::GetBoolProperty("dalvik.vm.useartservice", /*default_value=*/false)) {
     return SaveFallback(filename, bytes_written);
   }
 
@@ -872,9 +889,9 @@ bool ProfileCompilationInfo::Save(const std::string& filename, uint64_t* bytes_w
 bool ProfileCompilationInfo::SaveFallback(const std::string& filename, uint64_t* bytes_written) {
   std::string error;
 #ifdef _WIN32
-  int flags = O_WRONLY;
+  int flags = O_WRONLY | O_CREAT;
 #else
-  int flags = O_WRONLY | O_NOFOLLOW | O_CLOEXEC;
+  int flags = O_WRONLY | O_NOFOLLOW | O_CLOEXEC | O_CREAT;
 #endif
   // There's no need to fsync profile data right away. We get many chances
   // to write it again in case something goes wrong. We can rely on a simple
@@ -1301,7 +1318,8 @@ ProfileCompilationInfo::ExtraDescriptorIndex ProfileCompilationInfo::AddExtraDes
 
 bool ProfileCompilationInfo::AddMethod(const ProfileMethodInfo& pmi,
                                        MethodHotness::Flag flags,
-                                       const ProfileSampleAnnotation& annotation) {
+                                       const ProfileSampleAnnotation& annotation,
+                                       bool is_test) {
   DexFileData* const data = GetOrAddDexFileData(pmi.ref.dex_file, annotation);
   if (data == nullptr) {  // checksum mismatch
     return false;
@@ -1318,7 +1336,37 @@ bool ProfileCompilationInfo::AddMethod(const ProfileMethodInfo& pmi,
   InlineCacheMap* inline_cache = data->FindOrAddHotMethod(pmi.ref.index);
   DCHECK(inline_cache != nullptr);
 
+  const dex::MethodId& mid = pmi.ref.GetMethodId();
+  const DexFile& dex_file = *pmi.ref.dex_file;
+  const dex::ClassDef* class_def = dex_file.FindClassDef(mid.class_idx_);
+  // If `is_test` is true, we don't try to look at whether dex_pc fit in the
+  // code item of that method.
+  uint32_t dex_pc_max = 0u;
+  if (is_test) {
+    dex_pc_max = std::numeric_limits<uint32_t>::max();
+  } else {
+    if (class_def == nullptr || dex_file.GetClassData(*class_def) == nullptr) {
+      return true;
+    }
+    std::optional<uint32_t> offset = dex_file.GetCodeItemOffset(*class_def, pmi.ref.index);
+    if (!offset.has_value()) {
+      return true;
+    }
+    CodeItemInstructionAccessor accessor(dex_file, dex_file.GetCodeItem(offset.value()));
+    dex_pc_max = accessor.InsnsSizeInCodeUnits();
+  }
+
   for (const ProfileMethodInfo::ProfileInlineCache& cache : pmi.inline_caches) {
+    if (cache.dex_pc >= std::numeric_limits<uint16_t>::max()) {
+      // Discard entries that don't fit the encoding. This should only apply to
+      // inlined inline caches. See also `HInliner::GetInlineCacheAOT`.
+      continue;
+    }
+    if (cache.dex_pc >= dex_pc_max) {
+      // Discard entries for inlined inline caches. We don't support them in
+      // profiles yet.
+      continue;
+    }
     if (cache.is_missing_types) {
       FindOrAddDexPc(inline_cache, cache.dex_pc)->SetIsMissingTypes();
       continue;
@@ -2465,38 +2513,74 @@ bool ProfileCompilationInfo::IsProfileFile(int fd) {
 }
 
 bool ProfileCompilationInfo::UpdateProfileKeys(
-    const std::vector<std::unique_ptr<const DexFile>>& dex_files, /*out*/ bool* updated) {
-  *updated = false;
-  for (const std::unique_ptr<const DexFile>& dex_file : dex_files) {
-    for (const std::unique_ptr<DexFileData>& dex_data : info_) {
+    const std::vector<std::unique_ptr<const DexFile>>& dex_files, /*out*/ bool* matched) {
+  // This check aligns with when dex2oat falls back from "speed-profile" to "verify".
+  //
+  // ART Service relies on the exit code of profman, which is determined by the value of `matched`,
+  // to judge whether it should re-dexopt for "speed-profile". Therefore, a misalignment will cause
+  // repeated dexopt.
+  if (IsEmpty()) {
+    *matched = false;
+    return true;
+  }
+  DCHECK(!info_.empty());
+
+  *matched = true;
+
+  // A map from the old base key to the new base key.
+  std::unordered_map<std::string, std::string> old_key_to_new_key;
+
+  // A map from the new base key to all matching old base keys (an invert of the map above), for
+  // detecting duplicate keys.
+  std::unordered_map<std::string, std::unordered_set<std::string>> new_key_to_old_keys;
+
+  for (const std::unique_ptr<DexFileData>& dex_data : info_) {
+    std::string old_base_key = GetBaseKeyFromAugmentedKey(dex_data->profile_key);
+    bool found = false;
+    for (const std::unique_ptr<const DexFile>& dex_file : dex_files) {
       if (dex_data->checksum == dex_file->GetLocationChecksum() &&
           dex_data->num_type_ids == dex_file->NumTypeIds() &&
           dex_data->num_method_ids == dex_file->NumMethodIds()) {
-        std::string new_profile_key = GetProfileDexFileBaseKey(dex_file->GetLocation());
-        std::string dex_data_base_key = GetBaseKeyFromAugmentedKey(dex_data->profile_key);
-        if (dex_data_base_key != new_profile_key) {
-          if (profile_key_map_.find(new_profile_key) != profile_key_map_.end()) {
-            // We can't update the key if the new key belongs to a different dex file.
-            LOG(ERROR) << "Cannot update profile key to " << new_profile_key
-                << " because the new key belongs to another dex file.";
-            return false;
-          }
-          profile_key_map_.erase(dex_data->profile_key);
-          // Retain the annotation (if any) during the renaming by re-attaching the info
-          // form the old key.
-          dex_data->profile_key = MigrateAnnotationInfo(new_profile_key, dex_data->profile_key);
-          profile_key_map_.Put(dex_data->profile_key, dex_data->profile_index);
-          *updated = true;
-        }
+        std::string new_base_key = GetProfileDexFileBaseKey(dex_file->GetLocation());
+        old_key_to_new_key[old_base_key] = new_base_key;
+        new_key_to_old_keys[new_base_key].insert(old_base_key);
+        found = true;
+        break;
       }
     }
+    if (!found) {
+      *matched = false;
+      // Keep the old key.
+      old_key_to_new_key[old_base_key] = old_base_key;
+      new_key_to_old_keys[old_base_key].insert(old_base_key);
+    }
   }
+
+  for (const auto& [new_key, old_keys] : new_key_to_old_keys) {
+    if (old_keys.size() > 1) {
+      LOG(ERROR) << "Cannot update multiple profile keys [" << android::base::Join(old_keys, ", ")
+                 << "] to the same new key '" << new_key << "'";
+      return false;
+    }
+  }
+
+  // Check passed. Now perform the actual mutation.
+  profile_key_map_.clear();
+
+  for (const std::unique_ptr<DexFileData>& dex_data : info_) {
+    std::string old_base_key = GetBaseKeyFromAugmentedKey(dex_data->profile_key);
+    const std::string& new_base_key = old_key_to_new_key[old_base_key];
+    DCHECK(!new_base_key.empty());
+    // Retain the annotation (if any) during the renaming by re-attaching the info from the old key.
+    dex_data->profile_key = MigrateAnnotationInfo(new_base_key, dex_data->profile_key);
+    profile_key_map_.Put(dex_data->profile_key, dex_data->profile_index);
+  }
+
   return true;
 }
 
 bool ProfileCompilationInfo::ProfileFilterFnAcceptAll(
-    const std::string& dex_location ATTRIBUTE_UNUSED,
-    uint32_t checksum ATTRIBUTE_UNUSED) {
+    [[maybe_unused]] const std::string& dex_location, [[maybe_unused]] uint32_t checksum) {
   return true;
 }
 

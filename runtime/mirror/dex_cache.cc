@@ -22,7 +22,7 @@
 #include "gc/heap.h"
 #include "jit/profile_saver.h"
 #include "linear_alloc.h"
-#include "oat_file.h"
+#include "oat/oat_file.h"
 #include "object-inl.h"
 #include "object.h"
 #include "object_array-inl.h"
@@ -33,8 +33,12 @@
 #include "thread.h"
 #include "write_barrier.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace mirror {
+
+// Whether to allocate full dex cache arrays during startup. Currently disabled
+// while debugging b/283632504.
+static constexpr bool kEnableFullArraysAtStartup = false;
 
 void DexCache::Initialize(const DexFile* dex_file, ObjPtr<ClassLoader> class_loader) {
   DCHECK(GetDexFile() == nullptr);
@@ -161,9 +165,17 @@ ObjPtr<ClassLoader> DexCache::GetClassLoader() {
 }
 
 bool DexCache::ShouldAllocateFullArrayAtStartup() {
+  if (!kEnableFullArraysAtStartup) {
+    return false;
+  }
   Runtime* runtime = Runtime::Current();
   if (runtime->IsAotCompiler()) {
     // To save on memory in dex2oat, we don't allocate full arrays by default.
+    return false;
+  }
+
+  if (runtime->IsZygote()) {
+    // Zygote doesn't have a notion of startup.
     return false;
   }
 

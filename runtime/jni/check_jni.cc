@@ -51,7 +51,7 @@
 #include "thread.h"
 #include "well_known_classes.h"
 
-namespace art {
+namespace art HIDDEN {
 
 // This helper cannot be in the anonymous namespace because it needs to be
 // declared as a friend by JniVmExt and JniEnvExt.
@@ -853,8 +853,6 @@ class ScopedCheck {
     case kThrowable:
       what = "jthrowable";
       break;
-    default:
-      LOG(FATAL) << "Unknown kind " << static_cast<int>(kind);
     }
 
     if (java_object == nullptr) {
@@ -1617,8 +1615,10 @@ class GuardedCopy {
    * Perform the array "release" operation, which may or may not copy data
    * back into the managed heap, and may or may not release the underlying storage.
    */
-  static void* ReleaseGuardedPACopy(const char* function_name, JNIEnv* env,
-                                    jarray java_array ATTRIBUTE_UNUSED, void* embedded_buf,
+  static void* ReleaseGuardedPACopy(const char* function_name,
+                                    JNIEnv* env,
+                                    [[maybe_unused]] jarray java_array,
+                                    void* embedded_buf,
                                     int mode) {
     ScopedObjectAccess soa(env);
     if (!GuardedCopy::Check(function_name, embedded_buf, true)) {
@@ -1634,7 +1634,6 @@ class GuardedCopy {
     }
     return original_ptr;
   }
-
 
   /*
    * Free up the guard buffer, scrub it, and return the original pointer.
@@ -3302,9 +3301,6 @@ class CheckJNI {
               LOG(FATAL) << "Unexpected invoke: " << invoke;
           }
           break;
-        default:
-          LOG(FATAL) << "Unexpected return type: " << type;
-          result_check = nullptr;
       }
       if (sc.Check(soa, false, result_check, &result)) {
         return result;
@@ -3488,9 +3484,6 @@ class CheckJNI {
               LOG(FATAL) << "Unexpected invoke: " << invoke;
           }
           break;
-        default:
-          LOG(FATAL) << "Unexpected return type: " << type;
-          result_check = nullptr;
       }
       if (sc.Check(soa, false, result_check, &result)) {
         return result;

@@ -23,9 +23,9 @@
 #include "base/arena_containers.h"
 #include "base/array_ref.h"
 #include "base/bit_utils.h"
-#include "base/enums.h"
 #include "base/globals.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "constants_x86.h"
 #include "heap_poisoning.h"
 #include "managed_register_x86.h"
@@ -789,6 +789,7 @@ class X86Assembler final : public Assembler {
   void addl(const Address& address, Register reg);
   void addl(const Address& address, const Immediate& imm);
   void addw(const Address& address, const Immediate& imm);
+  void addw(Register reg, const Immediate& imm);
 
   void adcl(Register dst, Register src);
   void adcl(Register reg, const Immediate& imm);
@@ -953,6 +954,12 @@ class X86Assembler final : public Assembler {
 
   void LockXaddl(const Address& address, Register reg) {
     lock()->xaddl(address, reg);
+  }
+
+  void rdtsc() {
+    AssemblerBuffer::EnsureCapacity ensured(&buffer_);
+    EmitUint8(0x0F);
+    EmitUint8(0x31);
   }
 
   //

@@ -38,7 +38,7 @@
 #include "throwable.h"
 #include "well_known_classes.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace mirror {
 
 Atomic<uint32_t> Object::hash_code_seed(987654321U + std::time(nullptr));
@@ -66,54 +66,58 @@ class CopyReferenceFieldsWithReadBarrierVisitor {
   }
 
   // Unused since we don't copy class native roots.
-  void VisitRootIfNonNull(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED)
-      const {}
-  void VisitRoot(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED) const {}
+  void VisitRootIfNonNull(
+      [[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {}
+  void VisitRoot([[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {}
 
  private:
   const ObjPtr<Object> dest_obj_;
 };
 
+void Object::CopyRawObjectData(uint8_t* dst_bytes,
+                               ObjPtr<mirror::Object> src,
+                               size_t num_bytes) {
+  // Copy instance data.  Don't assume memcpy copies by words (b/32012820).
+  const size_t offset = sizeof(Object);
+  uint8_t* src_bytes = reinterpret_cast<uint8_t*>(src.Ptr()) + offset;
+  dst_bytes += offset;
+  DCHECK_ALIGNED(src_bytes, sizeof(uintptr_t));
+  DCHECK_ALIGNED(dst_bytes, sizeof(uintptr_t));
+  // Use word sized copies to begin.
+  while (num_bytes >= sizeof(uintptr_t)) {
+    reinterpret_cast<Atomic<uintptr_t>*>(dst_bytes)->store(
+        reinterpret_cast<Atomic<uintptr_t>*>(src_bytes)->load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
+    src_bytes += sizeof(uintptr_t);
+    dst_bytes += sizeof(uintptr_t);
+    num_bytes -= sizeof(uintptr_t);
+  }
+  // Copy possible 32 bit word.
+  if (sizeof(uintptr_t) != sizeof(uint32_t) && num_bytes >= sizeof(uint32_t)) {
+    reinterpret_cast<Atomic<uint32_t>*>(dst_bytes)->store(
+        reinterpret_cast<Atomic<uint32_t>*>(src_bytes)->load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
+    src_bytes += sizeof(uint32_t);
+    dst_bytes += sizeof(uint32_t);
+    num_bytes -= sizeof(uint32_t);
+  }
+  // Copy remaining bytes, avoid going past the end of num_bytes since there may be a redzone
+  // there.
+  while (num_bytes > 0) {
+    reinterpret_cast<Atomic<uint8_t>*>(dst_bytes)->store(
+        reinterpret_cast<Atomic<uint8_t>*>(src_bytes)->load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
+    src_bytes += sizeof(uint8_t);
+    dst_bytes += sizeof(uint8_t);
+    num_bytes -= sizeof(uint8_t);
+  }
+}
+
 ObjPtr<Object> Object::CopyObject(ObjPtr<mirror::Object> dest,
                                   ObjPtr<mirror::Object> src,
                                   size_t num_bytes) {
-  // Copy instance data.  Don't assume memcpy copies by words (b/32012820).
-  {
-    const size_t offset = sizeof(Object);
-    uint8_t* src_bytes = reinterpret_cast<uint8_t*>(src.Ptr()) + offset;
-    uint8_t* dst_bytes = reinterpret_cast<uint8_t*>(dest.Ptr()) + offset;
-    num_bytes -= offset;
-    DCHECK_ALIGNED(src_bytes, sizeof(uintptr_t));
-    DCHECK_ALIGNED(dst_bytes, sizeof(uintptr_t));
-    // Use word sized copies to begin.
-    while (num_bytes >= sizeof(uintptr_t)) {
-      reinterpret_cast<Atomic<uintptr_t>*>(dst_bytes)->store(
-          reinterpret_cast<Atomic<uintptr_t>*>(src_bytes)->load(std::memory_order_relaxed),
-          std::memory_order_relaxed);
-      src_bytes += sizeof(uintptr_t);
-      dst_bytes += sizeof(uintptr_t);
-      num_bytes -= sizeof(uintptr_t);
-    }
-    // Copy possible 32 bit word.
-    if (sizeof(uintptr_t) != sizeof(uint32_t) && num_bytes >= sizeof(uint32_t)) {
-      reinterpret_cast<Atomic<uint32_t>*>(dst_bytes)->store(
-          reinterpret_cast<Atomic<uint32_t>*>(src_bytes)->load(std::memory_order_relaxed),
-          std::memory_order_relaxed);
-      src_bytes += sizeof(uint32_t);
-      dst_bytes += sizeof(uint32_t);
-      num_bytes -= sizeof(uint32_t);
-    }
-    // Copy remaining bytes, avoid going past the end of num_bytes since there may be a redzone
-    // there.
-    while (num_bytes > 0) {
-      reinterpret_cast<Atomic<uint8_t>*>(dst_bytes)->store(
-          reinterpret_cast<Atomic<uint8_t>*>(src_bytes)->load(std::memory_order_relaxed),
-          std::memory_order_relaxed);
-      src_bytes += sizeof(uint8_t);
-      dst_bytes += sizeof(uint8_t);
-      num_bytes -= sizeof(uint8_t);
-    }
-  }
+  // Copy everything but the header.
+  CopyRawObjectData(reinterpret_cast<uint8_t*>(dest.Ptr()), src, num_bytes - sizeof(Object));
 
   if (gUseReadBarrier) {
     // We need a RB here. After copying the whole object above, copy references fields one by one
@@ -140,7 +144,7 @@ class CopyObjectVisitor {
   CopyObjectVisitor(Handle<Object>* orig, size_t num_bytes)
       : orig_(orig), num_bytes_(num_bytes) {}
 
-  void operator()(ObjPtr<Object> obj, size_t usable_size ATTRIBUTE_UNUSED) const
+  void operator()(ObjPtr<Object> obj, [[maybe_unused]] size_t usable_size) const
       REQUIRES_SHARED(Locks::mutator_lock_) {
     Object::CopyObject(obj, orig_->Get(), num_bytes_);
   }
@@ -181,7 +185,8 @@ void Object::SetHashCodeSeed(uint32_t new_seed) {
   hash_code_seed.store(new_seed, std::memory_order_relaxed);
 }
 
-int32_t Object::IdentityHashCode() {
+template <bool kAllowInflation>
+int32_t Object::IdentityHashCodeHelper() {
   ObjPtr<Object> current_this = this;  // The this pointer may get invalidated by thread suspension.
   while (true) {
     LockWord lw = current_this->GetLockWord(false);
@@ -199,6 +204,9 @@ int32_t Object::IdentityHashCode() {
         break;
       }
       case LockWord::kThinLocked: {
+        if (!kAllowInflation) {
+          return 0;
+        }
         // Inflate the thin lock to a monitor and stick the hash code inside of the monitor. May
         // fail spuriously.
         Thread* self = Thread::Current();
@@ -224,6 +232,12 @@ int32_t Object::IdentityHashCode() {
       }
     }
   }
+}
+
+int32_t Object::IdentityHashCode() { return IdentityHashCodeHelper</* kAllowInflation= */ true>(); }
+
+int32_t Object::IdentityHashCodeNoInflation() {
+  return IdentityHashCodeHelper</* kAllowInflation= */ false>();
 }
 
 void Object::CheckFieldAssignmentImpl(MemberOffset field_offset, ObjPtr<Object> new_value) {

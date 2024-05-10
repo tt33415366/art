@@ -20,7 +20,7 @@
 
 #include "art_field-inl.h"
 #include "art_method-alloc-inl.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "class_linker-inl.h"
 #include "class_root-inl.h"
 #include "common_throws.h"
@@ -56,7 +56,7 @@
 #include "scoped_thread_state_change-inl.h"
 #include "well_known_classes-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 
 static std::function<hiddenapi::AccessContext()> GetHiddenapiAccessContextFunction(Thread* self) {
   return [=]() REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -395,7 +395,7 @@ static jobject Class_getDeclaredField(JNIEnv* env, jobject javaThis, jstring nam
     }
     // We may have a pending exception if we failed to resolve.
     if (!soa.Self()->IsExceptionPending()) {
-      ThrowNoSuchFieldException(h_klass.Get(), name_str.c_str());
+      ThrowNoSuchFieldException(h_klass.Get(), name_str);
     }
     return nullptr;
   }
@@ -681,22 +681,46 @@ static jint Class_getInnerClassFlags(JNIEnv* env, jobject javaThis, jint default
   return mirror::Class::GetInnerClassFlags(klass, defaultValue);
 }
 
-static jstring Class_getInnerClassName(JNIEnv* env, jobject javaThis) {
+static jstring Class_getSimpleNameNative(JNIEnv* env, jobject javaThis) {
   ScopedFastNativeObjectAccess soa(env);
-  StackHandleScope<1> hs(soa.Self());
+  StackHandleScope<3> hs(soa.Self());
   Handle<mirror::Class> klass(hs.NewHandle(DecodeClass(soa, javaThis)));
   if (klass->IsObsoleteObject()) {
     ThrowRuntimeException("Obsolete Object!");
     return nullptr;
   }
-  if (klass->IsProxyClass() || klass->GetDexCache() == nullptr) {
+  if (!klass->IsProxyClass() && klass->GetDexCache() != nullptr) {
+    ObjPtr<mirror::String> class_name = nullptr;
+    if (annotations::GetInnerClass(klass, &class_name)) {
+      if (class_name == nullptr) {  // Anonymous class
+        ObjPtr<mirror::Class> j_l_String =
+            WellKnownClasses::java_lang_String_EMPTY->GetDeclaringClass();
+        ObjPtr<mirror::Object> empty_string =
+            WellKnownClasses::java_lang_String_EMPTY->GetObject(j_l_String);
+        DCHECK(empty_string != nullptr);
+        return soa.AddLocalReference<jstring>(empty_string);
+      }
+      Handle<mirror::String> h_inner_name(hs.NewHandle<mirror::String>(class_name));
+      if (annotations::GetDeclaringClass(klass) != nullptr ||   // member class
+          annotations::GetEnclosingMethod(klass) != nullptr) {  // local class
+        return soa.AddLocalReference<jstring>(h_inner_name.Get());
+      }
+    }
+  }
+
+  Handle<mirror::String> h_name(hs.NewHandle<mirror::String>(mirror::Class::ComputeName(klass)));
+  if (h_name == nullptr) {
     return nullptr;
   }
-  ObjPtr<mirror::String> class_name = nullptr;
-  if (!annotations::GetInnerClass(klass, &class_name)) {
-    return nullptr;
+  int32_t dot_index = h_name->LastIndexOf('.');
+  if (dot_index < 0) {
+    return soa.AddLocalReference<jstring>(h_name.Get());
   }
-  return soa.AddLocalReference<jstring>(class_name);
+  int32_t start_index = dot_index + 1;
+  int32_t length = h_name->GetLength() - start_index;
+  gc::AllocatorType allocator_type = Runtime::Current()->GetHeap()->GetCurrentAllocator();
+  return soa.AddLocalReference<jstring>(
+      mirror::String::AllocFromString(soa.Self(), length, h_name, start_index, allocator_type));
 }
 
 static jobjectArray Class_getSignatureAnnotation(JNIEnv* env, jobject javaThis) {
@@ -730,6 +754,13 @@ static jboolean Class_isAnonymousClass(JNIEnv* env, jobject javaThis) {
     return false;
   }
   return class_name == nullptr;
+}
+
+static jboolean Class_isRecord0(JNIEnv* env, jobject javaThis) {
+  ScopedFastNativeObjectAccess soa(env);
+  StackHandleScope<1> hs(soa.Self());
+  Handle<mirror::Class> klass(hs.NewHandle(DecodeClass(soa, javaThis)));
+  return klass->IsRecordClass();
 }
 
 static jboolean Class_isDeclaredAnnotationPresent(JNIEnv* env, jobject javaThis,
@@ -800,6 +831,27 @@ static jobjectArray Class_getNestMembersFromAnnotation(JNIEnv* env, jobject java
     return nullptr;
   }
   return soa.AddLocalReference<jobjectArray>(classes);
+}
+
+static jobjectArray Class_getRecordAnnotationElement(JNIEnv* env,
+                                                     jobject javaThis,
+                                                     jstring element_name,
+                                                     jclass array_class) {
+  ScopedFastNativeObjectAccess soa(env);
+  ScopedUtfChars name(env, element_name);
+  StackHandleScope<2> hs(soa.Self());
+  Handle<mirror::Class> klass(hs.NewHandle(DecodeClass(soa, javaThis)));
+  if (!(klass->IsRecordClass())) {
+    return nullptr;
+  }
+
+  Handle<mirror::Class> a_class(hs.NewHandle(DecodeClass(soa, array_class)));
+  ObjPtr<mirror::Object> element_array =
+      annotations::getRecordAnnotationElement(klass, a_class, name.c_str());
+  if (element_array == nullptr || !(element_array->IsObjectArray())) {
+    return nullptr;
+  }
+  return soa.AddLocalReference<jobjectArray>(element_array);
 }
 
 static jobjectArray Class_getPermittedSubclassesFromAnnotation(JNIEnv* env, jobject javaThis) {
@@ -943,7 +995,6 @@ static JNINativeMethod gMethods[] = {
   FAST_NATIVE_METHOD(Class, getEnclosingConstructorNative, "()Ljava/lang/reflect/Constructor;"),
   FAST_NATIVE_METHOD(Class, getEnclosingMethodNative, "()Ljava/lang/reflect/Method;"),
   FAST_NATIVE_METHOD(Class, getInnerClassFlags, "(I)I"),
-  FAST_NATIVE_METHOD(Class, getInnerClassName, "()Ljava/lang/String;"),
   FAST_NATIVE_METHOD(Class, getInterfacesInternal, "()[Ljava/lang/Class;"),
   FAST_NATIVE_METHOD(Class, getPrimitiveClass, "(Ljava/lang/String;)Ljava/lang/Class;"),
   FAST_NATIVE_METHOD(Class, getNameNative, "()Ljava/lang/String;"),
@@ -951,9 +1002,12 @@ static JNINativeMethod gMethods[] = {
   FAST_NATIVE_METHOD(Class, getNestMembersFromAnnotation, "()[Ljava/lang/Class;"),
   FAST_NATIVE_METHOD(Class, getPermittedSubclassesFromAnnotation, "()[Ljava/lang/Class;"),
   FAST_NATIVE_METHOD(Class, getPublicDeclaredFields, "()[Ljava/lang/reflect/Field;"),
+  FAST_NATIVE_METHOD(Class, getRecordAnnotationElement, "(Ljava/lang/String;Ljava/lang/Class;)[Ljava/lang/Object;"),
   FAST_NATIVE_METHOD(Class, getSignatureAnnotation, "()[Ljava/lang/String;"),
+  FAST_NATIVE_METHOD(Class, getSimpleNameNative, "()Ljava/lang/String;"),
   FAST_NATIVE_METHOD(Class, isAnonymousClass, "()Z"),
   FAST_NATIVE_METHOD(Class, isDeclaredAnnotationPresent, "(Ljava/lang/Class;)Z"),
+  FAST_NATIVE_METHOD(Class, isRecord0, "()Z"),
   FAST_NATIVE_METHOD(Class, newInstance, "()Ljava/lang/Object;"),
 };
 

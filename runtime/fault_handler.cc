@@ -16,97 +16,166 @@
 
 #include "fault_handler.h"
 
-#include <atomic>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/ucontext.h>
 
+#include <atomic>
+
 #include "art_method-inl.h"
 #include "base/logging.h"  // For VLOG
 #include "base/membarrier.h"
-#include "base/safe_copy.h"
 #include "base/stl_util.h"
 #include "dex/dex_file_types.h"
+#include "gc/heap.h"
 #include "jit/jit.h"
 #include "jit/jit_code_cache.h"
 #include "mirror/class.h"
 #include "mirror/object_reference.h"
-#include "oat_file.h"
-#include "oat_quick_method_header.h"
+#include "oat/oat_file.h"
+#include "oat/oat_quick_method_header.h"
 #include "sigchain.h"
 #include "thread-current-inl.h"
 #include "verify_object-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 // Static fault manger object accessed by signal handler.
 FaultManager fault_manager;
 
-// This needs to be NO_INLINE since some debuggers do not read the inline-info to set a breakpoint
-// if it isn't.
+// These need to be NO_INLINE since some debuggers do not read the inline-info to set a breakpoint
+// if they aren't.
 extern "C" NO_INLINE __attribute__((visibility("default"))) void art_sigsegv_fault() {
   // Set a breakpoint here to be informed when a SIGSEGV is unhandled by ART.
   VLOG(signals)<< "Caught unknown SIGSEGV in ART fault handler - chaining to next handler.";
 }
+extern "C" NO_INLINE __attribute__((visibility("default"))) void art_sigbus_fault() {
+  // Set a breakpoint here to be informed when a SIGBUS is unhandled by ART.
+  VLOG(signals) << "Caught unknown SIGBUS in ART fault handler - chaining to next handler.";
+}
 
 // Signal handler called on SIGSEGV.
-static bool art_fault_handler(int sig, siginfo_t* info, void* context) {
-  return fault_manager.HandleFault(sig, info, context);
+static bool art_sigsegv_handler(int sig, siginfo_t* info, void* context) {
+  return fault_manager.HandleSigsegvFault(sig, info, context);
+}
+
+// Signal handler called on SIGBUS.
+static bool art_sigbus_handler(int sig, siginfo_t* info, void* context) {
+  return fault_manager.HandleSigbusFault(sig, info, context);
 }
 
 FaultManager::FaultManager()
     : generated_code_ranges_lock_("FaultHandler generated code ranges lock",
                                   LockLevel::kGenericBottomLock),
-      initialized_(false) {
-  sigaction(SIGSEGV, nullptr, &oldaction_);
-}
+      initialized_(false) {}
 
 FaultManager::~FaultManager() {
 }
 
-void FaultManager::Init() {
-  CHECK(!initialized_);
-  sigset_t mask;
-  sigfillset(&mask);
-  sigdelset(&mask, SIGABRT);
-  sigdelset(&mask, SIGBUS);
-  sigdelset(&mask, SIGFPE);
-  sigdelset(&mask, SIGILL);
-  sigdelset(&mask, SIGSEGV);
-
-  SigchainAction sa = {
-    .sc_sigaction = art_fault_handler,
-    .sc_mask = mask,
-    .sc_flags = 0UL,
-  };
-
-  AddSpecialSignalHandlerFn(SIGSEGV, &sa);
-
-  // Notify the kernel that we intend to use a specific `membarrier()` command.
-  int result = art::membarrier(MembarrierCommand::kRegisterPrivateExpedited);
-  if (result != 0) {
-    LOG(WARNING) << "FaultHandler: MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED failed: "
-                 << errno << " " << strerror(errno);
-  }
-
-  {
-    MutexLock lock(Thread::Current(), generated_code_ranges_lock_);
-    for (size_t i = 0; i != kNumLocalGeneratedCodeRanges; ++i) {
-      GeneratedCodeRange* next = (i + 1u != kNumLocalGeneratedCodeRanges)
-          ? &generated_code_ranges_storage_[i + 1u]
-          : nullptr;
-      generated_code_ranges_storage_[i].next.store(next, std::memory_order_relaxed);
-      generated_code_ranges_storage_[i].start = nullptr;
-      generated_code_ranges_storage_[i].size = 0u;
+static const char* SignalCodeName(int sig, int code) {
+  if (sig == SIGSEGV) {
+    switch (code) {
+      case SEGV_MAPERR: return "SEGV_MAPERR";
+      case SEGV_ACCERR: return "SEGV_ACCERR";
+      case 8:           return "SEGV_MTEAERR";
+      case 9:           return "SEGV_MTESERR";
+      default:          return "SEGV_UNKNOWN";
     }
-    free_generated_code_ranges_ = generated_code_ranges_storage_;
+  } else if (sig == SIGBUS) {
+    switch (code) {
+      case BUS_ADRALN: return "BUS_ADRALN";
+      case BUS_ADRERR: return "BUS_ADRERR";
+      case BUS_OBJERR: return "BUS_OBJERR";
+      default:         return "BUS_UNKNOWN";
+    }
+  } else {
+    return "UNKNOWN";
   }
+}
 
-  initialized_ = true;
+static std::ostream& PrintSignalInfo(std::ostream& os, siginfo_t* info) {
+  os << "  si_signo: " << info->si_signo << " (" << strsignal(info->si_signo) << ")\n"
+     << "  si_code: " << info->si_code
+     << " (" << SignalCodeName(info->si_signo, info->si_code) << ")";
+  if (info->si_signo == SIGSEGV || info->si_signo == SIGBUS) {
+    os << "\n" << "  si_addr: " << info->si_addr;
+  }
+  return os;
+}
+
+static bool InstallSigbusHandler() {
+  return gUseUserfaultfd &&
+         Runtime::Current()->GetHeap()->MarkCompactCollector()->IsUsingSigbusFeature();
+}
+
+void FaultManager::Init(bool use_sig_chain) {
+  CHECK(!initialized_);
+  if (use_sig_chain) {
+    sigset_t mask;
+    sigfillset(&mask);
+    sigdelset(&mask, SIGABRT);
+    sigdelset(&mask, SIGBUS);
+    sigdelset(&mask, SIGFPE);
+    sigdelset(&mask, SIGILL);
+    sigdelset(&mask, SIGSEGV);
+
+    SigchainAction sa = {
+        .sc_sigaction = art_sigsegv_handler,
+        .sc_mask = mask,
+        .sc_flags = 0UL,
+    };
+
+    AddSpecialSignalHandlerFn(SIGSEGV, &sa);
+    if (InstallSigbusHandler()) {
+      sa.sc_sigaction = art_sigbus_handler;
+      AddSpecialSignalHandlerFn(SIGBUS, &sa);
+    }
+
+    // Notify the kernel that we intend to use a specific `membarrier()` command.
+    int result = art::membarrier(MembarrierCommand::kRegisterPrivateExpedited);
+    if (result != 0) {
+      LOG(WARNING) << "FaultHandler: MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED failed: "
+                   << errno << " " << strerror(errno);
+    }
+
+    {
+      MutexLock lock(Thread::Current(), generated_code_ranges_lock_);
+      for (size_t i = 0; i != kNumLocalGeneratedCodeRanges; ++i) {
+        GeneratedCodeRange* next = (i + 1u != kNumLocalGeneratedCodeRanges)
+            ? &generated_code_ranges_storage_[i + 1u]
+            : nullptr;
+        generated_code_ranges_storage_[i].next.store(next, std::memory_order_relaxed);
+        generated_code_ranges_storage_[i].start = nullptr;
+        generated_code_ranges_storage_[i].size = 0u;
+      }
+      free_generated_code_ranges_ = generated_code_ranges_storage_;
+    }
+
+    initialized_ = true;
+  } else if (InstallSigbusHandler()) {
+    struct sigaction act;
+    std::memset(&act, '\0', sizeof(act));
+    act.sa_flags = SA_SIGINFO | SA_RESTART;
+    act.sa_sigaction = [](int sig, siginfo_t* info, void* context) {
+      if (!art_sigbus_handler(sig, info, context)) {
+        std::ostringstream oss;
+        PrintSignalInfo(oss, info);
+        LOG(FATAL) << "Couldn't handle SIGBUS fault:"
+                   << "\n"
+                   << oss.str();
+      }
+    };
+    if (sigaction(SIGBUS, &act, nullptr)) {
+      LOG(FATAL) << "Fault handler for SIGBUS couldn't be setup: " << strerror(errno);
+    }
+  }
 }
 
 void FaultManager::Release() {
   if (initialized_) {
-    RemoveSpecialSignalHandlerFn(SIGSEGV, art_fault_handler);
+    RemoveSpecialSignalHandlerFn(SIGSEGV, art_sigsegv_handler);
+    if (InstallSigbusHandler()) {
+      RemoveSpecialSignalHandlerFn(SIGBUS, art_sigbus_handler);
+    }
     initialized_ = false;
   }
 }
@@ -157,32 +226,69 @@ bool FaultManager::HandleFaultByOtherHandlers(int sig, siginfo_t* info, void* co
   return false;
 }
 
-static const char* SignalCodeName(int sig, int code) {
-  if (sig != SIGSEGV) {
-    return "UNKNOWN";
-  } else {
-    switch (code) {
-      case SEGV_MAPERR: return "SEGV_MAPERR";
-      case SEGV_ACCERR: return "SEGV_ACCERR";
-      case 8:           return "SEGV_MTEAERR";
-      case 9:           return "SEGV_MTESERR";
-      default:          return "UNKNOWN";
-    }
+bool FaultManager::HandleSigbusFault(int sig, siginfo_t* info, [[maybe_unused]] void* context) {
+  DCHECK_EQ(sig, SIGBUS);
+  if (VLOG_IS_ON(signals)) {
+    PrintSignalInfo(VLOG_STREAM(signals) << "Handling SIGBUS fault:\n", info);
   }
-}
-static std::ostream& PrintSignalInfo(std::ostream& os, siginfo_t* info) {
-  os << "  si_signo: " << info->si_signo << " (" << strsignal(info->si_signo) << ")\n"
-     << "  si_code: " << info->si_code
-     << " (" << SignalCodeName(info->si_signo, info->si_code) << ")";
-  if (info->si_signo == SIGSEGV) {
-    os << "\n" << "  si_addr: " << info->si_addr;
+
+#ifdef TEST_NESTED_SIGNAL
+  // Simulate a crash in a handler.
+  raise(SIGBUS);
+#endif
+  if (Runtime::Current()->GetHeap()->MarkCompactCollector()->SigbusHandler(info)) {
+    return true;
   }
-  return os;
+
+  // Set a breakpoint in this function to catch unhandled signals.
+  art_sigbus_fault();
+  return false;
 }
 
-bool FaultManager::HandleFault(int sig, siginfo_t* info, void* context) {
+inline void FaultManager::CheckForUnrecognizedImplicitSuspendCheckInBootImage(
+    siginfo_t* siginfo, void* context) {
+  CHECK_EQ(kRuntimeISA, InstructionSet::kArm64);
+  uintptr_t fault_pc = GetFaultPc(siginfo, context);
+  if (fault_pc == 0u || !IsUint<32>(fault_pc) || !IsAligned<4u>(fault_pc)) {
+    return;
+  }
+  Runtime* runtime = Runtime::Current();
+  if (runtime == nullptr) {
+    return;
+  }
+  gc::Heap* heap = runtime->GetHeap();
+  if (heap == nullptr ||
+      fault_pc < heap->GetBootImagesStartAddress() ||
+      fault_pc - heap->GetBootImagesStartAddress() >= heap->GetBootImagesSize() ||
+      reinterpret_cast<uint32_t*>(fault_pc)[0] != /*LDR x21. [x21]*/ 0xf94002b5u) {
+    return;
+  }
+  std::ostringstream oss;
+  oss << "Failed to recognize implicit suspend check at 0x" << std::hex << fault_pc << "; ";
+  Thread* thread = Thread::Current();
+  if (thread == nullptr) {
+    oss << "null thread";
+  } else {
+    oss << "thread state = " << thread->GetState() << std::boolalpha
+        << "; mutator lock shared held = " << Locks::mutator_lock_->IsSharedHeld(thread);
+  }
+  oss << "; code ranges = {";
+  GeneratedCodeRange* range = generated_code_ranges_.load(std::memory_order_acquire);
+  const char* s = "";
+  while (range != nullptr) {
+    oss << s << "{" << range->start << ", " << range->size << "}";
+    s = ", ";
+    range = range->next.load(std::memory_order_relaxed);
+  }
+  oss << "}";
+  LOG(FATAL) << oss.str();
+  UNREACHABLE();
+}
+
+
+bool FaultManager::HandleSigsegvFault(int sig, siginfo_t* info, void* context) {
   if (VLOG_IS_ON(signals)) {
-    PrintSignalInfo(VLOG_STREAM(signals) << "Handling fault:" << "\n", info);
+    PrintSignalInfo(VLOG_STREAM(signals) << "Handling SIGSEGV fault:\n", info);
   }
 
 #ifdef TEST_NESTED_SIGNAL
@@ -200,6 +306,8 @@ bool FaultManager::HandleFault(int sig, siginfo_t* info, void* context) {
         return true;
       }
     }
+  } else if (kRuntimeISA == InstructionSet::kArm64) {
+    CheckForUnrecognizedImplicitSuspendCheckInBootImage(info, context);
   }
 
   // We hit a signal we didn't handle.  This might be something for which
@@ -522,7 +630,7 @@ JavaStackTraceHandler::JavaStackTraceHandler(FaultManager* manager) : FaultHandl
   manager_->AddHandler(this, false);
 }
 
-bool JavaStackTraceHandler::Action(int sig ATTRIBUTE_UNUSED, siginfo_t* siginfo, void* context) {
+bool JavaStackTraceHandler::Action([[maybe_unused]] int sig, siginfo_t* siginfo, void* context) {
   // Make sure that we are in the generated code, but we may not have a dex pc.
   bool in_generated_code = manager_->IsInGeneratedCode(siginfo, context);
   if (in_generated_code) {

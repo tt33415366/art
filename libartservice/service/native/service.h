@@ -19,10 +19,25 @@
 
 #include <string>
 
+#include "android-base/result.h"
+
 namespace art {
 namespace service {
 
-std::string getMsg();
+android::base::Result<void> ValidateAbsoluteNormalPath(const std::string& path_str);
+
+android::base::Result<void> ValidatePathElementSubstring(const std::string& path_element_substring,
+                                                         const std::string& name);
+
+android::base::Result<void> ValidatePathElement(const std::string& path_element,
+                                                const std::string& name);
+
+android::base::Result<void> ValidateDexPath(const std::string& dex_path);
+
+android::base::Result<void> ValidateClassLoaderContext(std::string_view dex_path,
+                                                       const std::string& class_loader_context);
+
+std::string GetGarbageCollector();
 
 }  // namespace service
 }  // namespace art

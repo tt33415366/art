@@ -17,73 +17,40 @@
 package com.android.tests.odsign;
 
 import static com.google.common.truth.Truth.assertThat;
-
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static com.google.common.truth.Truth.assertWithMessage;
 
 import com.android.tradefed.invoker.TestInformation;
 import com.android.tradefed.testtype.DeviceJUnit4ClassRunner;
 import com.android.tradefed.testtype.junit4.AfterClassWithInfo;
 import com.android.tradefed.testtype.junit4.BaseHostJUnit4Test;
 import com.android.tradefed.testtype.junit4.BeforeClassWithInfo;
+import com.android.tradefed.util.CommandResult;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
- * Test to check end-to-end odrefresh invocations, but without odsign, fs-verity, and ART runtime
- * involved.
+ * Test to check end-to-end odrefresh invocations, but without odsign and fs-verity involved.
  */
 @RunWith(DeviceJUnit4ClassRunner.class)
 public class OdrefreshHostTest extends BaseHostJUnit4Test {
-    private static final String CACHE_INFO_FILE =
-            OdsignTestUtils.ART_APEX_DALVIK_CACHE_DIRNAME + "/cache-info.xml";
-    private static final String ODREFRESH_BIN = "odrefresh";
-    private static final String ART_APEX_DALVIK_CACHE_BACKUP_DIRNAME =
-            OdsignTestUtils.ART_APEX_DALVIK_CACHE_DIRNAME + ".bak";
-
-    private static final String TAG = "OdrefreshHostTest";
-    private static final String ZYGOTE_ARTIFACTS_KEY = TAG + ":ZYGOTE_ARTIFACTS";
-    private static final String SYSTEM_SERVER_ARTIFACTS_KEY = TAG + ":SYSTEM_SERVER_ARTIFACTS";
-
     private OdsignTestUtils mTestUtils;
+    private DeviceState mDeviceState;
 
     @BeforeClassWithInfo
     public static void beforeClassWithDevice(TestInformation testInfo) throws Exception {
         OdsignTestUtils testUtils = new OdsignTestUtils(testInfo);
         testUtils.installTestApex();
         testUtils.reboot();
-
-        HashSet<String> zygoteArtifacts = new HashSet<>();
-        for (String zygoteName : testUtils.ZYGOTE_NAMES) {
-            zygoteArtifacts.addAll(
-                    testUtils.getZygoteLoadedArtifacts(zygoteName).orElse(new HashSet<>()));
-        }
-        Set<String> systemServerArtifacts = testUtils.getSystemServerLoadedArtifacts();
-
-        testInfo.properties().put(ZYGOTE_ARTIFACTS_KEY, String.join(":", zygoteArtifacts));
-        testInfo.properties()
-                .put(SYSTEM_SERVER_ARTIFACTS_KEY, String.join(":", systemServerArtifacts));
-
-        // Backup the artifacts.
-        testInfo.getDevice().executeShellV2Command(
-                String.format("rm -rf '%s'", ART_APEX_DALVIK_CACHE_BACKUP_DIRNAME));
-        testUtils.assertCommandSucceeds(
-                String.format("cp -r '%s' '%s'", OdsignTestUtils.ART_APEX_DALVIK_CACHE_DIRNAME,
-                        ART_APEX_DALVIK_CACHE_BACKUP_DIRNAME));
     }
 
     @AfterClassWithInfo
     public static void afterClassWithDevice(TestInformation testInfo) throws Exception {
-        testInfo.getDevice().executeShellV2Command(
-                String.format("rm -rf '%s'", ART_APEX_DALVIK_CACHE_BACKUP_DIRNAME));
         OdsignTestUtils testUtils = new OdsignTestUtils(testInfo);
         testUtils.uninstallTestApex();
         testUtils.reboot();
@@ -92,270 +59,259 @@ public class OdrefreshHostTest extends BaseHostJUnit4Test {
     @Before
     public void setUp() throws Exception {
         mTestUtils = new OdsignTestUtils(getTestInformation());
+        mDeviceState = new DeviceState(getTestInformation());
+        mDeviceState.backupArtifacts();
+    }
 
-        // Restore the artifacts to ensure a clean initial state.
-        getDevice().executeShellV2Command(
-                String.format("rm -rf '%s'", OdsignTestUtils.ART_APEX_DALVIK_CACHE_DIRNAME));
-        mTestUtils.assertCommandSucceeds(
-                String.format("cp -r '%s' '%s'", ART_APEX_DALVIK_CACHE_BACKUP_DIRNAME,
-                        OdsignTestUtils.ART_APEX_DALVIK_CACHE_DIRNAME));
+    @After
+    public void tearDown() throws Exception {
+        mDeviceState.restore();
     }
 
     @Test
     public void verifyArtSamegradeUpdateTriggersCompilation() throws Exception {
-        simulateArtApexUpgrade();
+        mDeviceState.simulateArtApexUpgrade();
         long timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
-        assertArtifactsModifiedAfter(getZygoteArtifacts(), timeMs);
-        assertArtifactsModifiedAfter(getSystemServerArtifacts(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
     }
 
     @Test
     public void verifyOtherApexSamegradeUpdateTriggersCompilation() throws Exception {
-        simulateApexUpgrade();
+        mDeviceState.simulateApexUpgrade();
         long timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
-        assertArtifactsNotModifiedAfter(getZygoteArtifacts(), timeMs);
-        assertArtifactsModifiedAfter(getSystemServerArtifacts(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
     }
 
     @Test
     public void verifyBootClasspathOtaTriggersCompilation() throws Exception {
-        simulateBootClasspathOta();
+        mDeviceState.simulateBootClasspathOta();
         long timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
-        assertArtifactsModifiedAfter(getZygoteArtifacts(), timeMs);
-        assertArtifactsModifiedAfter(getSystemServerArtifacts(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
     }
 
     @Test
     public void verifySystemServerOtaTriggersCompilation() throws Exception {
-        simulateSystemServerOta();
+        mDeviceState.simulateSystemServerOta();
         long timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
-        assertArtifactsNotModifiedAfter(getZygoteArtifacts(), timeMs);
-        assertArtifactsModifiedAfter(getSystemServerArtifacts(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertNotModifiedAfter(
+                mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
     }
 
     @Test
     public void verifyMissingArtifactTriggersCompilation() throws Exception {
         Set<String> missingArtifacts = simulateMissingArtifacts();
         Set<String> remainingArtifacts = new HashSet<>();
-        remainingArtifacts.addAll(getZygoteArtifacts());
-        remainingArtifacts.addAll(getSystemServerArtifacts());
+        remainingArtifacts.addAll(mTestUtils.getExpectedPrimaryBootImage());
+        remainingArtifacts.addAll(mTestUtils.getExpectedBootImageMainlineExtension());
+        remainingArtifacts.addAll(mTestUtils.getSystemServerExpectedArtifacts());
         remainingArtifacts.removeAll(missingArtifacts);
 
         mTestUtils.removeCompilationLogToAvoidBackoff();
         long timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
-        assertArtifactsNotModifiedAfter(remainingArtifacts, timeMs);
-        assertArtifactsModifiedAfter(missingArtifacts, timeMs);
+        mTestUtils.assertNotModifiedAfter(remainingArtifacts, timeMs);
+        mTestUtils.assertModifiedAfter(missingArtifacts, timeMs);
     }
 
     @Test
-    public void verifyEnableUffdGcChangeTriggersCompilation() throws Exception {
-        try {
-            // Disable phenotype flag syncing. Potentially, we can set
-            // `set_sync_disabled_for_tests` to `until_reboot`, but setting it to
-            // `persistent` prevents unrelated system crashes/restarts from affecting the
-            // test. `set_sync_disabled_for_tests` is reset in the `finally` block anyway.
-            getDevice().executeShellV2Command(
-                    "device_config set_sync_disabled_for_tests persistent");
+    public void verifyPhenotypeFlagChangeTriggersCompilation() throws Exception {
+        // Simulate that the flag value is initially empty.
+        mDeviceState.setPhenotypeFlag("odrefresh_test_toggle", null);
 
-            // Simulate that the phenotype flag is set to the default value.
-            getDevice().executeShellV2Command(
-                    "device_config put runtime_native_boot enable_uffd_gc false");
+        long timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefresh();
 
-            long timeMs = mTestUtils.getCurrentTimeMs();
-            runOdrefresh();
+        mDeviceState.setPhenotypeFlag("odrefresh_test_toggle", "false");
 
-            // Artifacts should not be re-compiled.
-            assertArtifactsNotModifiedAfter(getZygoteArtifacts(), timeMs);
-            assertArtifactsNotModifiedAfter(getSystemServerArtifacts(), timeMs);
+        timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefresh();
 
-            // Simulate that the phenotype flag is set to true.
-            getDevice().executeShellV2Command(
-                    "device_config put runtime_native_boot enable_uffd_gc true");
+        // Artifacts should not be re-compiled.
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertNotModifiedAfter(
+                mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
-            timeMs = mTestUtils.getCurrentTimeMs();
-            runOdrefresh();
+        mDeviceState.setPhenotypeFlag("odrefresh_test_toggle", "true");
 
-            // Artifacts should be re-compiled.
-            assertArtifactsModifiedAfter(getZygoteArtifacts(), timeMs);
-            assertArtifactsModifiedAfter(getSystemServerArtifacts(), timeMs);
+        timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefresh();
 
-            // Run odrefresh again with the flag unchanged.
-            timeMs = mTestUtils.getCurrentTimeMs();
-            runOdrefresh();
+        // Artifacts should be re-compiled.
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
-            // Artifacts should not be re-compiled.
-            assertArtifactsNotModifiedAfter(getZygoteArtifacts(), timeMs);
-            assertArtifactsNotModifiedAfter(getSystemServerArtifacts(), timeMs);
+        // Run odrefresh again with the flag unchanged.
+        timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefresh();
 
-            // Simulate that the phenotype flag is set to false.
-            getDevice().executeShellV2Command(
-                    "device_config put runtime_native_boot enable_uffd_gc false");
+        // Artifacts should not be re-compiled.
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertNotModifiedAfter(
+                mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
-            timeMs = mTestUtils.getCurrentTimeMs();
-            runOdrefresh();
+        mDeviceState.setPhenotypeFlag("odrefresh_test_toggle", null);
 
-            // Artifacts should be re-compiled.
-            assertArtifactsModifiedAfter(getZygoteArtifacts(), timeMs);
-            assertArtifactsModifiedAfter(getSystemServerArtifacts(), timeMs);
-        } finally {
-            getDevice().executeShellV2Command("device_config set_sync_disabled_for_tests none");
-            getDevice().executeShellV2Command(
-                    "device_config delete runtime_native_boot enable_uffd_gc");
-        }
+        timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefresh();
+
+        // Artifacts should be re-compiled.
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
     }
 
     @Test
     public void verifySystemServerCompilerFilterOverrideChangeTriggersCompilation()
             throws Exception {
-        try {
-            // Disable phenotype flag syncing. Potentially, we can set
-            // `set_sync_disabled_for_tests` to `until_reboot`, but setting it to
-            // `persistent` prevents unrelated system crashes/restarts from affecting the
-            // test. `set_sync_disabled_for_tests` is reset in the `finally` block anyway.
-            getDevice()
-                    .executeShellV2Command("device_config set_sync_disabled_for_tests persistent");
+        mDeviceState.setPhenotypeFlag("systemservercompilerfilter_override", null);
 
-            // Simulate that the phenotype flag is set to the default value.
-            getDevice()
-                    .executeShellV2Command(
-                            "device_config put runtime_native_boot"
-                                + " systemservercompilerfilter_override");
+        long timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefresh();
 
-            long timeMs = mTestUtils.getCurrentTimeMs();
-            runOdrefresh();
+        // Artifacts should not be re-compiled.
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertNotModifiedAfter(
+                mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
-            // Artifacts should not be re-compiled.
-            assertArtifactsNotModifiedAfter(getZygoteArtifacts(), timeMs);
-            assertArtifactsNotModifiedAfter(getSystemServerArtifacts(), timeMs);
+        mDeviceState.setPhenotypeFlag("systemservercompilerfilter_override", "speed");
 
-            // Simulate that the phenotype flag is set to "speed".
-            getDevice()
-                    .executeShellV2Command(
-                            "device_config put runtime_native_boot"
-                                + " systemservercompilerfilter_override speed");
+        timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefresh();
 
-            timeMs = mTestUtils.getCurrentTimeMs();
-            runOdrefresh();
+        // Artifacts should be re-compiled.
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
-            // Artifacts should be re-compiled.
-            assertArtifactsModifiedAfter(getZygoteArtifacts(), timeMs);
-            assertArtifactsModifiedAfter(getSystemServerArtifacts(), timeMs);
+        // Run odrefresh again with the flag unchanged.
+        timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefresh();
 
-            // Run odrefresh again with the flag unchanged.
-            timeMs = mTestUtils.getCurrentTimeMs();
-            runOdrefresh();
+        // Artifacts should not be re-compiled.
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertNotModifiedAfter(
+                mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
-            // Artifacts should not be re-compiled.
-            assertArtifactsNotModifiedAfter(getZygoteArtifacts(), timeMs);
-            assertArtifactsNotModifiedAfter(getSystemServerArtifacts(), timeMs);
+        mDeviceState.setPhenotypeFlag("systemservercompilerfilter_override", "verify");
 
-            // Simulate that the phenotype flag is set to "verify".
-            getDevice()
-                    .executeShellV2Command(
-                            "device_config put runtime_native_boot"
-                                + " systemservercompilerfilter_override verify");
+        timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefresh();
 
-            timeMs = mTestUtils.getCurrentTimeMs();
-            runOdrefresh();
-
-            // Artifacts should be re-compiled.
-            assertArtifactsModifiedAfter(getZygoteArtifacts(), timeMs);
-            assertArtifactsModifiedAfter(getSystemServerArtifacts(), timeMs);
-        } finally {
-            getDevice().executeShellV2Command("device_config set_sync_disabled_for_tests none");
-            getDevice()
-                    .executeShellV2Command(
-                            "device_config delete runtime_native_boot"
-                                + " systemservercompilerfilter_override");
-        }
+        // Artifacts should be re-compiled.
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
     }
 
     @Test
     public void verifySystemPropertyMismatchTriggersCompilation() throws Exception {
         // Change a system property from empty to a value.
-        getDevice().setProperty("dalvik.vm.foo", "1");
+        mDeviceState.setProperty("dalvik.vm.foo", "1");
         long timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
         // Artifacts should be re-compiled.
-        assertArtifactsModifiedAfter(getZygoteArtifacts(), timeMs);
-        assertArtifactsModifiedAfter(getSystemServerArtifacts(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
         // Run again with the same value.
         timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
         // Artifacts should not be re-compiled.
-        assertArtifactsNotModifiedAfter(getZygoteArtifacts(), timeMs);
-        assertArtifactsNotModifiedAfter(getSystemServerArtifacts(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertNotModifiedAfter(
+                mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
         // Change the system property to another value.
-        getDevice().setProperty("dalvik.vm.foo", "2");
+        mDeviceState.setProperty("dalvik.vm.foo", "2");
         timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
         // Artifacts should be re-compiled.
-        assertArtifactsModifiedAfter(getZygoteArtifacts(), timeMs);
-        assertArtifactsModifiedAfter(getSystemServerArtifacts(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
         // Run again with the same value.
         timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
         // Artifacts should not be re-compiled.
-        assertArtifactsNotModifiedAfter(getZygoteArtifacts(), timeMs);
-        assertArtifactsNotModifiedAfter(getSystemServerArtifacts(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertNotModifiedAfter(
+                mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
         // Change the system property to empty.
-        getDevice().setProperty("dalvik.vm.foo", "");
+        mDeviceState.setProperty("dalvik.vm.foo", "");
         timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
         // Artifacts should be re-compiled.
-        assertArtifactsModifiedAfter(getZygoteArtifacts(), timeMs);
-        assertArtifactsModifiedAfter(getSystemServerArtifacts(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
         // Run again with the same value.
         timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
         // Artifacts should not be re-compiled.
-        assertArtifactsNotModifiedAfter(getZygoteArtifacts(), timeMs);
-        assertArtifactsNotModifiedAfter(getSystemServerArtifacts(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertNotModifiedAfter(
+                mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
     }
 
     @Test
     public void verifyNoCompilationWhenCacheIsGood() throws Exception {
         mTestUtils.removeCompilationLogToAvoidBackoff();
         long timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
-        assertArtifactsNotModifiedAfter(getZygoteArtifacts(), timeMs);
-        assertArtifactsNotModifiedAfter(getSystemServerArtifacts(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertNotModifiedAfter(
+                mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
     }
 
     @Test
     public void verifyUnexpectedFilesAreCleanedUp() throws Exception {
         String unexpected = OdsignTestUtils.ART_APEX_DALVIK_CACHE_DIRNAME + "/unexpected";
         getDevice().pushString("" /* contents */, unexpected);
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
-        assertFalse(getDevice().doesFileExist(unexpected));
+        assertThat(getDevice().doesFileExist(unexpected)).isFalse();
     }
 
     @Test
     public void verifyCacheInfoOmitsIrrelevantApexes() throws Exception {
-        String cacheInfo = getDevice().pullFileContents(CACHE_INFO_FILE);
+        String cacheInfo = getDevice().pullFileContents(OdsignTestUtils.CACHE_INFO_FILE);
 
         // cacheInfo should list all APEXes that have compilable JARs and
         // none that do not.
@@ -369,204 +325,189 @@ public class OdrefreshHostTest extends BaseHostJUnit4Test {
 
     @Test
     public void verifyCompilationOsMode() throws Exception {
-        mTestUtils.removeCompilationLogToAvoidBackoff();
-        simulateApexUpgrade();
-        long timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh("--compilation-os-mode");
+        try {
+            // In CompOS, dex2oat directly writes to the output dir. This is allowed on Microdroid
+            // but not allowed on Android, so we need to bypass the SELinux restriction.
+            mTestUtils.assertCommandSucceeds("setenforce 0");
 
-        assertArtifactsNotModifiedAfter(getZygoteArtifacts(), timeMs);
-        assertArtifactsModifiedAfter(getSystemServerArtifacts(), timeMs);
+            mTestUtils.removeCompilationLogToAvoidBackoff();
+            mDeviceState.simulateApexUpgrade();
+            long timeMs = mTestUtils.getCurrentTimeMs();
+            mTestUtils.runOdrefresh("--compilation-os-mode");
 
-        String cacheInfo = getDevice().pullFileContents(CACHE_INFO_FILE);
-        assertThat(cacheInfo).contains("compilationOsMode=\"true\"");
+            mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+            mTestUtils.assertModifiedAfter(
+                    mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+            mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
-        // Compilation OS does not write the compilation log to the host.
-        mTestUtils.removeCompilationLogToAvoidBackoff();
+            String cacheInfo = getDevice().pullFileContents(OdsignTestUtils.CACHE_INFO_FILE);
+            assertThat(cacheInfo).contains("compilationOsMode=\"true\"");
 
-        // Simulate the odrefresh invocation on the next boot.
-        timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+            // Compilation OS does not write the compilation log to the host.
+            mTestUtils.removeCompilationLogToAvoidBackoff();
 
-        // odrefresh should not re-compile anything.
-        assertArtifactsNotModifiedAfter(getZygoteArtifacts(), timeMs);
-        assertArtifactsNotModifiedAfter(getSystemServerArtifacts(), timeMs);
+            // Simulate the odrefresh invocation on the next boot.
+            timeMs = mTestUtils.getCurrentTimeMs();
+            mTestUtils.runOdrefresh();
+
+            // odrefresh should not re-compile anything.
+            mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+            mTestUtils.assertNotModifiedAfter(
+                    mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+            mTestUtils.assertNotModifiedAfter(
+                    mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
+        } finally {
+            mTestUtils.assertCommandSucceeds("setenforce 1");
+        }
     }
 
     @Test
     public void verifyMinimalCompilation() throws Exception {
         mTestUtils.removeCompilationLogToAvoidBackoff();
         getDevice().executeShellV2Command(
-            "rm -rf " + OdsignTestUtils.ART_APEX_DALVIK_CACHE_DIRNAME);
-        runOdrefresh("--minimal");
+                "rm -rf " + OdsignTestUtils.ART_APEX_DALVIK_CACHE_DIRNAME);
+        mTestUtils.runOdrefresh("--minimal");
 
         mTestUtils.restartZygote();
 
         // The minimal boot image should be loaded.
-        Set<String> minimalZygoteArtifacts =
-                mTestUtils.verifyZygotesLoadedArtifacts("boot_minimal");
+        mTestUtils.verifyZygotesLoadedMinimalBootImage();
 
         // Running the command again should not overwrite the minimal boot image.
         mTestUtils.removeCompilationLogToAvoidBackoff();
         long timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh("--minimal");
+        mTestUtils.runOdrefresh("--minimal");
 
-        assertArtifactsNotModifiedAfter(minimalZygoteArtifacts, timeMs);
+        Set<String> minimalZygoteArtifacts = mTestUtils.getExpectedMinimalBootImage();
+        mTestUtils.assertNotModifiedAfter(minimalZygoteArtifacts, timeMs);
 
         // A normal odrefresh invocation should replace the minimal boot image with a full one.
         mTestUtils.removeCompilationLogToAvoidBackoff();
         timeMs = mTestUtils.getCurrentTimeMs();
-        runOdrefresh();
+        mTestUtils.runOdrefresh();
 
         for (String artifact : minimalZygoteArtifacts) {
-            assertFalse(
+            assertWithMessage(
                     String.format(
-                            "Artifact %s should be cleaned up while it still exists", artifact),
-                    getDevice().doesFileExist(artifact));
+                            "Artifact %s should be cleaned up while it still exists", artifact))
+                    .that(getDevice().doesFileExist(artifact))
+                    .isFalse();
         }
 
-        assertArtifactsModifiedAfter(getZygoteArtifacts(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+    }
+
+    @Test
+    public void verifyCompilationFailureBackoff() throws Exception {
+        mDeviceState.makeDex2oatFail();
+        mDeviceState.simulateArtApexUpgrade();
+
+        // Run odrefresh. It should encounter dex2oat failures.
+        long timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefresh();
+
+        // Artifacts don't exist because the compilation failed.
+        mTestUtils.assertModifiedAfter(Set.of(OdsignTestUtils.CACHE_INFO_FILE), timeMs);
+        mTestUtils.assertFilesNotExist(mTestUtils.getExpectedPrimaryBootImage());
+        mTestUtils.assertFilesNotExist(mTestUtils.getExpectedBootImageMainlineExtension());
+        mTestUtils.assertFilesNotExist(mTestUtils.getSystemServerExpectedArtifacts());
+
+        // Run odrefresh again.
+        timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefresh();
+
+        // It should not retry.
+        mTestUtils.assertNotModifiedAfter(Set.of(OdsignTestUtils.CACHE_INFO_FILE), timeMs);
+
+        // Simulate that the backoff time has passed.
+        mTestUtils.removeCompilationLogToAvoidBackoff();
+
+        // Run odrefresh again.
+        timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefresh();
+
+        // Now it should retry.
+        mTestUtils.assertModifiedAfter(Set.of(OdsignTestUtils.CACHE_INFO_FILE), timeMs);
     }
 
     /**
-     * Checks the input line by line and replaces all lines that match the regex with the given
-     * replacement.
+     * Regression test of CVE-2021-39689 (b/206090748): if the device doesn't have the odsign
+     * security fix, there's a risk that the existing artifacts may be manipulated, and odsign will
+     * mistakenly sign them. Therefore, odrefresh should clear all artifacts and regenerate them.
+     * I.e., no matter the compilation succeeds or not, no existing artifacts should be left.
+     *
+     * On contrary, if the device has the odsign security fix, odrefresh should keep existing
+     * artifacts (see {@link #verifyMissingArtifactTriggersCompilation}).
      */
-    private String replaceLine(String input, String regex, String replacement) {
-        StringBuffer output = new StringBuffer();
-        Pattern p = Pattern.compile(regex);
-        for (String line : input.split("\n")) {
-            Matcher m = p.matcher(line);
-            if (m.matches()) {
-                m.appendReplacement(output, replacement);
-                output.append("\n");
-            } else {
-                output.append(line + "\n");
-            }
-        }
-        return output.toString();
+    @Test
+    public void verifyArtifactsClearedWhenNoPartialCompilation() throws Exception {
+        // Remove arbitrary system server artifacts to trigger compilation.
+        simulateMissingArtifacts();
+
+        // The successful case.
+        mTestUtils.removeCompilationLogToAvoidBackoff();
+        long timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefreshNoPartialCompilation();
+
+        // Existing artifacts should be replaced with new ones.
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
+
+        // Remove arbitrary system server artifacts to trigger compilation again.
+        simulateMissingArtifacts();
+
+        // The failed case.
+        mDeviceState.makeDex2oatFail();
+        mTestUtils.removeCompilationLogToAvoidBackoff();
+        timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefreshNoPartialCompilation();
+
+        // Existing artifacts should be gone.
+        mTestUtils.assertFilesNotExist(mTestUtils.getExpectedPrimaryBootImage());
+        mTestUtils.assertFilesNotExist(mTestUtils.getExpectedBootImageMainlineExtension());
+        mTestUtils.assertFilesNotExist(mTestUtils.getSystemServerExpectedArtifacts());
     }
 
     /**
-     * Simulates that there is an OTA that updates a boot classpath jar.
+     * If the compilation is skipped because a previous attempt partially failed, odrefresh should
+     * not clear existing artifacts.
      */
-    private void simulateBootClasspathOta() throws Exception {
-        String cacheInfo = getDevice().pullFileContents(CACHE_INFO_FILE);
-        // Replace the cached checksum of /system/framework/framework.jar with "aaaaaaaa".
-        cacheInfo = replaceLine(
-                cacheInfo,
-                "(.*/system/framework/framework\\.jar.*checksums=\").*?(\".*)",
-                "$1aaaaaaaa$2");
-        getDevice().pushString(cacheInfo, CACHE_INFO_FILE);
-    }
+    @Test
+    public void verifyArtifactsKeptWhenCompilationSkippedNoPartialCompilation() throws Exception {
+        // Simulate that the compilation is partially failed.
+        mDeviceState.simulateBadSystemServerJar();
+        long timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefreshNoPartialCompilation();
 
-    /**
-     * Simulates that there is an OTA that updates a system server jar.
-     */
-    private void simulateSystemServerOta() throws Exception {
-        String cacheInfo = getDevice().pullFileContents(CACHE_INFO_FILE);
-        // Replace the cached checksum of /system/framework/services.jar with "aaaaaaaa".
-        cacheInfo = replaceLine(
-                cacheInfo,
-                "(.*/system/framework/services\\.jar.*checksums=\").*?(\".*)",
-                "$1aaaaaaaa$2");
-        getDevice().pushString(cacheInfo, CACHE_INFO_FILE);
-    }
+        // Verify the test setup: boot images are still generated.
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
 
-    /**
-     * Simulates that an ART APEX has been upgraded.
-     */
-    private void simulateArtApexUpgrade() throws Exception {
-        String apexInfo = getDevice().pullFileContents(CACHE_INFO_FILE);
-        // Replace the lastUpdateMillis of com.android.art with "1".
-        apexInfo = replaceLine(
-                apexInfo,
-                "(.*com\\.android\\.art.*lastUpdateMillis=\").*?(\".*)",
-                "$11$2");
-        getDevice().pushString(apexInfo, CACHE_INFO_FILE);
-    }
+        // Rerun odrefresh. The compilation is skipped this time.
+        timeMs = mTestUtils.getCurrentTimeMs();
+        CommandResult result = mTestUtils.runOdrefreshNoPartialCompilation();
 
-    /**
-     * Simulates that an APEX has been upgraded. We could install a real APEX, but that would
-     * introduce an extra dependency to this test, which we want to avoid.
-     */
-    private void simulateApexUpgrade() throws Exception {
-        String apexInfo = getDevice().pullFileContents(CACHE_INFO_FILE);
-        // Replace the lastUpdateMillis of com.android.wifi with "1".
-        apexInfo = replaceLine(
-                apexInfo,
-                "(.*com\\.android\\.wifi.*lastUpdateMillis=\").*?(\".*)",
-                "$11$2");
-        getDevice().pushString(apexInfo, CACHE_INFO_FILE);
+        // Existing artifacts should be kept.
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertNotModifiedAfter(
+                mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+
+        // Note that the existing artifacts may be manipulated (CVE-2021-39689). Make sure odrefresh
+        // returns `kOkay` rather than `kCompilationSuccess` or `kCompilationFailed`, so that odsign
+        // only verifies the artifacts but not sign them.
+        assertThat(result.getExitCode()).isEqualTo(0);
     }
 
     private Set<String> simulateMissingArtifacts() throws Exception {
         Set<String> missingArtifacts = new HashSet<>();
-        String sample = getSystemServerArtifacts().iterator().next();
+        String sample = mTestUtils.getSystemServerExpectedArtifacts().iterator().next();
         for (String extension : OdsignTestUtils.APP_ARTIFACT_EXTENSIONS) {
-            String artifact = replaceExtension(sample, extension);
+            String artifact = OdsignTestUtils.replaceExtension(sample, extension);
             getDevice().deleteFile(artifact);
             missingArtifacts.add(artifact);
         }
         return missingArtifacts;
-    }
-
-    private void assertArtifactsModifiedAfter(Set<String> artifacts, long timeMs) throws Exception {
-        for (String artifact : artifacts) {
-            long modifiedTime = mTestUtils.getModifiedTimeMs(artifact);
-            assertTrue(
-                    String.format(
-                            "Artifact %s is not re-compiled. Modified time: %d, Reference time: %d",
-                            artifact,
-                            modifiedTime,
-                            timeMs),
-                    modifiedTime > timeMs);
-        }
-    }
-
-    private void assertArtifactsNotModifiedAfter(Set<String> artifacts, long timeMs)
-            throws Exception {
-        for (String artifact : artifacts) {
-            long modifiedTime = mTestUtils.getModifiedTimeMs(artifact);
-            assertTrue(
-                    String.format(
-                            "Artifact %s is unexpectedly re-compiled. " +
-                                    "Modified time: %d, Reference time: %d",
-                            artifact,
-                            modifiedTime,
-                            timeMs),
-                    modifiedTime < timeMs);
-        }
-    }
-
-    private String replaceExtension(String filename, String extension) throws Exception {
-        int index = filename.lastIndexOf(".");
-        assertTrue("Extension not found in filename: " + filename, index != -1);
-        return filename.substring(0, index) + extension;
-    }
-
-    private Set<String> getColonSeparatedSet(String key) {
-        String value = getTestInformation().properties().get(key);
-        if (value == null || value.isEmpty()) {
-            return new HashSet<>();
-        }
-        return new HashSet<>(Arrays.asList(value.split(":")));
-    }
-
-    private Set<String> getZygoteArtifacts() {
-        return getColonSeparatedSet(ZYGOTE_ARTIFACTS_KEY);
-    }
-
-    private Set<String> getSystemServerArtifacts() {
-        return getColonSeparatedSet(SYSTEM_SERVER_ARTIFACTS_KEY);
-    }
-
-    private void runOdrefresh() throws Exception {
-        runOdrefresh("" /* extraArgs */);
-    }
-
-    private void runOdrefresh(String extraArgs) throws Exception {
-        getDevice().executeShellV2Command(ODREFRESH_BIN + " --check");
-        getDevice().executeShellV2Command(
-                ODREFRESH_BIN + " --partial-compilation --no-refresh " + extraArgs + " --compile");
     }
 }

@@ -322,9 +322,12 @@ class ProfileCompilationInfo {
   //
   // Note: if an annotation is provided, the methods/classes will be associated with the group
   // (dex_file, sample_annotation). Each group keeps its unique set of methods/classes.
+  // `is_test` should be set to true for unit tests which create artificial dex
+  // files.
   bool AddMethods(const std::vector<ProfileMethodInfo>& methods,
                   MethodHotness::Flag flags,
-                  const ProfileSampleAnnotation& annotation = ProfileSampleAnnotation::kNone);
+                  const ProfileSampleAnnotation& annotation = ProfileSampleAnnotation::kNone,
+                  bool is_test = false);
 
   // Find a type index in the `dex_file` if there is a `TypeId` for it. Otherwise,
   // find or insert the descriptor in "extra descriptors" and return an artificial
@@ -411,7 +414,8 @@ class ProfileCompilationInfo {
   // Note: see AddMethods docs for the handling of annotations.
   bool AddMethod(const ProfileMethodInfo& pmi,
                  MethodHotness::Flag flags,
-                 const ProfileSampleAnnotation& annotation = ProfileSampleAnnotation::kNone);
+                 const ProfileSampleAnnotation& annotation = ProfileSampleAnnotation::kNone,
+                 bool is_test = false);
 
   // Bulk add sampled methods and/or hot methods for a single dex, fast since it only has one
   // GetOrAddDexFileData call.
@@ -463,10 +467,12 @@ class ProfileCompilationInfo {
   //   the dex_file they are in.
   bool VerifyProfileData(const std::vector<const DexFile*>& dex_files);
 
-  // Load profile information from the given file
+  // Loads profile information from the given file.
+  // Returns true on success, false otherwise.
   // If the current profile is non-empty the load will fail.
-  // If clear_if_invalid is true and the file is invalid the method clears the
-  // the file and returns true.
+  // If clear_if_invalid is true:
+  // - If the file is invalid, the method clears the file and returns true.
+  // - If the file doesn't exist, the method returns true.
   bool Load(const std::string& filename, bool clear_if_invalid);
 
   // Merge the data from another ProfileCompilationInfo into the current object. Only merges
@@ -653,9 +659,9 @@ class ProfileCompilationInfo {
   // If the new profile key would collide with an existing key (for a different dex)
   // the method returns false. Otherwise it returns true.
   //
-  // `updated` is set to true if any profile key has been updated by this method.
+  // `matched` is set to true if all profiles have matched input dex files.
   bool UpdateProfileKeys(const std::vector<std::unique_ptr<const DexFile>>& dex_files,
-                         /*out*/ bool* updated);
+                         /*out*/ bool* matched);
 
   // Checks if the profile is empty.
   bool IsEmpty() const;
@@ -682,7 +688,7 @@ class ProfileCompilationInfo {
     DCHECK(type_index.IsValid());
     uint32_t num_type_ids = dex_file->NumTypeIds();
     if (type_index.index_ < num_type_ids) {
-      return dex_file->StringByTypeIdx(type_index);
+      return dex_file->GetTypeDescriptor(type_index);
     } else {
       return extra_descriptors_[type_index.index_ - num_type_ids].c_str();
     }

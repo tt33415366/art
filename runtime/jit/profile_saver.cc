@@ -23,15 +23,15 @@
 #include <unistd.h>
 
 #include "android-base/strings.h"
-
 #include "art_method-inl.h"
 #include "base/compiler_filter.h"
-#include "base/enums.h"
 #include "base/logging.h"  // For VLOG.
+#include "base/pointer_size.h"
 #include "base/scoped_arena_containers.h"
 #include "base/stl_util.h"
 #include "base/systrace.h"
 #include "base/time_utils.h"
+#include "base/unix_file/fd_file.h"
 #include "class_table-inl.h"
 #include "dex/dex_file_loader.h"
 #include "dex_reference_collection.h"
@@ -39,11 +39,11 @@
 #include "gc/gc_cause.h"
 #include "jit/jit.h"
 #include "jit/profiling_info.h"
-#include "oat_file_manager.h"
+#include "oat/oat_file_manager.h"
 #include "profile/profile_compilation_info.h"
 #include "scoped_thread_state_change-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 
 using Hotness = ProfileCompilationInfo::MethodHotness;
 
@@ -139,15 +139,16 @@ void ProfileSaver::Run() {
     const uint64_t sleep_time = MsToNs(force_early_first_save
       ? options_.GetMinFirstSaveMs()
       : options_.GetSaveResolvedClassesDelayMs());
-    const uint64_t end_time = NanoTime() + sleep_time;
-    while (!Runtime::Current()->GetStartupCompleted()) {
+    const uint64_t start_time = NanoTime();
+    const uint64_t end_time = start_time + sleep_time;
+    while (!Runtime::Current()->GetStartupCompleted() || force_early_first_save) {
       const uint64_t current_time = NanoTime();
       if (current_time >= end_time) {
         break;
       }
       period_condition_.TimedWait(self, NsToMs(end_time - current_time), 0);
     }
-    total_ms_of_sleep_ += sleep_time;
+    total_ms_of_sleep_ += NsToMs(NanoTime() - start_time);
   }
 
   FetchAndCacheResolvedClassesAndMethods(/*startup=*/ true);
@@ -370,22 +371,6 @@ class ProfileSaver::GetClassesAndMethodsHelper {
   }
 
  private:
-  // GetClassLoadersVisitor collects visited class loaders.
-  class GetClassLoadersVisitor : public ClassLoaderVisitor {
-   public:
-    explicit GetClassLoadersVisitor(VariableSizedHandleScope* class_loaders)
-        : class_loaders_(class_loaders) {}
-
-    void Visit(ObjPtr<mirror::ClassLoader> class_loader)
-        REQUIRES_SHARED(Locks::classlinker_classes_lock_, Locks::mutator_lock_) override {
-      DCHECK(class_loader != nullptr);
-      class_loaders_->NewHandle(class_loader);
-    }
-
-   private:
-    VariableSizedHandleScope* const class_loaders_;
-  };
-
   class CollectInternalVisitor {
    public:
     explicit CollectInternalVisitor(GetClassesAndMethodsHelper* helper)
@@ -541,6 +526,9 @@ void ProfileSaver::GetClassesAndMethodsHelper::CollectInternal(
     dex::TypeIndex type_index = k->GetDexTypeIndex();
     uint32_t copied_methods_start = klass->GetCopiedMethodsStartOffset();
     LengthPrefixedArray<ArtMethod>* methods = klass->GetMethodsPtr();
+    if (methods != nullptr) {
+      CHECK_LE(copied_methods_start, methods->size()) << k->PrettyClass();
+    }
 
     DexFileRecords* dex_file_records;
     auto it = dex_file_records_map_.find(&dex_file);
@@ -564,12 +552,7 @@ void ProfileSaver::GetClassesAndMethodsHelper::CollectClasses(Thread* self) {
   // a member variable to keep them alive and prevent unloading their classes,
   // so that methods referenced in collected `DexFileRecords` remain valid.
   class_loaders_.emplace(self);
-  {
-    GetClassLoadersVisitor class_loader_visitor(&class_loaders_.value());
-    ClassLinker* const class_linker = Runtime::Current()->GetClassLinker();
-    ReaderMutexLock mu(self, *Locks::classlinker_classes_lock_);
-    class_linker->VisitClassLoaders(&class_loader_visitor);
-  }
+  Runtime::Current()->GetClassLinker()->GetClassLoaders(self, &class_loaders_.value());
 
   // Collect classes and their method array pointers.
   if (profile_boot_class_path_) {
@@ -592,11 +575,13 @@ void ProfileSaver::GetClassesAndMethodsHelper::CollectClasses(Thread* self) {
         continue;
       }
       const size_t methods_size = methods->size();
+      CHECK_LE(class_record.copied_methods_start, methods_size)
+          << dex_file->PrettyType(class_record.type_index);
       for (size_t index = class_record.copied_methods_start; index != methods_size; ++index) {
         // Note: Using `ArtMethod` array with implicit `kRuntimePointerSize`.
         ArtMethod& method = methods->At(index);
-        DCHECK(method.IsCopied());
-        DCHECK(!method.IsNative());
+        CHECK(method.IsCopied()) << dex_file->PrettyType(class_record.type_index);
+        CHECK(!method.IsNative()) << dex_file->PrettyType(class_record.type_index);
         if (method.IsInvokable()) {
           const DexFile* method_dex_file = method.GetDexFile();
           DexFileRecords* method_dex_file_records = dex_file_records;
@@ -675,7 +660,7 @@ void ProfileSaver::GetClassesAndMethodsHelper::UpdateProfile(const std::set<std:
         DCHECK(ShouldCollectClasses(startup));
         DCHECK(class_record.methods == nullptr);  // No methods to process.
         array_class_descriptor.assign(class_record.array_dimension, '[');
-        array_class_descriptor += dex_file->StringByTypeIdx(class_record.type_index);
+        array_class_descriptor += dex_file->GetTypeDescriptorView(class_record.type_index);
         dex::TypeIndex type_index =
             profile_info->FindOrCreateTypeIndex(*dex_file, array_class_descriptor.c_str());
         if (type_index.IsValid()) {
@@ -862,16 +847,23 @@ bool ProfileSaver::ProcessProfilingInfo(
     std::vector<ProfileMethodInfo> profile_methods;
     {
       ScopedObjectAccess soa(Thread::Current());
-      jit_code_cache_->GetProfiledMethods(locations, profile_methods);
+      jit_code_cache_->GetProfiledMethods(
+          locations, profile_methods, options_.GetInlineCacheThreshold());
       total_number_of_code_cache_queries_++;
     }
     {
       ProfileCompilationInfo info(Runtime::Current()->GetArenaPool(),
-                                  /*for_boot_image=*/ options_.GetProfileBootClassPath());
-      if (!info.Load(filename, /*clear_if_invalid=*/ true)) {
+                                  /*for_boot_image=*/options_.GetProfileBootClassPath());
+      // Load the existing profile before saving.
+      // If the file is updated between `Load` and `Save`, the update will be lost. This is
+      // acceptable. The main reason is that the lost entries will eventually come back if the user
+      // keeps using the same methods, or they won't be needed if the user doesn't use the same
+      // methods again.
+      if (!info.Load(filename, /*clear_if_invalid=*/true)) {
         LOG(WARNING) << "Could not forcefully load profile " << filename;
         continue;
       }
+
       uint64_t last_save_number_of_methods = info.GetNumberOfMethods();
       uint64_t last_save_number_of_classes = info.GetNumberOfResolvedClasses();
       VLOG(profiler) << "last_save_number_of_methods=" << last_save_number_of_methods

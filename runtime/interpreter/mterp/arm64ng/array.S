@@ -23,6 +23,7 @@
     GOTO_OPCODE x10                     // jump to next instruction
     .elseif $is_object
     $load   w2, [x0, #$data_offset]     // w2<- vBB[vCC]
+    UNPOISON_HEAP_REF w2
     TEST_IF_MARKING 2f
 1:
     SET_VREG_OBJECT w2, w9              // vAA<- w2
@@ -170,6 +171,7 @@
    GET_VREG w1, w1                     // w1<- vB (array length)
    ldr lr, [xSELF, #THREAD_ALLOC_ARRAY_ENTRYPOINT_OFFSET]
    blr lr
+   dmb ishst                           // need fence for making array's class visible
    ubfx    w1, wINST, #8, #4           // w1<- A
    SET_VREG_OBJECT w0, w1
    FETCH_ADVANCE_INST 2

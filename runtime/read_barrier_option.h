@@ -16,7 +16,10 @@
 
 #ifndef ART_RUNTIME_READ_BARRIER_OPTION_H_
 #define ART_RUNTIME_READ_BARRIER_OPTION_H_
-namespace art {
+
+#include "base/macros.h"
+
+namespace art HIDDEN {
 
 // Options for performing a read barrier or not.
 //
@@ -27,7 +30,7 @@ namespace art {
 //
 // 1. We're reading a reference known to point to an un-reclaimable immune space object.
 //    (For example boot image class and string references, read by compiled code from
-//    .data.bimg.rel.ro . Similarly, such references constructed using position independent
+//    .data.img.rel.ro . Similarly, such references constructed using position independent
 //    code in the compiled boot image code do not need a read barrier.)
 // 2. We're reading the reference for comparison involving a non-moving space reference.
 //    (Whether the non-moving space reference is the one we're reading or the one we shall
@@ -81,9 +84,9 @@ namespace art {
 //
 // The superclass becomes constant during the ClassStatus::kIdx stage, so it's safe to treat it
 // as constant when reading from locations that can reference only resolved classes.
-enum ReadBarrierOption {
-  kWithReadBarrier,     // Perform a read barrier.
-  kWithoutReadBarrier,  // Don't perform a read barrier.
+enum EXPORT ReadBarrierOption {
+  kWithReadBarrier,       // Perform a read barrier.
+  kWithoutReadBarrier,    // Don't perform a read barrier.
   kWithFromSpaceBarrier,  // Get the from-space address for the given to-space address. Used by CMC
 };
 

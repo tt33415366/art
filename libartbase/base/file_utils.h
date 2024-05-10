@@ -71,12 +71,20 @@ std::string GetAndroidData();
 // Find $ANDROID_DATA, /data, or return an empty string.
 std::string GetAndroidDataSafe(/*out*/ std::string* error_msg);
 
+// Find $ANDROID_EXPAND, /mnt/expand, or abort.
+std::string GetAndroidExpand();
+// Find $ANDROID_EXPAND, /mnt/expand, or return an empty string.
+std::string GetAndroidExpandSafe(/*out*/ std::string* error_msg);
+
 // Find $ART_APEX_DATA, /data/misc/apexdata/com.android.art, or abort.
 std::string GetArtApexData();
 
 // Returns the directory that contains the prebuilt version of the primary boot image (i.e., the one
 // generated at build time).
 std::string GetPrebuiltPrimaryBootImageDir();
+
+// Returns the filename of the first mainline framework library.
+std::string GetFirstMainlineFrameworkLibraryFilename(std::string* error_msg);
 
 // Returns the default boot image location, based on the passed `android_root`.
 // Returns an empty string if an error occurs.
@@ -92,6 +100,19 @@ std::string GetDefaultBootImageLocation(const std::string& android_root,
 
 // Returns the boot image location that forces the runtime to run in JIT Zygote mode.
 std::string GetJitZygoteBootImageLocation();
+
+// A helper function to pick the most appropriate boot image based on the given options.
+// The boot image location can only be used with the default bootclasspath (the value of the
+// BOOTCLASSPATH environment variable).
+std::string GetBootImageLocationForDefaultBcp(bool no_boot_image,
+                                              std::string user_defined_boot_image,
+                                              bool deny_art_apex_data_files,
+                                              std::string* error_msg);
+
+// A helper function to pick the most appropriate boot image based on system properties.
+// The boot image location can only be used with the default bootclasspath (the value of the
+// BOOTCLASSPATH environment variable).
+std::string GetBootImageLocationForDefaultBcpRespectingSysProps(std::string* error_msg);
 
 // Allows the name to be used for the dalvik cache directory (normally "dalvik-cache") to be
 // overridden with a new value.

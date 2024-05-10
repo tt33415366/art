@@ -164,12 +164,7 @@ END_MACRO
 
     /* Cache alignment for function entry */
 MACRO0(ALIGN_FUNCTION_ENTRY)
-    // ART-compiled functions have OatQuickMethodHeader but assembly funtions do not.
-    // Prefix the assembly code with 0xFFs, which means there is no method header.
-    .byte 0xFF, 0xFF, 0xFF, 0xFF
-    // Cache alignment for function entry.
-    // Use 0xFF as the last 4 bytes of alignment stand for OatQuickMethodHeader.
-    .balign 16, 0xFF
+    .balign 16
 END_MACRO
 
 MACRO2(DEFINE_FUNCTION_CUSTOM_CFA, c_name, cfa_offset)
@@ -363,7 +358,7 @@ MACRO0(SETUP_SAVE_REFS_AND_ARGS_FRAME_REGISTERS_ONLY)
 END_MACRO
 
 MACRO0(RESTORE_SAVE_REFS_AND_ARGS_FRAME)
-    // Restore FPRs. EAX is still on the stack.
+    // Restore FPRs. The method is still on the stack.
     movsd 4(%esp), %xmm0
     movsd 12(%esp), %xmm1
     movsd 20(%esp), %xmm2

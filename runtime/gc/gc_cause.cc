@@ -23,7 +23,7 @@
 
 #include <ostream>
 
-namespace art {
+namespace art HIDDEN {
 namespace gc {
 
 const char* PrettyCause(GcCause cause) {
@@ -46,7 +46,7 @@ const char* PrettyCause(GcCause cause) {
     case kGcCauseHprof: return "Hprof";
     case kGcCauseGetObjectsAllocated: return "ObjectsAllocated";
     case kGcCauseProfileSaver: return "ProfileSaver";
-    case kGcCauseRunEmptyCheckpoint: return "RunEmptyCheckpoint";
+    case kGcCauseDeletingDexCacheArrays: return "DeletingDexCacheArrays";
   }
   LOG(FATAL) << "Unreachable";
   UNREACHABLE();

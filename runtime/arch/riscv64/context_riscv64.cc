@@ -23,13 +23,9 @@
 #include "quick/quick_method_frame_info.h"
 #include "thread-current-inl.h"
 
-#if __has_feature(hwaddress_sanitizer)
-#include <sanitizer/hwasan_interface.h>
-#else
-#define __hwasan_handle_longjmp(sp)
-#endif
+extern "C" __attribute__((weak)) void __hwasan_handle_longjmp(const void* sp_dst);
 
-namespace art {
+namespace art HIDDEN {
 namespace riscv64 {
 
 static constexpr uint64_t gZero = 0;
@@ -41,14 +37,14 @@ void Riscv64Context::Reset() {
   gprs_[kPC] = &pc_;
   gprs_[A0] = &arg0_;
   // Initialize registers with easy to spot debug values.
-  sp_ = Riscv64Context::kBadGprBase + SP;
-  pc_ = Riscv64Context::kBadGprBase + kPC;
+  sp_ = kBadGprBase + SP;
+  pc_ = kBadGprBase + kPC;
   arg0_ = 0;
 }
 
 void Riscv64Context::FillCalleeSaves(uint8_t* frame, const QuickMethodFrameInfo& frame_info) {
   // RA is at top of the frame
-  DCHECK_NE(frame_info.CoreSpillMask() & ~(1u << RA), 0u);
+  DCHECK_NE(frame_info.CoreSpillMask() & (1u << RA), 0u);
   gprs_[RA] = CalleeSaveAddress(frame, 0, frame_info.FrameSizeInBytes());
 
   // Core registers come first, from the highest down to the lowest, with the exception of RA/X1.
@@ -134,17 +130,19 @@ void Riscv64Context::DoLongJump() {
   DCHECK_EQ(SP, 2);
 
   for (size_t i = 0; i < arraysize(gprs_); ++i) {
-    gprs[i] = gprs_[i] != nullptr ? *gprs_[i] : Riscv64Context::kBadGprBase + i;
+    gprs[i] = gprs_[i] != nullptr ? *gprs_[i] : kBadGprBase + i;
   }
   for (size_t i = 0; i < kNumberOfFRegisters; ++i) {
-    fprs[i] = fprs_[i] != nullptr ? *fprs_[i] : Riscv64Context::kBadFprBase + i;
+    fprs[i] = fprs_[i] != nullptr ? *fprs_[i] : kBadFprBase + i;
   }
 
   // Fill in TR (the ART Thread Register) with the address of the current thread.
   gprs[TR] = reinterpret_cast<uintptr_t>(Thread::Current());
 
   // Tell HWASan about the new stack top.
-  __hwasan_handle_longjmp(reinterpret_cast<void*>(gprs[SP]));
+  if (__hwasan_handle_longjmp != nullptr) {
+    __hwasan_handle_longjmp(reinterpret_cast<void*>(gprs[SP]));
+  }
   art_quick_do_long_jump(gprs, fprs);
 }
 

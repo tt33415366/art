@@ -19,7 +19,9 @@
 
 #include "interpreter_switch_impl-inl.h"
 
-namespace art {
+#include "active_transaction_checker.h"
+
+namespace art HIDDEN {
 namespace interpreter {
 
 // Explicit definition of ExecuteSwitchImplCpp.

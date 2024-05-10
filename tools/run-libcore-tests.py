@@ -264,6 +264,8 @@ DISABLED_GCSTRESS_DEBUG_TESTS = {
   "test.java.lang.StrictMath.HypotTests#testAgainstTranslit_shard4",
   "test.java.math.BigDecimal",
   "test.java.math.BigInteger#testConstructor",
+  "test.java.util.TestFormatter",
+  "test.java.util.Collection",
 }
 
 DISABLED_FUGU_TESTS = {
@@ -446,7 +448,7 @@ def get_vogar_command(test_name):
     cmd.append("--timeout {}".format(get_timeout_secs()))
     cmd.append("--toolchain d8 --language CUR")
     if args.jit:
-      cmd.append("--vm-arg -Xcompiler-option --vm-arg --compiler-filter=quicken")
+      cmd.append("--vm-arg -Xcompiler-option --vm-arg --compiler-filter=verify")
     cmd.append("--vm-arg -Xusejit:{}".format(str(args.jit).lower()))
 
   if args.verbose:
@@ -459,6 +461,14 @@ def get_vogar_command(test_name):
   cmd.extend("--expectations " + f for f in get_expected_failures())
   cmd.extend("--classpath " + get_jar_filename(cp) for cp in CLASSPATH)
   cmd.append(test_name)
+
+  # vogar target options
+  if not os.path.exists('frameworks/base'):
+    cmd.append("--")
+    # Skip @NonMts test in thin manifest which uses prebuilt Conscrypt and ICU.
+    # It's similar to running libcore tests on the older platforms.
+    # @NonMts means that the test doesn't pass on a older platform version.
+    cmd.append("--exclude-filter libcore.test.annotation.NonMts")
   return cmd
 
 def get_target_cpu_count():

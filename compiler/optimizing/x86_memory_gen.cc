@@ -24,7 +24,7 @@ namespace x86 {
 /**
  * Replace instructions with memory operand forms.
  */
-class MemoryOperandVisitor : public HGraphVisitor {
+class MemoryOperandVisitor final : public HGraphVisitor {
  public:
   MemoryOperandVisitor(HGraph* graph, bool do_implicit_null_checks)
       : HGraphVisitor(graph),
@@ -33,7 +33,7 @@ class MemoryOperandVisitor : public HGraphVisitor {
  private:
   void VisitBoundsCheck(HBoundsCheck* check) override {
     // Replace the length by the array itself, so that we can do compares to memory.
-    HArrayLength* array_len = check->InputAt(1)->AsArrayLength();
+    HArrayLength* array_len = check->InputAt(1)->AsArrayLengthOrNull();
 
     // We only want to replace an ArrayLength.
     if (array_len == nullptr) {

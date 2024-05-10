@@ -18,6 +18,7 @@
 
 #include "allocator.h"
 #include "arena_allocator.h"
+#include "bit_vector-inl.h"
 
 namespace art {
 
@@ -28,7 +29,7 @@ template <>
 class ArenaBitVectorAllocatorKindImpl<false> {
  public:
   // Not tracking allocations, ignore the supplied kind and arbitrarily provide kArenaAllocSTL.
-  explicit ArenaBitVectorAllocatorKindImpl(ArenaAllocKind kind ATTRIBUTE_UNUSED) {}
+  explicit ArenaBitVectorAllocatorKindImpl([[maybe_unused]] ArenaAllocKind kind) {}
   ArenaBitVectorAllocatorKindImpl(const ArenaBitVectorAllocatorKindImpl&) = default;
   ArenaBitVectorAllocatorKindImpl& operator=(const ArenaBitVectorAllocatorKindImpl&) = default;
   ArenaAllocKind Kind() { return kArenaAllocGrowableBitMap; }
@@ -84,6 +85,7 @@ ArenaBitVector::ArenaBitVector(ArenaAllocator* allocator,
   :  BitVector(start_bits,
                expandable,
                ArenaBitVectorAllocator<ArenaAllocator>::Create(allocator, kind)) {
+  DCHECK_EQ(GetHighestBitSet(), -1) << "The arena bit vector should start empty";
 }
 
 ArenaBitVector::ArenaBitVector(ScopedArenaAllocator* allocator,
@@ -93,6 +95,7 @@ ArenaBitVector::ArenaBitVector(ScopedArenaAllocator* allocator,
   :  BitVector(start_bits,
                expandable,
                ArenaBitVectorAllocator<ScopedArenaAllocator>::Create(allocator, kind)) {
+  ClearAllBits();
 }
 
 }  // namespace art

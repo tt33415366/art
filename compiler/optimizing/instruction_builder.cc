@@ -33,8 +33,9 @@
 #include "intrinsics.h"
 #include "intrinsics_utils.h"
 #include "jit/jit.h"
+#include "jit/profiling_info.h"
 #include "mirror/dex_cache.h"
-#include "oat_file.h"
+#include "oat/oat_file.h"
 #include "optimizing_compiler_stats.h"
 #include "reflective_handle_scope-inl.h"
 #include "scoped_thread_state_change-inl.h"
@@ -59,7 +60,7 @@ class SamePackageCompare {
       const DexFile* dex_file = dex_compilation_unit_.GetDexFile();
       uint32_t referrers_method_idx = dex_compilation_unit_.GetDexMethodIndex();
       referrers_descriptor_ =
-          dex_file->StringByTypeIdx(dex_file->GetMethodId(referrers_method_idx).class_idx_);
+          dex_file->GetMethodDeclaringClassDescriptor(dex_file->GetMethodId(referrers_method_idx));
       referrers_package_length_ = PackageLength(referrers_descriptor_);
     }
     std::string temp;
@@ -469,6 +470,9 @@ void HInstructionBuilder::BuildIntrinsic(ArtMethod* method) {
   current_block_ = graph_->GetEntryBlock();
   InitializeBlockLocals();
   InitializeParameters();
+  if (graph_->IsDebuggable() && code_generator_->GetCompilerOptions().IsJitCompiler()) {
+    AppendInstruction(new (allocator_) HMethodEntryHook(0u));
+  }
   AppendInstruction(new (allocator_) HGoto(0u));
 
   // Fill the body.
@@ -504,14 +508,21 @@ void HInstructionBuilder::BuildIntrinsic(ArtMethod* method) {
         dispatch_info,
         invoke_type,
         target_method,
-        HInvokeStaticOrDirect::ClinitCheckRequirement::kNone);
+        HInvokeStaticOrDirect::ClinitCheckRequirement::kNone,
+        !graph_->IsDebuggable());
     HandleInvoke(invoke, operands, shorty, /* is_unresolved= */ false);
   }
 
   // Add the return instruction.
   if (return_type_ == DataType::Type::kVoid) {
+    if (graph_->IsDebuggable() && code_generator_->GetCompilerOptions().IsJitCompiler()) {
+      AppendInstruction(new (allocator_) HMethodExitHook(graph_->GetNullConstant(), kNoDexPc));
+    }
     AppendInstruction(new (allocator_) HReturnVoid());
   } else {
+    if (graph_->IsDebuggable() && code_generator_->GetCompilerOptions().IsJitCompiler()) {
+      AppendInstruction(new (allocator_) HMethodExitHook(latest_result_, kNoDexPc));
+    }
     AppendInstruction(new (allocator_) HReturn(latest_result_));
   }
 
@@ -527,7 +538,6 @@ ArenaBitVector* HInstructionBuilder::FindNativeDebugInfoLocations() {
                                                      code_item_accessor_.InsnsSizeInCodeUnits(),
                                                      /* expandable= */ false,
                                                      kArenaAllocGraphBuilder);
-  locations->ClearAllBits();
   // The visitor gets called when the line number changes.
   // In other words, it marks the start of new java statement.
   code_item_accessor_.DecodeDebugPositionInfo([&](const DexFile::PositionInfo& entry) {
@@ -655,22 +665,31 @@ void HInstructionBuilder::InitializeParameters() {
   }
 }
 
-template<typename T>
-void HInstructionBuilder::If_22t(const Instruction& instruction, uint32_t dex_pc) {
-  HInstruction* first = LoadLocal(instruction.VRegA(), DataType::Type::kInt32);
-  HInstruction* second = LoadLocal(instruction.VRegB(), DataType::Type::kInt32);
-  T* comparison = new (allocator_) T(first, second, dex_pc);
-  AppendInstruction(comparison);
-  AppendInstruction(new (allocator_) HIf(comparison, dex_pc));
-  current_block_ = nullptr;
-}
-
-template<typename T>
-void HInstructionBuilder::If_21t(const Instruction& instruction, uint32_t dex_pc) {
+template<typename T, bool kCompareWithZero>
+void HInstructionBuilder::If_21_22t(const Instruction& instruction, uint32_t dex_pc) {
   HInstruction* value = LoadLocal(instruction.VRegA(), DataType::Type::kInt32);
-  T* comparison = new (allocator_) T(value, graph_->GetIntConstant(0, dex_pc), dex_pc);
+  T* comparison = nullptr;
+  if (kCompareWithZero) {
+    comparison = new (allocator_) T(value, graph_->GetIntConstant(0, dex_pc), dex_pc);
+  } else {
+    HInstruction* second = LoadLocal(instruction.VRegB(), DataType::Type::kInt32);
+    comparison = new (allocator_) T(value, second, dex_pc);
+  }
   AppendInstruction(comparison);
-  AppendInstruction(new (allocator_) HIf(comparison, dex_pc));
+  HIf* if_instr = new (allocator_) HIf(comparison, dex_pc);
+
+  ProfilingInfo* info = graph_->GetProfilingInfo();
+  if (info != nullptr && !graph_->IsCompilingBaseline()) {
+    BranchCache* cache = info->GetBranchCache(dex_pc);
+    if (cache != nullptr) {
+      if_instr->SetTrueCount(cache->GetTrue());
+      if_instr->SetFalseCount(cache->GetFalse());
+    }
+  }
+
+  // Append after setting true/false count, so that the builder knows if the
+  // instruction needs an environment.
+  AppendInstruction(if_instr);
   current_block_ = nullptr;
 }
 
@@ -1050,7 +1069,8 @@ bool HInstructionBuilder::BuildInvoke(const Instruction& instruction,
         dispatch_info,
         invoke_type,
         resolved_method_reference,
-        HInvokeStaticOrDirect::ClinitCheckRequirement::kImplicit);
+        HInvokeStaticOrDirect::ClinitCheckRequirement::kImplicit,
+        !graph_->IsDebuggable());
     return HandleStringInit(invoke, operands, shorty);
   }
 
@@ -1063,7 +1083,7 @@ bool HInstructionBuilder::BuildInvoke(const Instruction& instruction,
   }
 
   // Try to build an HIR replacement for the intrinsic.
-  if (UNLIKELY(resolved_method->IsIntrinsic())) {
+  if (UNLIKELY(resolved_method->IsIntrinsic()) && !graph_->IsDebuggable()) {
     // All intrinsics are in the primary boot image, so their class can always be referenced
     // and we do not need to rely on the implicit class initialization check. The class should
     // be initialized but we do not require that here.
@@ -1114,7 +1134,8 @@ bool HInstructionBuilder::BuildInvoke(const Instruction& instruction,
                                                     dispatch_info,
                                                     invoke_type,
                                                     resolved_method_reference,
-                                                    clinit_check_requirement);
+                                                    clinit_check_requirement,
+                                                    !graph_->IsDebuggable());
     if (clinit_check != nullptr) {
       // Add the class initialization check as last input of `invoke`.
       DCHECK_EQ(clinit_check_requirement, HInvokeStaticOrDirect::ClinitCheckRequirement::kExplicit);
@@ -1130,7 +1151,8 @@ bool HInstructionBuilder::BuildInvoke(const Instruction& instruction,
                                              method_reference,
                                              resolved_method,
                                              resolved_method_reference,
-                                             /*vtable_index=*/ imt_or_vtable_index);
+                                             /*vtable_index=*/ imt_or_vtable_index,
+                                             !graph_->IsDebuggable());
   } else {
     DCHECK_EQ(invoke_type, kInterface);
     if (kIsDebugBuild) {
@@ -1151,7 +1173,8 @@ bool HInstructionBuilder::BuildInvoke(const Instruction& instruction,
                                                resolved_method,
                                                resolved_method_reference,
                                                /*imt_index=*/ imt_or_vtable_index,
-                                               load_kind);
+                                               load_kind,
+                                               !graph_->IsDebuggable());
   }
   return HandleInvoke(invoke, operands, shorty, /* is_unresolved= */ false);
 }
@@ -1355,7 +1378,8 @@ bool HInstructionBuilder::BuildInvokePolymorphic(uint32_t dex_pc,
     return false;
   }
 
-  if (invoke->GetIntrinsic() != Intrinsics::kMethodHandleInvoke &&
+  if (invoke->GetIntrinsic() != Intrinsics::kNone &&
+      invoke->GetIntrinsic() != Intrinsics::kMethodHandleInvoke &&
       invoke->GetIntrinsic() != Intrinsics::kMethodHandleInvokeExact &&
       VarHandleAccessorNeedsReturnTypeCheck(invoke, return_type)) {
     // Type check is needed because VarHandle intrinsics do not type check the retrieved reference.
@@ -1388,7 +1412,8 @@ bool HInstructionBuilder::BuildInvokeCustom(uint32_t dex_pc,
                                                    call_site_idx,
                                                    return_type,
                                                    dex_pc,
-                                                   method_reference);
+                                                   method_reference,
+                                                   !graph_->IsDebuggable());
   return HandleInvoke(invoke, operands, shorty, /* is_unresolved= */ false);
 }
 
@@ -1488,12 +1513,12 @@ void HInstructionBuilder::BuildConstructorFenceForAllocation(HInstruction* alloc
       MethodCompilationStat::kConstructorFenceGeneratedNew);
 }
 
-static bool IsInBootImage(ObjPtr<mirror::Class> cls, const CompilerOptions& compiler_options)
+static bool IsInImage(ObjPtr<mirror::Class> cls, const CompilerOptions& compiler_options)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   if (Runtime::Current()->GetHeap()->ObjectIsInBootImageSpace(cls)) {
     return true;
   }
-  if (compiler_options.IsBootImage() || compiler_options.IsBootImageExtension()) {
+  if (compiler_options.IsGeneratingImage()) {
     std::string temp;
     const char* descriptor = cls->GetDescriptor(&temp);
     return compiler_options.IsImageClass(descriptor);
@@ -1609,8 +1634,8 @@ static bool HasTrivialInitialization(ObjPtr<mirror::Class> cls,
 
   // Check the superclass chain.
   for (ObjPtr<mirror::Class> klass = cls; klass != nullptr; klass = klass->GetSuperClass()) {
-    if (klass->IsInitialized() && IsInBootImage(klass, compiler_options)) {
-      break;  // `klass` and its superclasses are already initialized in the boot image.
+    if (klass->IsInitialized() && IsInImage(klass, compiler_options)) {
+      break;  // `klass` and its superclasses are already initialized in the boot or app image.
     }
     if (!HasTrivialClinit(klass, pointer_size)) {
       return false;
@@ -1625,8 +1650,8 @@ static bool HasTrivialInitialization(ObjPtr<mirror::Class> cls,
     if (!iface->HasDefaultMethods()) {
       continue;  // Initializing `cls` does not initialize this interface.
     }
-    if (iface->IsInitialized() && IsInBootImage(iface, compiler_options)) {
-      continue;  // This interface is already initialized in the boot image.
+    if (iface->IsInitialized() && IsInImage(iface, compiler_options)) {
+      continue;  // This interface is already initialized in the boot or app image.
     }
     if (!HasTrivialClinit(iface, pointer_size)) {
       return false;
@@ -1644,9 +1669,8 @@ bool HInstructionBuilder::IsInitialized(ObjPtr<mirror::Class> cls) const {
   if (cls->IsInitialized()) {
     const CompilerOptions& compiler_options = code_generator_->GetCompilerOptions();
     if (compiler_options.IsAotCompiler()) {
-      // Assume loaded only if klass is in the boot image. App classes cannot be assumed
-      // loaded because we don't even know what class loader will be used to load them.
-      if (IsInBootImage(cls, compiler_options)) {
+      // Assume loaded only if klass is in the boot or app image.
+      if (IsInImage(cls, compiler_options)) {
         return true;
       }
     } else {
@@ -1984,6 +2008,7 @@ bool HInstructionBuilder::BuildSimpleIntrinsic(ArtMethod* method,
       break;
     default:
       // We do not have intermediate representation for other intrinsics.
+      DCHECK(!IsIntrinsicWithSpecializedHir(intrinsic));
       return false;
   }
   DCHECK(instruction != nullptr);
@@ -2348,9 +2373,9 @@ void HInstructionBuilder::BuildCheckedDivRem(uint16_t out_vreg,
     second = LoadLocal(second_vreg_or_constant, type);
   }
 
-  if (!second_is_constant
-      || (type == DataType::Type::kInt32 && second->AsIntConstant()->GetValue() == 0)
-      || (type == DataType::Type::kInt64 && second->AsLongConstant()->GetValue() == 0)) {
+  if (!second_is_constant ||
+      (type == DataType::Type::kInt32 && second->AsIntConstant()->GetValue() == 0) ||
+      (type == DataType::Type::kInt64 && second->AsLongConstant()->GetValue() == 0)) {
     second = new (allocator_) HDivZeroCheck(second, dex_pc);
     AppendInstruction(second);
   }
@@ -2413,7 +2438,7 @@ HNewArray* HInstructionBuilder::BuildFilledNewArray(uint32_t dex_pc,
   HInstruction* length = graph_->GetIntConstant(number_of_operands, dex_pc);
 
   HNewArray* new_array = BuildNewArray(dex_pc, type_index, length);
-  const char* descriptor = dex_file_->StringByTypeIdx(type_index);
+  const char* descriptor = dex_file_->GetTypeDescriptor(type_index);
   DCHECK_EQ(descriptor[0], '[') << descriptor;
   char primitive = descriptor[1];
   DCHECK(primitive == 'I'
@@ -2631,14 +2656,11 @@ bool HInstructionBuilder::LoadClassNeedsAccessCheck(dex::TypeIndex type_index,
         return true;
       }
     } else {
-      uint32_t outer_utf16_length;
-      const char* outer_descriptor =
-          outer_dex_file->StringByTypeIdx(outer_class_def.class_idx_, &outer_utf16_length);
-      uint32_t target_utf16_length;
-      const char* target_descriptor =
-          inner_dex_file->StringByTypeIdx(type_index, &target_utf16_length);
-      if (outer_utf16_length != target_utf16_length ||
-          strcmp(outer_descriptor, target_descriptor) != 0) {
+      const std::string_view outer_descriptor =
+          outer_dex_file->GetTypeDescriptorView(outer_class_def.class_idx_);
+      const std::string_view target_descriptor =
+          inner_dex_file->GetTypeDescriptorView(type_index);
+      if (outer_descriptor != target_descriptor) {
         return true;
       }
     }
@@ -2674,6 +2696,9 @@ void HInstructionBuilder::BuildLoadMethodType(dex::ProtoIndex proto_index, uint3
   const DexFile& dex_file = *dex_compilation_unit_->GetDexFile();
   HLoadMethodType* load_method_type =
       new (allocator_) HLoadMethodType(graph_->GetCurrentMethod(), proto_index, dex_file, dex_pc);
+  if (!code_generator_->GetCompilerOptions().IsJitCompiler()) {
+    load_method_type->SetLoadKind(HLoadMethodType::LoadKind::kBssEntry);
+  }
   AppendInstruction(load_method_type);
 }
 
@@ -2863,8 +2888,12 @@ bool HInstructionBuilder::ProcessDexInstruction(const Instruction& instruction, 
     }
 
 #define IF_XX(comparison, cond) \
-    case Instruction::IF_##cond: If_22t<comparison>(instruction, dex_pc); break; \
-    case Instruction::IF_##cond##Z: If_21t<comparison>(instruction, dex_pc); break
+    case Instruction::IF_##cond: \
+      If_21_22t<comparison, /* kCompareWithZero= */ false>(instruction, dex_pc); \
+      break; \
+    case Instruction::IF_##cond##Z: \
+      If_21_22t<comparison, /* kCompareWithZero= */ true>(instruction, dex_pc); \
+      break;
 
     IF_XX(HEqual, EQ);
     IF_XX(HNotEqual, NE);

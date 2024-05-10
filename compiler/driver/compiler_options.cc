@@ -40,8 +40,6 @@ namespace art HIDDEN {
 CompilerOptions::CompilerOptions()
     : compiler_filter_(CompilerFilter::kDefaultCompilerFilter),
       huge_method_threshold_(kDefaultHugeMethodThreshold),
-      large_method_threshold_(kDefaultLargeMethodThreshold),
-      num_dex_methods_threshold_(kDefaultNumDexMethodsThreshold),
       inline_max_code_units_(kUnsetInlineMaxCodeUnits),
       instruction_set_(kRuntimeISA == InstructionSet::kArm ? InstructionSet::kThumb2 : kRuntimeISA),
       instruction_set_features_(nullptr),
@@ -52,19 +50,20 @@ CompilerOptions::CompilerOptions()
       image_type_(ImageType::kNone),
       multi_image_(false),
       compile_art_test_(false),
+      emit_read_barrier_(false),
       baseline_(false),
       debuggable_(false),
       generate_debug_info_(kDefaultGenerateDebugInfo),
       generate_mini_debug_info_(kDefaultGenerateMiniDebugInfo),
       generate_build_id_(false),
-      implicit_null_checks_(true),
+      implicit_null_checks_(false),
       implicit_so_checks_(true),
       implicit_suspend_checks_(false),
       compile_pic_(false),
       dump_timings_(false),
       dump_pass_timings_(false),
       dump_stats_(false),
-      top_k_profile_threshold_(kDefaultTopKProfileThreshold),
+      profile_branches_(false),
       profile_compilation_info_(nullptr),
       verbose_methods_(),
       abort_on_hard_verifier_failure_(false),
@@ -81,7 +80,6 @@ CompilerOptions::CompilerOptions()
       initialize_app_image_classes_(false),
       check_profiled_methods_(ProfileMethodsCheck::kNone),
       max_image_block_size_(std::numeric_limits<uint32_t>::max()),
-      register_allocation_strategy_(RegisterAllocator::kRegisterAllocatorDefault),
       passes_to_run_(nullptr) {
 }
 
@@ -111,19 +109,6 @@ bool CompilerOptions::ParseDumpInitFailures(const std::string& option, std::stri
     *error_msg = android::base::StringPrintf(
         "Failed to open %s for writing the initialization failures.", option.c_str());
     init_failure_output_.reset();
-    return false;
-  }
-  return true;
-}
-
-bool CompilerOptions::ParseRegisterAllocationStrategy(const std::string& option,
-                                                      std::string* error_msg) {
-  if (option == "linear-scan") {
-    register_allocation_strategy_ = RegisterAllocator::Strategy::kRegisterAllocatorLinearScan;
-  } else if (option == "graph-color") {
-    register_allocation_strategy_ = RegisterAllocator::Strategy::kRegisterAllocatorGraphColor;
-  } else {
-    *error_msg = "Unrecognized register allocation strategy. Try linear-scan, or graph-color.";
     return false;
   }
   return true;

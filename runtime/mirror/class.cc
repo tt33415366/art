@@ -25,8 +25,8 @@
 #include "array-inl.h"
 #include "art_field-inl.h"
 #include "art_method-inl.h"
-#include "base/enums.h"
 #include "base/logging.h"  // For VLOG.
+#include "base/pointer_size.h"
 #include "base/sdk_version.h"
 #include "base/utils.h"
 #include "class-inl.h"
@@ -58,7 +58,7 @@
 #include "throwable.h"
 #include "well_known_classes.h"
 
-namespace art {
+namespace art HIDDEN {
 
 namespace mirror {
 
@@ -573,7 +573,7 @@ ArtMethod* Class::FindInterfaceMethod(ObjPtr<DexCache> dex_cache,
   // We always search by name and signature, ignoring the type index in the MethodId.
   const DexFile& dex_file = *dex_cache->GetDexFile();
   const dex::MethodId& method_id = dex_file.GetMethodId(dex_method_idx);
-  std::string_view name = dex_file.StringViewByIdx(method_id.name_idx_);
+  std::string_view name = dex_file.GetStringView(method_id.name_idx_);
   const Signature signature = dex_file.GetMethodSignature(method_id);
   return FindInterfaceMethod(name, signature, pointer_size);
 }
@@ -913,7 +913,7 @@ ArtMethod* Class::FindClassMethod(ObjPtr<DexCache> dex_cache,
   for (klass = this; klass != end_klass; klass = klass->GetSuperClass()) {
     ArraySlice<ArtMethod> copied_methods = klass->GetCopiedMethodsSlice(pointer_size);
     if (!copied_methods.empty() && name.empty()) {
-      name = dex_file.StringDataByIdx(method_id.name_idx_);
+      name = dex_file.GetMethodNameView(method_id);
     }
     for (ArtMethod& method : copied_methods) {
       if (method.GetNameView() == name && method.GetSignature() == signature) {
@@ -1043,9 +1043,9 @@ static std::tuple<bool, ArtField*> FindFieldByNameAndType(const DexFile& dex_fil
 
   // Fields are sorted by class, then name, then type descriptor. This is verified in dex file
   // verifier. There can be multiple fields with the same name in the same class due to proguard.
-  // Note: std::string_view::compare() uses lexicographical comparison and treats the `char` as
-  // unsigned; for Modified-UTF-8 without embedded nulls this is consistent with the
-  // CompareModifiedUtf8ToModifiedUtf8AsUtf16CodePointValues() ordering.
+  // Note: `std::string_view::compare()` uses lexicographical comparison and treats the `char`
+  // as unsigned; for Modified-UTF-8 without embedded nulls this is consistent with the
+  // `CompareModifiedUtf8ToModifiedUtf8AsUtf16CodePointValues()` ordering.
   auto get_field_id = [&](uint32_t mid) REQUIRES_SHARED(Locks::mutator_lock_) ALWAYS_INLINE
       -> const dex::FieldId& {
     ArtField& field = fields->At(mid);
@@ -1605,9 +1605,9 @@ void Class::PopulateEmbeddedVTable(PointerSize pointer_size) {
 
 class ReadBarrierOnNativeRootsVisitor {
  public:
-  void operator()(ObjPtr<Object> obj ATTRIBUTE_UNUSED,
-                  MemberOffset offset ATTRIBUTE_UNUSED,
-                  bool is_static ATTRIBUTE_UNUSED) const {}
+  void operator()([[maybe_unused]] ObjPtr<Object> obj,
+                  [[maybe_unused]] MemberOffset offset,
+                  [[maybe_unused]] bool is_static) const {}
 
   void VisitRootIfNonNull(CompressedReference<Object>* root) const
       REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -1644,7 +1644,7 @@ class CopyClassVisitor {
         copy_bytes_(copy_bytes), imt_(imt), pointer_size_(pointer_size) {
   }
 
-  void operator()(ObjPtr<Object> obj, size_t usable_size ATTRIBUTE_UNUSED) const
+  void operator()(ObjPtr<Object> obj, [[maybe_unused]] size_t usable_size) const
       REQUIRES_SHARED(Locks::mutator_lock_) {
     StackHandleScope<1> hs(self_);
     Handle<mirror::Class> h_new_class_obj(hs.NewHandle(obj->AsClass()));
@@ -2142,26 +2142,47 @@ bool Class::CheckIsVisibleWithTargetSdk(Thread* self) {
   return true;
 }
 
+ALWAYS_INLINE
+static bool IsInterfaceMethodAccessible(ArtMethod* interface_method)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  // If the interface method is part of the public SDK, return it.
+  if ((hiddenapi::GetRuntimeFlags(interface_method) & kAccPublicApi) != 0) {
+    hiddenapi::ApiList api_list(hiddenapi::detail::GetDexFlags(interface_method));
+    // The kAccPublicApi flag is also used as an optimization to avoid
+    // other hiddenapi checks to always go on the slow path. Therefore, we
+    // need to check here if the method is in the SDK list.
+    if (api_list.IsSdkApi()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 ArtMethod* Class::FindAccessibleInterfaceMethod(ArtMethod* implementation_method,
                                                 PointerSize pointer_size)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   ObjPtr<mirror::IfTable> iftable = GetIfTable();
-  for (int32_t i = 0, iftable_count = iftable->Count(); i < iftable_count; ++i) {
-    ObjPtr<mirror::PointerArray> methods = iftable->GetMethodArrayOrNull(i);
-    if (methods == nullptr) {
-      continue;
+  if (IsInterface()) {  // Interface class doesn't resolve methods into the iftable.
+    for (int32_t i = 0, iftable_count = iftable->Count(); i < iftable_count; ++i) {
+      ObjPtr<mirror::Class> iface = iftable->GetInterface(i);
+      for (ArtMethod& interface_method : iface->GetVirtualMethodsSlice(pointer_size)) {
+        if (implementation_method->HasSameNameAndSignature(&interface_method) &&
+            IsInterfaceMethodAccessible(&interface_method)) {
+          return &interface_method;
+        }
+      }
     }
-    for (size_t j = 0, count = iftable->GetMethodArrayCount(i); j < count; ++j) {
-      if (implementation_method == methods->GetElementPtrSize<ArtMethod*>(j, pointer_size)) {
-        ObjPtr<mirror::Class> iface = iftable->GetInterface(i);
-        ArtMethod* interface_method = &iface->GetVirtualMethodsSlice(pointer_size)[j];
-        // If the interface method is part of the public SDK, return it.
-        if ((hiddenapi::GetRuntimeFlags(interface_method) & kAccPublicApi) != 0) {
-          hiddenapi::ApiList api_list(hiddenapi::detail::GetDexFlags(interface_method));
-          // The kAccPublicApi flag is also used as an optimization to avoid
-          // other hiddenapi checks to always go on the slow path. Therefore, we
-          // need to check here if the method is in the SDK list.
-          if (api_list.IsSdkApi()) {
+  } else {
+    for (int32_t i = 0, iftable_count = iftable->Count(); i < iftable_count; ++i) {
+      ObjPtr<mirror::PointerArray> methods = iftable->GetMethodArrayOrNull(i);
+      if (methods == nullptr) {
+        continue;
+      }
+      for (size_t j = 0, count = iftable->GetMethodArrayCount(i); j < count; ++j) {
+        if (implementation_method == methods->GetElementPtrSize<ArtMethod*>(j, pointer_size)) {
+          ObjPtr<mirror::Class> iface = iftable->GetInterface(i);
+          ArtMethod* interface_method = &iface->GetVirtualMethodsSlice(pointer_size)[j];
+          if (IsInterfaceMethodAccessible(interface_method)) {
             return interface_method;
           }
         }

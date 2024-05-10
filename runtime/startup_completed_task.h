@@ -17,9 +17,10 @@
 #ifndef ART_RUNTIME_STARTUP_COMPLETED_TASK_H_
 #define ART_RUNTIME_STARTUP_COMPLETED_TASK_H_
 
+#include "base/macros.h"
 #include "gc/task_processor.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class Thread;
 
@@ -28,6 +29,8 @@ class StartupCompletedTask : public gc::HeapTask {
   explicit StartupCompletedTask(uint64_t target_run_time) : gc::HeapTask(target_run_time) {}
 
   void Run(Thread* self) override;
+  static void DeleteStartupDexCaches(Thread* self, bool called_by_gc)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 };
 
 }  // namespace art

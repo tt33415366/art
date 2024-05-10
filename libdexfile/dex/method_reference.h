@@ -21,6 +21,7 @@
 #include <string>
 #include "dex/dex_file.h"
 #include "dex/dex_file_reference.h"
+#include "dex/proto_reference.h"
 
 namespace art {
 
@@ -33,6 +34,9 @@ class MethodReference : public DexFileReference {
   }
   const dex::MethodId& GetMethodId() const {
     return dex_file->GetMethodId(index);
+  }
+  const art::ProtoReference GetProtoReference() const {
+    return ProtoReference(dex_file, GetMethodId().proto_idx_);
   }
 };
 
@@ -52,8 +56,11 @@ struct MethodReferenceValueComparator {
     // Compare the class descriptors first.
     const dex::MethodId& mid1 = mr1.GetMethodId();
     const dex::MethodId& mid2 = mr2.GetMethodId();
-    int descriptor_diff = strcmp(mr1.dex_file->StringByTypeIdx(mid1.class_idx_),
-                                 mr2.dex_file->StringByTypeIdx(mid2.class_idx_));
+    // Note: `std::string_view::compare()` uses lexicographical comparison and treats the `char`
+    // as unsigned; for Modified-UTF-8 without embedded nulls this is consistent with the
+    // `CompareModifiedUtf8ToModifiedUtf8AsUtf16CodePointValues()` ordering.
+    int descriptor_diff = mr1.dex_file->GetTypeDescriptorView(mid1.class_idx_).compare(
+                              mr2.dex_file->GetTypeDescriptorView(mid2.class_idx_));
     if (descriptor_diff != 0) {
       return descriptor_diff < 0;
     }
@@ -62,27 +69,8 @@ struct MethodReferenceValueComparator {
     if (name_diff != 0) {
       return name_diff < 0;
     }
-    // And then compare proto ids, starting with return type comparison.
-    const dex::ProtoId& prid1 = mr1.dex_file->GetProtoId(mid1.proto_idx_);
-    const dex::ProtoId& prid2 = mr2.dex_file->GetProtoId(mid2.proto_idx_);
-    int return_type_diff = strcmp(mr1.dex_file->StringByTypeIdx(prid1.return_type_idx_),
-                                  mr2.dex_file->StringByTypeIdx(prid2.return_type_idx_));
-    if (return_type_diff != 0) {
-      return return_type_diff < 0;
-    }
-    // And finishing with lexicographical parameter comparison.
-    const dex::TypeList* params1 = mr1.dex_file->GetProtoParameters(prid1);
-    size_t param1_size = (params1 != nullptr) ? params1->Size() : 0u;
-    const dex::TypeList* params2 = mr2.dex_file->GetProtoParameters(prid2);
-    size_t param2_size = (params2 != nullptr) ? params2->Size() : 0u;
-    for (size_t i = 0, num = std::min(param1_size, param2_size); i != num; ++i) {
-      int param_diff = strcmp(mr1.dex_file->StringByTypeIdx(params1->GetTypeItem(i).type_idx_),
-                              mr2.dex_file->StringByTypeIdx(params2->GetTypeItem(i).type_idx_));
-      if (param_diff != 0) {
-        return param_diff < 0;
-      }
-    }
-    return param1_size < param2_size;
+    // Then compare protos.
+    return ProtoReferenceValueComparator()(mr1.GetProtoReference(), mr2.GetProtoReference());
   }
 };
 

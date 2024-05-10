@@ -25,10 +25,10 @@
 
 namespace art {
 
-class MallocAllocator final : public Allocator {
+class CallocAllocator final : public Allocator {
  public:
-  MallocAllocator() {}
-  ~MallocAllocator() {}
+  CallocAllocator() {}
+  ~CallocAllocator() {}
 
   void* Alloc(size_t size) override {
     return calloc(sizeof(uint8_t), size);
@@ -39,22 +39,22 @@ class MallocAllocator final : public Allocator {
   }
 
  private:
-  DISALLOW_COPY_AND_ASSIGN(MallocAllocator);
+  DISALLOW_COPY_AND_ASSIGN(CallocAllocator);
 };
 
-MallocAllocator g_malloc_allocator;
+CallocAllocator g_malloc_allocator;
 
 class NoopAllocator final : public Allocator {
  public:
   NoopAllocator() {}
   ~NoopAllocator() {}
 
-  void* Alloc(size_t size ATTRIBUTE_UNUSED) override {
+  void* Alloc([[maybe_unused]] size_t size) override {
     LOG(FATAL) << "NoopAllocator::Alloc should not be called";
     UNREACHABLE();
   }
 
-  void Free(void* p ATTRIBUTE_UNUSED) override {
+  void Free([[maybe_unused]] void* p) override {
     // Noop.
   }
 
@@ -64,7 +64,7 @@ class NoopAllocator final : public Allocator {
 
 NoopAllocator g_noop_allocator;
 
-Allocator* Allocator::GetMallocAllocator() {
+Allocator* Allocator::GetCallocAllocator() {
   return &g_malloc_allocator;
 }
 

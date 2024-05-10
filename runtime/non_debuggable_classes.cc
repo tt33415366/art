@@ -22,8 +22,9 @@
 #include "nativehelper/scoped_local_ref.h"
 #include "obj_ptr-inl.h"
 #include "thread-current-inl.h"
+#include "thread-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 
 std::vector<jclass>  NonDebuggableClasses::non_debuggable_classes;
 

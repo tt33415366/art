@@ -16,6 +16,9 @@
 
 #include "code_sinking.h"
 
+#include <sstream>
+
+#include "android-base/logging.h"
 #include "base/arena_bit_vector.h"
 #include "base/array_ref.h"
 #include "base/bit_vector-inl.h"
@@ -29,11 +32,19 @@
 namespace art HIDDEN {
 
 bool CodeSinking::Run() {
-  HBasicBlock* exit = graph_->GetExitBlock();
-  if (exit == nullptr) {
+  if (graph_->GetExitBlock() == nullptr) {
     // Infinite loop, just bail.
     return false;
   }
+
+  UncommonBranchSinking();
+  ReturnSinking();
+  return true;
+}
+
+void CodeSinking::UncommonBranchSinking() {
+  HBasicBlock* exit = graph_->GetExitBlock();
+  DCHECK(exit != nullptr);
   // TODO(ngeoffray): we do not profile branches yet, so use throw instructions
   // as an indicator of an uncommon branch.
   for (HBasicBlock* exit_predecessor : exit->GetPredecessors()) {
@@ -60,7 +71,6 @@ bool CodeSinking::Run() {
       SinkCodeToUncommonBranch(exit_predecessor);
     }
   }
-  return true;
 }
 
 static bool IsInterestingInstruction(HInstruction* instruction) {
@@ -127,7 +137,6 @@ static bool IsInterestingInstruction(HInstruction* instruction) {
   // hard to test, as LSE removes them.
   if (instruction->IsStaticFieldGet() ||
       instruction->IsInstanceFieldGet() ||
-      instruction->IsPredicatedInstanceFieldGet() ||
       instruction->IsArrayGet()) {
     return false;
   }
@@ -324,14 +333,9 @@ void CodeSinking::SinkCodeToUncommonBranch(HBasicBlock* end_block) {
 
   size_t number_of_instructions = graph_->GetCurrentInstructionId();
   ScopedArenaVector<HInstruction*> worklist(allocator.Adapter(kArenaAllocMisc));
-  ArenaBitVector processed_instructions(&allocator, number_of_instructions, /* expandable= */ false);
-  processed_instructions.ClearAllBits();
-  ArenaBitVector post_dominated(&allocator, graph_->GetBlocks().size(), /* expandable= */ false);
-  post_dominated.ClearAllBits();
-  ArenaBitVector instructions_that_can_move(
+  ArenaBitVector processed_instructions(
       &allocator, number_of_instructions, /* expandable= */ false);
-  instructions_that_can_move.ClearAllBits();
-  ScopedArenaVector<HInstruction*> move_in_order(allocator.Adapter(kArenaAllocMisc));
+  ArenaBitVector post_dominated(&allocator, graph_->GetBlocks().size(), /* expandable= */ false);
 
   // Step (1): Visit post order to get a subset of blocks post dominated by `end_block`.
   // TODO(ngeoffray): Getting the full set of post-dominated should be done by
@@ -404,6 +408,12 @@ void CodeSinking::SinkCodeToUncommonBranch(HBasicBlock* end_block) {
   HBasicBlock* common_dominator = finder.Get();
 
   // Step (2): iterate over the worklist to find sinking candidates.
+  ArenaBitVector instructions_that_can_move(
+      &allocator, number_of_instructions, /* expandable= */ false);
+  ScopedArenaVector<ScopedArenaVector<HInstruction*>> instructions_to_move(
+      graph_->GetBlocks().size(),
+      ScopedArenaVector<HInstruction*>(allocator.Adapter(kArenaAllocMisc)),
+      allocator.Adapter(kArenaAllocMisc));
   while (!worklist.empty()) {
     HInstruction* instruction = worklist.back();
     if (processed_instructions.IsBitSet(instruction->GetId())) {
@@ -460,7 +470,7 @@ void CodeSinking::SinkCodeToUncommonBranch(HBasicBlock* end_block) {
       // Instruction is a candidate for being sunk. Mark it as such, remove it from the
       // work list, and add its inputs to the work list.
       instructions_that_can_move.SetBit(instruction->GetId());
-      move_in_order.push_back(instruction);
+      instructions_to_move[instruction->GetBlock()->GetBlockId()].push_back(instruction);
       processed_instructions.SetBit(instruction->GetId());
       worklist.pop_back();
       AddInputs(instruction, processed_instructions, post_dominated, &worklist);
@@ -486,14 +496,50 @@ void CodeSinking::SinkCodeToUncommonBranch(HBasicBlock* end_block) {
     }
   }
 
-  // Make sure we process instructions in dominated order. This is required for heap
-  // stores.
-  std::sort(move_in_order.begin(), move_in_order.end(), [](HInstruction* a, HInstruction* b) {
-    return b->StrictlyDominates(a);
-  });
+  // We want to process the instructions in reverse dominated order. This is required for heap
+  // stores. To guarantee this (including the transitivity of incomparability) we have some extra
+  // bookkeeping.
+  ScopedArenaVector<HInstruction*> instructions_to_move_sorted(allocator.Adapter(kArenaAllocMisc));
+  for (HBasicBlock* block : graph_->GetPostOrder()) {
+    const int block_id = block->GetBlockId();
+
+    // Order the block itself first.
+    std::sort(instructions_to_move[block_id].begin(),
+              instructions_to_move[block_id].end(),
+              [&block](HInstruction* a, HInstruction* b) {
+                return block->GetInstructions().FoundBefore(b, a);
+              });
+
+    for (HInstruction* instruction : instructions_to_move[block_id]) {
+      instructions_to_move_sorted.push_back(instruction);
+    }
+  }
+
+  if (kIsDebugBuild) {
+    // We should have ordered the instructions in reverse dominated order. This means that
+    // instructions shouldn't dominate instructions that come after it in the vector.
+    for (size_t i = 0; i < instructions_to_move_sorted.size(); ++i) {
+      for (size_t j = i + 1; j < instructions_to_move_sorted.size(); ++j) {
+        if (instructions_to_move_sorted[i]->StrictlyDominates(instructions_to_move_sorted[j])) {
+          std::stringstream ss;
+          graph_->Dump(ss, nullptr);
+          ss << "\n"
+             << "{";
+          for (HInstruction* instr : instructions_to_move_sorted) {
+            ss << *instr << " in block: " << instr->GetBlock() << ", ";
+          }
+          ss << "}\n";
+          ss << "i = " << i << " which is " << *instructions_to_move_sorted[i]
+             << "strictly dominates j = " << j << " which is " << *instructions_to_move_sorted[j]
+             << "\n";
+          LOG(FATAL) << "Unexpected ordering of code sinking instructions: " << ss.str();
+        }
+      }
+    }
+  }
 
   // Step (3): Try to move sinking candidates.
-  for (HInstruction* instruction : move_in_order) {
+  for (HInstruction* instruction : instructions_to_move_sorted) {
     HInstruction* position = nullptr;
     if (instruction->IsArraySet()
             || instruction->IsInstanceFieldSet()
@@ -529,6 +575,81 @@ void CodeSinking::SinkCodeToUncommonBranch(HBasicBlock* end_block) {
     MaybeRecordStat(stats_, MethodCompilationStat::kInstructionSunk);
     instruction->MoveBefore(position, /* do_checks= */ false);
   }
+}
+
+void CodeSinking::ReturnSinking() {
+  HBasicBlock* exit = graph_->GetExitBlock();
+  DCHECK(exit != nullptr);
+
+  int number_of_returns = 0;
+  bool saw_return = false;
+  for (HBasicBlock* pred : exit->GetPredecessors()) {
+    // TODO(solanes): We might have Return/ReturnVoid->TryBoundary->Exit. We can theoretically
+    // handle them and move them out of the TryBoundary. However, it is a border case and it adds
+    // codebase complexity.
+    if (pred->GetLastInstruction()->IsReturn() || pred->GetLastInstruction()->IsReturnVoid()) {
+      saw_return |= pred->GetLastInstruction()->IsReturn();
+      ++number_of_returns;
+    }
+  }
+
+  if (number_of_returns < 2) {
+    // Nothing to do.
+    return;
+  }
+
+  // `new_block` will coalesce the Return instructions into Phi+Return, or the ReturnVoid
+  // instructions into a ReturnVoid.
+  HBasicBlock* new_block = new (graph_->GetAllocator()) HBasicBlock(graph_, exit->GetDexPc());
+  if (saw_return) {
+    HPhi* new_phi = nullptr;
+    for (size_t i = 0; i < exit->GetPredecessors().size(); /*++i in loop*/) {
+      HBasicBlock* pred = exit->GetPredecessors()[i];
+      if (!pred->GetLastInstruction()->IsReturn()) {
+        ++i;
+        continue;
+      }
+
+      HReturn* ret = pred->GetLastInstruction()->AsReturn();
+      if (new_phi == nullptr) {
+        // Create the new_phi, if we haven't done so yet. We do it here since we need to know the
+        // type to assign to it.
+        new_phi = new (graph_->GetAllocator()) HPhi(graph_->GetAllocator(),
+                                                    kNoRegNumber,
+                                                    /*number_of_inputs=*/0,
+                                                    ret->InputAt(0)->GetType());
+        new_block->AddPhi(new_phi);
+      }
+      new_phi->AddInput(ret->InputAt(0));
+      pred->ReplaceAndRemoveInstructionWith(ret,
+                                            new (graph_->GetAllocator()) HGoto(ret->GetDexPc()));
+      pred->ReplaceSuccessor(exit, new_block);
+      // Since we are removing a predecessor, there's no need to increment `i`.
+    }
+    new_block->AddInstruction(new (graph_->GetAllocator()) HReturn(new_phi, exit->GetDexPc()));
+  } else {
+    for (size_t i = 0; i < exit->GetPredecessors().size(); /*++i in loop*/) {
+      HBasicBlock* pred = exit->GetPredecessors()[i];
+      if (!pred->GetLastInstruction()->IsReturnVoid()) {
+        ++i;
+        continue;
+      }
+
+      HReturnVoid* ret = pred->GetLastInstruction()->AsReturnVoid();
+      pred->ReplaceAndRemoveInstructionWith(ret,
+                                            new (graph_->GetAllocator()) HGoto(ret->GetDexPc()));
+      pred->ReplaceSuccessor(exit, new_block);
+      // Since we are removing a predecessor, there's no need to increment `i`.
+    }
+    new_block->AddInstruction(new (graph_->GetAllocator()) HReturnVoid(exit->GetDexPc()));
+  }
+
+  new_block->AddSuccessor(exit);
+  graph_->AddBlock(new_block);
+
+  // Recompute dominance since we added a new block.
+  graph_->ClearDominanceInformation();
+  graph_->ComputeDominanceInformation();
 }
 
 }  // namespace art

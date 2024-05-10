@@ -19,7 +19,8 @@
 
 #include "base/atomic.h"
 #include "base/casts.h"
-#include "base/enums.h"
+#include "base/macros.h"
+#include "base/pointer_size.h"
 #include "dex/primitive.h"
 #include "obj_ptr.h"
 #include "object_reference.h"
@@ -29,7 +30,7 @@
 #include "runtime_globals.h"
 #include "verify_object.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class ArtField;
 class ArtMethod;
@@ -74,7 +75,7 @@ static constexpr bool kCheckFieldAssignments = false;
 static constexpr uint32_t kObjectHeaderSize = 8;
 
 // C++ mirror of java.lang.Object
-class MANAGED LOCKABLE Object {
+class EXPORT MANAGED LOCKABLE Object {
  public:
   MIRROR_CLASS("Ljava/lang/Object;");
 
@@ -111,8 +112,9 @@ class MANAGED LOCKABLE Object {
 
   ALWAYS_INLINE void SetReadBarrierState(uint32_t rb_state) REQUIRES_SHARED(Locks::mutator_lock_);
 
-  template<std::memory_order kMemoryOrder = std::memory_order_relaxed>
-  ALWAYS_INLINE bool AtomicSetReadBarrierState(uint32_t expected_rb_state, uint32_t rb_state)
+  ALWAYS_INLINE bool AtomicSetReadBarrierState(uint32_t expected_rb_state,
+                                               uint32_t rb_state,
+                                               std::memory_order order = std::memory_order_relaxed)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   ALWAYS_INLINE uint32_t GetMarkBit() REQUIRES_SHARED(Locks::mutator_lock_);
@@ -137,10 +139,15 @@ class MANAGED LOCKABLE Object {
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Roles::uninterruptible_);
 
+  // Returns a nonzero value that fits into lockword slot.
   int32_t IdentityHashCode()
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::thread_list_lock_,
                !Locks::thread_suspend_count_lock_);
+
+  // Identical to the above, but returns 0 if monitor inflation would otherwise be needed.
+  int32_t IdentityHashCodeNoInflation() REQUIRES_SHARED(Locks::mutator_lock_)
+      REQUIRES(!Locks::thread_list_lock_, !Locks::thread_suspend_count_lock_);
 
   static constexpr MemberOffset MonitorOffset() {
     return OFFSET_OF_OBJECT_MEMBER(Object, monitor_);
@@ -675,6 +682,13 @@ class MANAGED LOCKABLE Object {
   std::string PrettyTypeOf()
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+  // A utility function that does a raw copy of `src`'s data into the buffer `dst_bytes`.
+  // Skips the object header.
+  static void CopyRawObjectData(uint8_t* dst_bytes,
+                                ObjPtr<mirror::Object> src,
+                                size_t num_bytes)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
  protected:
   // Accessors for non-Java type fields
   template<class T, VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags, bool kIsVolatile = false>
@@ -719,6 +733,10 @@ class MANAGED LOCKABLE Object {
       REQUIRES_SHARED(Locks::mutator_lock_);
 
  private:
+  template <bool kAllowInflation>
+  int32_t IdentityHashCodeHelper() REQUIRES_SHARED(Locks::mutator_lock_)
+      REQUIRES(!Locks::thread_list_lock_, !Locks::thread_suspend_count_lock_);
+
   // Get a field with acquire semantics.
   template<typename kSize>
   ALWAYS_INLINE kSize GetFieldAcquire(MemberOffset field_offset)

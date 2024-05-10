@@ -18,8 +18,8 @@
 #define ART_COMPILER_OPTIMIZING_CODE_GENERATOR_X86_H_
 
 #include "arch/x86/instruction_set_features_x86.h"
-#include "base/enums.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "code_generator.h"
 #include "dex/dex_file_types.h"
 #include "driver/compiler_options.h"
@@ -47,6 +47,50 @@ static constexpr size_t kRuntimeParameterCoreRegistersLength =
 static constexpr XmmRegister kRuntimeParameterFpuRegisters[] = { XMM0, XMM1, XMM2, XMM3 };
 static constexpr size_t kRuntimeParameterFpuRegistersLength =
     arraysize(kRuntimeParameterFpuRegisters);
+
+#define UNIMPLEMENTED_INTRINSIC_LIST_X86(V) \
+  V(MathRoundDouble)                        \
+  V(FloatIsInfinite)                        \
+  V(DoubleIsInfinite)                       \
+  V(IntegerHighestOneBit)                   \
+  V(LongHighestOneBit)                      \
+  V(LongDivideUnsigned)                     \
+  V(CRC32Update)                            \
+  V(CRC32UpdateBytes)                       \
+  V(CRC32UpdateByteBuffer)                  \
+  V(FP16ToFloat)                            \
+  V(FP16ToHalf)                             \
+  V(FP16Floor)                              \
+  V(FP16Ceil)                               \
+  V(FP16Rint)                               \
+  V(FP16Greater)                            \
+  V(FP16GreaterEquals)                      \
+  V(FP16Less)                               \
+  V(FP16LessEquals)                         \
+  V(FP16Compare)                            \
+  V(FP16Min)                                \
+  V(FP16Max)                                \
+  V(MathMultiplyHigh)                       \
+  V(StringStringIndexOf)                    \
+  V(StringStringIndexOfAfter)               \
+  V(StringBufferAppend)                     \
+  V(StringBufferLength)                     \
+  V(StringBufferToString)                   \
+  V(StringBuilderAppendObject)              \
+  V(StringBuilderAppendString)              \
+  V(StringBuilderAppendCharSequence)        \
+  V(StringBuilderAppendCharArray)           \
+  V(StringBuilderAppendBoolean)             \
+  V(StringBuilderAppendChar)                \
+  V(StringBuilderAppendInt)                 \
+  V(StringBuilderAppendLong)                \
+  V(StringBuilderAppendFloat)               \
+  V(StringBuilderAppendDouble)              \
+  V(StringBuilderLength)                    \
+  V(StringBuilderToString)                  \
+  /* 1.8 */                                 \
+  V(MethodHandleInvokeExact)                \
+  V(MethodHandleInvoke)
 
 class InvokeRuntimeCallingConvention : public CallingConvention<Register, XmmRegister> {
  public:
@@ -141,7 +185,7 @@ class FieldAccessCallingConventionX86 : public FieldAccessCallingConvention {
             ? Location::RegisterLocation(EDX)
             : Location::RegisterLocation(ECX));
   }
-  Location GetFpuLocation(DataType::Type type ATTRIBUTE_UNUSED) const override {
+  Location GetFpuLocation([[maybe_unused]] DataType::Type type) const override {
     return Location::FpuRegisterLocation(XMM0);
   }
 
@@ -495,6 +539,7 @@ class CodeGeneratorX86 : public CodeGenerator {
   void RecordBootImageMethodPatch(HInvoke* invoke);
   void RecordMethodBssEntryPatch(HInvoke* invoke);
   void RecordBootImageTypePatch(HLoadClass* load_class);
+  void RecordAppImageTypePatch(HLoadClass* load_class);
   Label* NewTypeBssEntryPatch(HLoadClass* load_class);
   void RecordBootImageStringPatch(HLoadString* load_string);
   Label* NewStringBssEntryPatch(HLoadString* load_string);
@@ -523,9 +568,19 @@ class CodeGeneratorX86 : public CodeGenerator {
                        uint64_t index_in_table) const;
   void EmitJitRootPatches(uint8_t* code, const uint8_t* roots_data) override;
 
-  // Emit a write barrier.
-  void MarkGCCard(
+  // Emit a write barrier if:
+  // A) emit_null_check is false
+  // B) emit_null_check is true, and value is not null.
+  void MaybeMarkGCCard(
       Register temp, Register card, Register object, Register value, bool emit_null_check);
+
+  // Emit a write barrier unconditionally.
+  void MarkGCCard(Register temp, Register card, Register object);
+
+  // Crash if the card table is not valid. This check is only emitted for the CC GC. We assert
+  // `(!clean || !self->is_gc_marking)`, since the card table should not be set to clean when the CC
+  // GC is marking for eliminated write barriers.
+  void CheckGCCardIsValid(Register temp, Register card, Register object);
 
   void GenerateMemoryBarrier(MemBarrierKind kind);
 
@@ -580,7 +635,7 @@ class CodeGeneratorX86 : public CodeGenerator {
 
   Address LiteralCaseTable(HX86PackedSwitch* switch_instr, Register reg, Register value);
 
-  void Finalize(CodeAllocator* allocator) override;
+  void Finalize() override;
 
   // Fast path implementation of ReadBarrier::Barrier for a heap
   // reference field load when Baker's read barriers are used.
@@ -684,7 +739,7 @@ class CodeGeneratorX86 : public CodeGenerator {
   void GenerateExplicitNullCheck(HNullCheck* instruction) override;
 
   void MaybeGenerateInlineCacheCheck(HInstruction* instruction, Register klass);
-  void MaybeIncrementHotness(bool is_frame_entry);
+  void MaybeIncrementHotness(HSuspendCheck* suspend_check, bool is_frame_entry);
 
   // When we don't know the proper offset for the value, we use kPlaceholder32BitOffset.
   // The correct value will be inserted when processing Assembler fixups.
@@ -721,6 +776,8 @@ class CodeGeneratorX86 : public CodeGenerator {
   ArenaDeque<X86PcRelativePatchInfo> method_bss_entry_patches_;
   // PC-relative type patch info for kBootImageLinkTimePcRelative.
   ArenaDeque<X86PcRelativePatchInfo> boot_image_type_patches_;
+  // PC-relative type patch info for kAppImageRelRo.
+  ArenaDeque<X86PcRelativePatchInfo> app_image_type_patches_;
   // PC-relative type patch info for kBssEntry.
   ArenaDeque<X86PcRelativePatchInfo> type_bss_entry_patches_;
   // PC-relative public type patch info for kBssEntryPublic.

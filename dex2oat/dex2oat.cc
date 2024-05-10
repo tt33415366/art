@@ -45,7 +45,6 @@
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
 #include "android-base/unique_fd.h"
-#include "aot_class_linker.h"
 #include "arch/instruction_set_features.h"
 #include "art_method-inl.h"
 #include "base/callee_save_type.h"
@@ -83,7 +82,6 @@
 #include "driver/compiler_driver.h"
 #include "driver/compiler_options.h"
 #include "driver/compiler_options_map-inl.h"
-#include "elf_file.h"
 #include "gc/space/image_space.h"
 #include "gc/space/space-inl.h"
 #include "gc/verification.h"
@@ -98,9 +96,11 @@
 #include "mirror/class_loader.h"
 #include "mirror/object-inl.h"
 #include "mirror/object_array-inl.h"
-#include "oat.h"
-#include "oat_file.h"
-#include "oat_file_assistant.h"
+#include "oat/aot_class_linker.h"
+#include "oat/elf_file.h"
+#include "oat/oat.h"
+#include "oat/oat_file.h"
+#include "oat/oat_file_assistant.h"
 #include "palette/palette.h"
 #include "profile/profile_compilation_info.h"
 #include "runtime.h"
@@ -510,9 +510,7 @@ class OatKeyValueStore : public SafeMap<std::string, std::string> {
 class Dex2Oat final {
  public:
   explicit Dex2Oat(TimingLogger* timings)
-      : compiler_kind_(Compiler::kOptimizing),
-        // Take the default set of instruction features from the build.
-        key_value_store_(nullptr),
+      : key_value_store_(nullptr),
         verification_results_(nullptr),
         runtime_(nullptr),
         thread_count_(sysconf(_SC_NPROCESSORS_CONF)),
@@ -641,6 +639,9 @@ class Dex2Oat final {
   void ProcessOptions(ParserOptions* parser_options) {
     compiler_options_->compiler_type_ = CompilerOptions::CompilerType::kAotCompiler;
     compiler_options_->compile_pic_ = true;  // All AOT compilation is PIC.
+
+    // TODO: This should be a command line option for cross-compilation. b/289805127
+    compiler_options_->emit_read_barrier_ = gUseReadBarrier;
 
     if (android_root_.empty()) {
       const char* android_root_env_var = getenv("ANDROID_ROOT");
@@ -788,9 +789,12 @@ class Dex2Oat final {
       compiler_options_->multi_image_ = IsBootImage() || IsBootImageExtension();
     }
     // On target we support generating a single image for the primary boot image.
-    if (!kIsTargetBuild) {
+    if (!kIsTargetBuild && !force_allow_oj_inlines_) {
       if (IsBootImage() && !compiler_options_->multi_image_) {
-        Usage("--single-image specified for primary boot image on host");
+        Usage(
+            "--single-image specified for primary boot image on host. Please "
+            "use the flag --force-allow-oj-inlines and do not distribute "
+            "binaries.");
       }
     }
     if (IsAppImage() && compiler_options_->multi_image_) {
@@ -857,6 +861,7 @@ class Dex2Oat final {
         FALLTHROUGH_INTENDED;
       case InstructionSet::kArm:
       case InstructionSet::kThumb2:
+      case InstructionSet::kRiscv64:
       case InstructionSet::kX86:
       case InstructionSet::kX86_64:
         compiler_options_->implicit_null_checks_ = true;
@@ -969,7 +974,7 @@ class Dex2Oat final {
                           compiler_options_->GetNativeDebuggable());
     key_value_store_->Put(OatHeader::kCompilerFilter,
                           CompilerFilter::NameOfFilter(compiler_options_->GetCompilerFilter()));
-    key_value_store_->Put(OatHeader::kConcurrentCopying, gUseReadBarrier);
+    key_value_store_->Put(OatHeader::kConcurrentCopying, compiler_options_->EmitReadBarrier());
     if (invocation_file_.get() != -1) {
       std::ostringstream oss;
       for (int i = 0; i < argc; ++i) {
@@ -1041,13 +1046,7 @@ class Dex2Oat final {
     original_argv = argv;
 
     Locks::Init();
-
-    // Microdroid doesn't support logd logging, so don't override there.
-    if (android::base::GetProperty("ro.hardware", "") == "microdroid") {
-      android::base::SetAborter(Runtime::Abort);
-    } else {
-      InitLogging(argv, Runtime::Abort);
-    }
+    InitLogging(argv, Runtime::Abort);
 
     compiler_options_.reset(new CompilerOptions());
 
@@ -1113,21 +1112,10 @@ class Dex2Oat final {
     AssignIfExists(args, M::PublicSdk, &public_sdk_);
     AssignIfExists(args, M::ApexVersions, &apex_versions_argument_);
 
-    // Check for phenotype flag to override compact_dex_level_, if it isn't "none" already.
-    // TODO(b/256664509): Clean this up.
     if (compact_dex_level_ != CompactDexLevel::kCompactDexLevelNone) {
-      std::string ph_disable_compact_dex =
-          android::base::GetProperty(kPhDisableCompactDex, "false");
-      if (ph_disable_compact_dex == "true") {
-        LOG(WARNING)
-            << "Overriding --compact-dex-level due to "
-               "persist.device_config.runtime_native_boot.disable_compact_dex set to `true`";
-        compact_dex_level_ = CompactDexLevel::kCompactDexLevelNone;
-      }
+      LOG(WARNING) << "Obsolete flag --compact-dex-level ignored";
+      compact_dex_level_ = CompactDexLevel::kCompactDexLevelNone;
     }
-
-    AssignIfExists(args, M::Backend, &compiler_kind_);
-    parser_options->requested_specific_compiler = args.Exists(M::Backend);
 
     AssignIfExists(args, M::TargetInstructionSet, &compiler_options_->instruction_set_);
     // arm actually means thumb2.
@@ -1431,24 +1419,36 @@ class Dex2Oat final {
     }
   }
 
-  void LoadClassProfileDescriptors() {
+  void LoadImageClassDescriptors() {
     if (!IsImage()) {
       return;
     }
+    HashSet<std::string> image_classes;
     if (DoProfileGuidedOptimizations()) {
       // TODO: The following comment looks outdated or misplaced.
       // Filter out class path classes since we don't want to include these in the image.
-      HashSet<std::string> image_classes = profile_compilation_info_->GetClassDescriptors(
+      image_classes = profile_compilation_info_->GetClassDescriptors(
           compiler_options_->dex_files_for_oat_file_);
       VLOG(compiler) << "Loaded " << image_classes.size()
                      << " image class descriptors from profile";
-      if (VLOG_IS_ON(compiler)) {
-        for (const std::string& s : image_classes) {
-          LOG(INFO) << "Image class " << s;
+    } else if (compiler_options_->IsBootImage() || compiler_options_->IsBootImageExtension()) {
+      // If we are compiling a boot image but no profile is provided, include all classes in the
+      // image. This is to match pre-boot image extension work where we would load all boot image
+      // extension classes at startup.
+      for (const DexFile* dex_file : compiler_options_->dex_files_for_oat_file_) {
+        for (uint32_t i = 0; i < dex_file->NumClassDefs(); i++) {
+          const dex::ClassDef& class_def = dex_file->GetClassDef(i);
+          const char* descriptor = dex_file->GetClassDescriptor(class_def);
+          image_classes.insert(descriptor);
         }
       }
-      compiler_options_->image_classes_.swap(image_classes);
     }
+    if (VLOG_IS_ON(compiler)) {
+      for (const std::string& s : image_classes) {
+        LOG(INFO) << "Image class " << s;
+      }
+    }
+    compiler_options_->image_classes_ = std::move(image_classes);
   }
 
   // Set up the environment for compilation. Includes starting the runtime and loading/opening the
@@ -1576,10 +1576,10 @@ class Dex2Oat final {
           LOG(ERROR) << "Missing dex file for boot class component " << bcp_location;
           return dex2oat::ReturnCode::kOther;
         }
-        CHECK(!DexFileLoader::IsMultiDexLocation(bcp_dex_files[bcp_df_pos]->GetLocation().c_str()));
+        CHECK(!DexFileLoader::IsMultiDexLocation(bcp_dex_files[bcp_df_pos]->GetLocation()));
         ++bcp_df_pos;
         while (bcp_df_pos != bcp_df_end &&
-            DexFileLoader::IsMultiDexLocation(bcp_dex_files[bcp_df_pos]->GetLocation().c_str())) {
+            DexFileLoader::IsMultiDexLocation(bcp_dex_files[bcp_df_pos]->GetLocation())) {
           ++bcp_df_pos;
         }
       }
@@ -1737,9 +1737,8 @@ class Dex2Oat final {
     }
 
     // Setup VerifierDeps for compilation and report if we fail to parse the data.
-    // When we do profile guided optimizations, the compiler currently needs to run
-    // full verification.
-    if (!DoProfileGuidedOptimizations() && input_vdex_file_ != nullptr) {
+    if (input_vdex_file_ != nullptr) {
+      TimingLogger::ScopedTiming t_dex("Parse Verifier Deps", timings_);
       std::unique_ptr<verifier::VerifierDeps> verifier_deps(
           new verifier::VerifierDeps(dex_files, /*output_only=*/ false));
       if (!verifier_deps->ParseStoredData(dex_files, input_vdex_file_->GetVerifierDepsData())) {
@@ -1825,7 +1824,7 @@ class Dex2Oat final {
     // 2. not verifying a vdex file, and
     // 3. using multidex, and
     // 4. not doing any AOT compilation.
-    // This means extract, no-vdex verify, and quicken, will use the individual compilation
+    // This means no-vdex verify will use the individual compilation
     // mode (to reduce RAM used by the compiler).
     return compile_individually_ &&
            (!IsImage() && !use_existing_vdex_ &&
@@ -1891,7 +1890,7 @@ class Dex2Oat final {
               }
             }
 
-            if (android::base::StartsWith(dex_location, filter.c_str())) {
+            if (android::base::StartsWith(dex_location, filter)) {
               VLOG(compiler) << "Disabling inlining from " << dex_file->GetLocation();
               no_inline_from_dex_files.push_back(dex_file);
               break;
@@ -1907,7 +1906,6 @@ class Dex2Oat final {
 
     driver_.reset(new CompilerDriver(compiler_options_.get(),
                                      verification_results_.get(),
-                                     compiler_kind_,
                                      thread_count_,
                                      swap_fd_));
 
@@ -1919,9 +1917,7 @@ class Dex2Oat final {
 
     const bool compile_individually = ShouldCompileDexFilesIndividually();
     if (compile_individually) {
-      // Set the compiler driver in the callbacks so that we can avoid re-verification. This not
-      // only helps performance but also prevents reverifying quickened bytecodes. Attempting
-      // verify quickened bytecode causes verification failures.
+      // Set the compiler driver in the callbacks so that we can avoid re-verification.
       // Only set the compiler filter if we are doing separate compilation since there is a bit
       // of overhead when checking if a class was previously verified.
       callbacks_->SetDoesClassUnloading(true, driver_.get());
@@ -1969,6 +1965,9 @@ class Dex2Oat final {
           UNREACHABLE();
         }
       }
+    }
+    if (IsAppImage()) {
+      AotClassLinker::SetAppImageDexFiles(&compiler_options_->GetDexFilesForOatFile());
     }
 
     // Register dex caches and key them to the class loader so that they only unload when the
@@ -2130,7 +2129,8 @@ class Dex2Oat final {
         oat_writer->PrepareLayout(&patcher);
         elf_writer->PrepareDynamicSection(oat_writer->GetOatHeader().GetExecutableOffset(),
                                           oat_writer->GetCodeSize(),
-                                          oat_writer->GetDataBimgRelRoSize(),
+                                          oat_writer->GetDataImgRelRoSize(),
+                                          oat_writer->GetDataImgRelRoAppImageOffset(),
                                           oat_writer->GetBssSize(),
                                           oat_writer->GetBssMethodsOffset(),
                                           oat_writer->GetBssRootsOffset(),
@@ -2172,14 +2172,14 @@ class Dex2Oat final {
         }
         elf_writer->EndText(text);
 
-        if (oat_writer->GetDataBimgRelRoSize() != 0u) {
-          OutputStream* data_bimg_rel_ro = elf_writer->StartDataBimgRelRo();
-          if (!oat_writer->WriteDataBimgRelRo(data_bimg_rel_ro)) {
-            LOG(ERROR) << "Failed to write .data.bimg.rel.ro section to the ELF file "
+        if (oat_writer->GetDataImgRelRoSize() != 0u) {
+          OutputStream* data_img_rel_ro = elf_writer->StartDataImgRelRo();
+          if (!oat_writer->WriteDataImgRelRo(data_img_rel_ro)) {
+            LOG(ERROR) << "Failed to write .data.img.rel.ro section to the ELF file "
                 << oat_file->GetPath();
             return false;
           }
-          elf_writer->EndDataBimgRelRo(data_bimg_rel_ro);
+          elf_writer->EndDataImgRelRo(data_img_rel_ro);
         }
 
         if (!oat_writer->WriteHeader(elf_writer->GetStream())) {
@@ -2541,9 +2541,8 @@ class Dex2Oat final {
 
   bool PrepareDirtyObjects() {
     if (dirty_image_objects_fd_ != -1) {
-      dirty_image_objects_ = ReadCommentedInputFromFd<HashSet<std::string>>(
-          dirty_image_objects_fd_,
-          nullptr);
+      dirty_image_objects_ =
+          ReadCommentedInputFromFd<std::vector<std::string>>(dirty_image_objects_fd_, nullptr);
       // Close since we won't need it again.
       close(dirty_image_objects_fd_);
       dirty_image_objects_fd_ = -1;
@@ -2552,9 +2551,8 @@ class Dex2Oat final {
         return false;
       }
     } else if (dirty_image_objects_filename_ != nullptr) {
-      dirty_image_objects_ = ReadCommentedInputFromFile<HashSet<std::string>>(
-          dirty_image_objects_filename_,
-          nullptr);
+      dirty_image_objects_ = ReadCommentedInputFromFile<std::vector<std::string>>(
+          dirty_image_objects_filename_, nullptr);
       if (dirty_image_objects_ == nullptr) {
         LOG(ERROR) << "Failed to create list of dirty objects from '"
             << dirty_image_objects_filename_ << "'";
@@ -2909,7 +2907,6 @@ class Dex2Oat final {
   }
 
   std::unique_ptr<CompilerOptions> compiler_options_;
-  Compiler::Kind compiler_kind_;
 
   std::unique_ptr<OatKeyValueStore> key_value_store_;
 
@@ -2964,13 +2961,15 @@ class Dex2Oat final {
   const char* passes_to_run_filename_;
   const char* dirty_image_objects_filename_;
   int dirty_image_objects_fd_;
-  std::unique_ptr<HashSet<std::string>> dirty_image_objects_;
+  std::unique_ptr<std::vector<std::string>> dirty_image_objects_;
   std::unique_ptr<std::vector<std::string>> passes_to_run_;
   bool is_host_;
   std::string android_root_;
   std::string no_inline_from_string_;
   bool force_allow_oj_inlines_ = false;
-  CompactDexLevel compact_dex_level_ = kDefaultCompactDexLevel;
+
+  // TODO(b/256664509): Clean this up.
+  CompactDexLevel compact_dex_level_ = CompactDexLevel::kCompactDexLevelNone;
 
   std::vector<std::unique_ptr<linker::ElfWriter>> elf_writers_;
   std::vector<std::unique_ptr<linker::OatWriter>> oat_writers_;
@@ -3078,7 +3077,7 @@ class ScopedGlobalRef {
 
 static dex2oat::ReturnCode DoCompilation(Dex2Oat& dex2oat) REQUIRES(!Locks::mutator_lock_) {
   Locks::mutator_lock_->AssertNotHeld(Thread::Current());
-  dex2oat.LoadClassProfileDescriptors();
+  dex2oat.LoadImageClassDescriptors();
   jobject class_loader = dex2oat.Compile();
   // Keep the class loader that was used for compilation live for the rest of the compilation
   // process.

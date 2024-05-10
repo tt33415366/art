@@ -24,7 +24,7 @@
 
 #include "art_field-inl.h"
 #include "art_method-inl.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "class_linker-inl.h"
 #include "class_root-inl.h"
 #include "common_runtime_test.h"
@@ -59,7 +59,7 @@
 #include "scoped_thread_state_change-inl.h"
 #include "thread-current-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class ClassLinkerTest : public CommonRuntimeTest {
  protected:
@@ -443,7 +443,7 @@ class ClassLinkerTest : public CommonRuntimeTest {
 
   class TestRootVisitor : public SingleRootVisitor {
    public:
-    void VisitRoot(mirror::Object* root, const RootInfo& info ATTRIBUTE_UNUSED) override {
+    void VisitRoot(mirror::Object* root, [[maybe_unused]] const RootInfo& info) override {
       EXPECT_TRUE(root != nullptr);
     }
   };
@@ -668,6 +668,7 @@ struct ClassLoaderOffsets : public CheckOffsets<mirror::ClassLoader> {
   ClassLoaderOffsets() : CheckOffsets<mirror::ClassLoader>(false, "Ljava/lang/ClassLoader;") {
     addOffset(OFFSETOF_MEMBER(mirror::ClassLoader, allocator_), "allocator");
     addOffset(OFFSETOF_MEMBER(mirror::ClassLoader, class_table_), "classTable");
+    addOffset(OFFSETOF_MEMBER(mirror::ClassLoader, name_), "name");
     addOffset(OFFSETOF_MEMBER(mirror::ClassLoader, packages_), "packages");
     addOffset(OFFSETOF_MEMBER(mirror::ClassLoader, parent_), "parent");
     addOffset(OFFSETOF_MEMBER(mirror::ClassLoader, proxyCache_), "proxyCache");
@@ -1543,12 +1544,10 @@ TEST_F(ClassLinkerTest, RegisterDexFileName) {
                                                                               data)));
   const DexFile* old_dex_file = dex_cache->GetDexFile();
 
-  std::unique_ptr<DexFile> dex_file(new StandardDexFile(old_dex_file->Begin(),
-                                                        old_dex_file->Size(),
-                                                        location->ToModifiedUtf8(),
-                                                        0u,
-                                                        nullptr,
-                                                        nullptr));
+  auto container =
+      std::make_shared<MemoryDexFileContainer>(old_dex_file->Begin(), old_dex_file->Size());
+  std::unique_ptr<DexFile> dex_file(new StandardDexFile(
+      old_dex_file->Begin(), location->ToModifiedUtf8(), 0u, nullptr, std::move(container)));
   // Make a copy of the dex cache with changed name.
   dex_cache.Assign(class_linker->AllocAndInitializeDexCache(Thread::Current(),
                                                             *dex_file,

@@ -57,12 +57,12 @@ LocationSummary::LocationSummary(HInstruction* instruction,
 
 Location Location::RegisterOrConstant(HInstruction* instruction) {
   return instruction->IsConstant()
-      ? Location::ConstantLocation(instruction->AsConstant())
+      ? Location::ConstantLocation(instruction)
       : Location::RequiresRegister();
 }
 
 Location Location::RegisterOrInt32Constant(HInstruction* instruction) {
-  HConstant* constant = instruction->AsConstant();
+  HConstant* constant = instruction->AsConstantOrNull();
   if (constant != nullptr) {
     int64_t value = CodeGenerator::GetInt64ValueOf(constant);
     if (IsInt<32>(value)) {
@@ -73,7 +73,7 @@ Location Location::RegisterOrInt32Constant(HInstruction* instruction) {
 }
 
 Location Location::FpuRegisterOrInt32Constant(HInstruction* instruction) {
-  HConstant* constant = instruction->AsConstant();
+  HConstant* constant = instruction->AsConstantOrNull();
   if (constant != nullptr) {
     int64_t value = CodeGenerator::GetInt64ValueOf(constant);
     if (IsInt<32>(value)) {
@@ -85,14 +85,21 @@ Location Location::FpuRegisterOrInt32Constant(HInstruction* instruction) {
 
 Location Location::ByteRegisterOrConstant(int reg, HInstruction* instruction) {
   return instruction->IsConstant()
-      ? Location::ConstantLocation(instruction->AsConstant())
+      ? Location::ConstantLocation(instruction)
       : Location::RegisterLocation(reg);
 }
 
 Location Location::FpuRegisterOrConstant(HInstruction* instruction) {
   return instruction->IsConstant()
-      ? Location::ConstantLocation(instruction->AsConstant())
+      ? Location::ConstantLocation(instruction)
       : Location::RequiresFpuRegister();
+}
+
+void Location::DCheckInstructionIsConstant(HInstruction* instruction) {
+  DCHECK(instruction != nullptr);
+  DCHECK(instruction->IsConstant());
+  DCHECK_EQ(reinterpret_cast<uintptr_t>(instruction),
+            reinterpret_cast<uintptr_t>(instruction->AsConstant()));
 }
 
 std::ostream& operator<<(std::ostream& os, const Location& location) {

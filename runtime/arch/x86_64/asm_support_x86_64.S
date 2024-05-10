@@ -170,12 +170,7 @@ END_MACRO
 
     /* Cache alignment for function entry */
 MACRO0(ALIGN_FUNCTION_ENTRY)
-    // ART-compiled functions have OatQuickMethodHeader but assembly funtions do not.
-    // Prefix the assembly code with 0xFFs, which means there is no method header.
-    .byte 0xFF, 0xFF, 0xFF, 0xFF
-    // Cache alignment for function entry.
-    // Use 0xFF as the last 4 bytes of alignment stand for OatQuickMethodHeader.
-    .balign 16, 0xFF
+    .balign 16
 END_MACRO
 
 // TODO: we might need to use SYMBOL() here to add the underscore prefix
@@ -356,7 +351,7 @@ MACRO0(SETUP_SAVE_REFS_AND_ARGS_FRAME_REGISTERS_ONLY)
     PUSH rbx      // Callee save.
     PUSH_ARG rdx  // Quick arg 2.
     PUSH_ARG rcx  // Quick arg 3.
-    // Create space for FPR args and create 2 slots for ArtMethod*.
+    // Create space for FPR args and create 2 slots for ArtMethod* and padding.
     INCREASE_FRAME 16 + 12 * 8
     // Save FPRs.
     movq %xmm0, 16(%rsp)

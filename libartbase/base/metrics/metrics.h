@@ -87,7 +87,8 @@
   METRIC(TotalBytesAllocatedDelta, MetricsDeltaCounter)        \
   METRIC(TotalGcCollectionTimeDelta, MetricsDeltaCounter)      \
   METRIC(YoungGcCountDelta, MetricsDeltaCounter)               \
-  METRIC(FullGcCountDelta, MetricsDeltaCounter)
+  METRIC(FullGcCountDelta, MetricsDeltaCounter)                \
+  METRIC(TimeElapsedDelta, MetricsDeltaCounter)
 
 #define ART_METRICS(METRIC) \
   ART_EVENT_METRICS(METRIC) \
@@ -113,8 +114,6 @@ class MetricsBase;
 
 namespace gc {
 class HeapTest_GCMetrics_Test;
-template <typename T>
-bool AnyIsNonNull(const metrics::MetricsBase<T>* x, const metrics::MetricsBase<T>* y);
 }  // namespace gc
 
 namespace metrics {
@@ -305,8 +304,6 @@ class MetricsBase {
   virtual bool IsNull() const = 0;
 
   ART_FRIEND_TEST(gc::HeapTest, GCMetrics);
-  template <typename T>
-  friend bool gc::AnyIsNonNull(const MetricsBase<T>* x, const MetricsBase<T>* y);
 };
 
 template <DatumId counter_type, typename T = uint64_t>
@@ -323,7 +320,7 @@ class MetricsCounter : public MetricsBase<T> {
 
   void AddOne() { Add(1u); }
   void Add(value_t value) override {
-    value_.fetch_add(value, std::memory_order::memory_order_relaxed);
+    value_.fetch_add(value, std::memory_order_relaxed);
   }
 
   void Report(const std::vector<MetricsBackend*>& backends) const {
@@ -334,7 +331,7 @@ class MetricsCounter : public MetricsBase<T> {
 
  protected:
   void Reset() { value_ = 0; }
-  value_t Value() const { return value_.load(std::memory_order::memory_order_relaxed); }
+  value_t Value() const { return value_.load(std::memory_order_relaxed); }
 
  private:
   bool IsNull() const override { return Value() == 0; }
@@ -369,12 +366,12 @@ class MetricsAverage final : public MetricsCounter<datum_id, T> {
   // make a huge difference to the reporter.
   void Add(value_t value) override {
     MetricsCounter<datum_id, value_t>::Add(value);
-    count_.fetch_add(1, std::memory_order::memory_order_release);
+    count_.fetch_add(1, std::memory_order_release);
   }
 
   void Report(const std::vector<MetricsBackend*>& backends) const {
     count_t value = MetricsCounter<datum_id, value_t>::Value();
-    count_t count = count_.load(std::memory_order::memory_order_acquire);
+    count_t count = count_.load(std::memory_order_acquire);
     // Avoid divide-by-0.
     count_t average_value = count != 0 ? value / count : 0;
     for (MetricsBackend* backend : backends) {
@@ -389,7 +386,7 @@ class MetricsAverage final : public MetricsCounter<datum_id, T> {
   }
 
  private:
-  count_t Count() const { return count_.load(std::memory_order::memory_order_relaxed); }
+  count_t Count() const { return count_.load(std::memory_order_relaxed); }
 
   bool IsNull() const override { return Count() == 0; }
 
@@ -413,12 +410,12 @@ class MetricsDeltaCounter : public MetricsBase<T> {
   }
 
   void Add(value_t value) override {
-    value_.fetch_add(value, std::memory_order::memory_order_relaxed);
+    value_.fetch_add(value, std::memory_order_relaxed);
   }
   void AddOne() { Add(1u); }
 
   void ReportAndReset(const std::vector<MetricsBackend*>& backends) {
-    value_t value = value_.exchange(0, std::memory_order::memory_order_relaxed);
+    value_t value = value_.exchange(0, std::memory_order_relaxed);
     for (MetricsBackend* backend : backends) {
       backend->ReportCounter(datum_id, value);
     }
@@ -427,7 +424,7 @@ class MetricsDeltaCounter : public MetricsBase<T> {
   void Reset() { value_ = 0; }
 
  private:
-  value_t Value() const { return value_.load(std::memory_order::memory_order_relaxed); }
+  value_t Value() const { return value_.load(std::memory_order_relaxed); }
 
   bool IsNull() const override { return Value() == 0; }
 
@@ -458,7 +455,7 @@ class MetricsHistogram final : public MetricsBase<int64_t> {
 
   void Add(int64_t value) override {
     const size_t i = FindBucketId(value);
-    buckets_[i].fetch_add(1u, std::memory_order::memory_order_relaxed);
+    buckets_[i].fetch_add(1u, std::memory_order_relaxed);
   }
 
   void Report(const std::vector<MetricsBackend*>& backends) const {
@@ -519,7 +516,7 @@ class MetricsAccumulator final : MetricsBase<T> {
   }
 
   void Add(T value) override {
-    T current = value_.load(std::memory_order::memory_order_relaxed);
+    T current = value_.load(std::memory_order_relaxed);
     T new_value;
     do {
       new_value = AccumulatorFunction(current, value);
@@ -528,7 +525,7 @@ class MetricsAccumulator final : MetricsBase<T> {
         break;
       }
     } while (!value_.compare_exchange_weak(
-        current, new_value, std::memory_order::memory_order_relaxed));
+        current, new_value, std::memory_order_relaxed));
   }
 
   // Report the metric as a counter, since this has only a single value.
@@ -542,7 +539,7 @@ class MetricsAccumulator final : MetricsBase<T> {
   }
 
  private:
-  T Value() const { return value_.load(std::memory_order::memory_order_relaxed); }
+  T Value() const { return value_.load(std::memory_order_relaxed); }
 
   bool IsNull() const override { return Value() == 0; }
 
@@ -763,6 +760,7 @@ class ArtMetrics {
 
  private:
   uint64_t beginning_timestamp_;
+  uint64_t last_report_timestamp_;
 
 #define METRIC(name, Kind, ...) Kind<DatumId::k##name, ##__VA_ARGS__> name##_;
   ART_METRICS(METRIC)

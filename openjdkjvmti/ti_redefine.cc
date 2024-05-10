@@ -52,11 +52,11 @@
 #include "art_method.h"
 #include "base/array_ref.h"
 #include "base/casts.h"
-#include "base/enums.h"
 #include "base/globals.h"
 #include "base/iteration_range.h"
 #include "base/length_prefixed_array.h"
 #include "base/locks.h"
+#include "base/pointer_size.h"
 #include "base/stl_util.h"
 #include "base/utils.h"
 #include "class_linker-inl.h"
@@ -339,6 +339,29 @@ class ObsoleteMethodStackVisitor : public art::StackVisitor {
   ObsoleteMap* obsolete_maps_;
 };
 
+namespace {
+// We need to make sure we only have one redefinition in progress. Redefining involves
+// re-verification and potentially new allocations among other things. So we only allow one
+// redefinition at a time.
+static art::Mutex redefinition_lock("JVMTI Redefinition lock", art::LockLevel::kGenericBottomLock);
+static bool redefinition_in_progress GUARDED_BY(redefinition_lock) = false;
+
+bool canHandleRedefinition(art::Thread* self) {
+  art::MutexLock mu(self, redefinition_lock);
+  if (redefinition_in_progress) {
+    return false;
+  }
+  redefinition_in_progress = true;
+  return true;
+}
+
+void finishRedefinition(art::Thread* self) {
+  art::MutexLock mu(self, redefinition_lock);
+  DCHECK_EQ(redefinition_in_progress, true);
+  redefinition_in_progress = false;
+}
+}  // namespace
+
 template <RedefinitionType kType>
 jvmtiError
 Redefiner::IsModifiableClassGeneric(jvmtiEnv* env, jclass klass, jboolean* is_redefinable) {
@@ -355,7 +378,7 @@ Redefiner::IsModifiableClassGeneric(jvmtiEnv* env, jclass klass, jboolean* is_re
   art::Handle<art::mirror::Class> h_klass(hs.NewHandle(obj->AsClass()));
   std::string err_unused;
   *is_redefinable =
-      Redefiner::GetClassRedefinitionError<kType>(h_klass, &err_unused) != ERR(UNMODIFIABLE_CLASS)
+      Redefiner::CanRedefineClass<kType>(h_klass, &err_unused) != ERR(UNMODIFIABLE_CLASS)
           ? JNI_TRUE
           : JNI_FALSE;
   return OK;
@@ -372,7 +395,7 @@ jvmtiError Redefiner::IsModifiableClass(jvmtiEnv* env, jclass klass, jboolean* i
 }
 
 template <RedefinitionType kType>
-jvmtiError Redefiner::GetClassRedefinitionError(jclass klass, /*out*/ std::string* error_msg) {
+jvmtiError Redefiner::CanRedefineClass(jclass klass, /*out*/ std::string* error_msg) {
   art::Thread* self = art::Thread::Current();
   art::ScopedObjectAccess soa(self);
   art::StackHandleScope<1> hs(self);
@@ -381,12 +404,12 @@ jvmtiError Redefiner::GetClassRedefinitionError(jclass klass, /*out*/ std::strin
     return ERR(INVALID_CLASS);
   }
   art::Handle<art::mirror::Class> h_klass(hs.NewHandle(obj->AsClass()));
-  return Redefiner::GetClassRedefinitionError<kType>(h_klass, error_msg);
+  return Redefiner::CanRedefineClass<kType>(h_klass, error_msg);
 }
 
 template <RedefinitionType kType>
-jvmtiError Redefiner::GetClassRedefinitionError(art::Handle<art::mirror::Class> klass,
-                                                /*out*/ std::string* error_msg) {
+jvmtiError Redefiner::CanRedefineClass(art::Handle<art::mirror::Class> klass,
+                                       /*out*/ std::string* error_msg) {
   art::Thread* self = art::Thread::Current();
   if (!klass->IsResolved()) {
     // It's only a problem to try to retransform/redefine a unprepared class if it's happening on
@@ -503,9 +526,9 @@ jvmtiError Redefiner::GetClassRedefinitionError(art::Handle<art::mirror::Class> 
   return OK;
 }
 
-template jvmtiError Redefiner::GetClassRedefinitionError<RedefinitionType::kNormal>(
+template jvmtiError Redefiner::CanRedefineClass<RedefinitionType::kNormal>(
     art::Handle<art::mirror::Class> klass, /*out*/ std::string* error_msg);
-template jvmtiError Redefiner::GetClassRedefinitionError<RedefinitionType::kStructural>(
+template jvmtiError Redefiner::CanRedefineClass<RedefinitionType::kStructural>(
     art::Handle<art::mirror::Class> klass, /*out*/ std::string* error_msg);
 
 // Moves dex data to an anonymous, read-only mmap'd region.
@@ -545,13 +568,9 @@ Redefiner::ClassRedefinition::ClassRedefinition(
       dex_file_(redefined_dex_file),
       class_sig_(class_sig),
       original_dex_file_(orig_dex_file) {
-  lock_acquired_ = GetMirrorClass()->MonitorTryEnter(driver_->self_) != nullptr;
 }
 
 Redefiner::ClassRedefinition::~ClassRedefinition() {
-  if (driver_ != nullptr && lock_acquired_) {
-    GetMirrorClass()->MonitorExit(driver_->self_);
-  }
   if (art::kIsDebugBuild) {
     if (dex_file_ != nullptr) {
       art::Thread* self = art::Thread::Current();
@@ -585,8 +604,8 @@ jvmtiError Redefiner::RedefineClassesGeneric(jvmtiEnv* jenv,
   std::vector<ArtClassDefinition> def_vector;
   def_vector.reserve(class_count);
   for (jint i = 0; i < class_count; i++) {
-    jvmtiError res = Redefiner::GetClassRedefinitionError<RedefinitionType::kNormal>(
-        definitions[i].klass, &error_msg);
+    jvmtiError res =
+        Redefiner::CanRedefineClass<RedefinitionType::kNormal>(definitions[i].klass, &error_msg);
     if (res != OK) {
       JVMTI_LOG(WARNING, env) << "FAILURE TO REDEFINE " << error_msg;
       return res;
@@ -599,11 +618,12 @@ jvmtiError Redefiner::RedefineClassesGeneric(jvmtiEnv* jenv,
     }
     def_vector.push_back(std::move(def));
   }
-  // Call all the transformation events.
-  Transformer::RetransformClassesDirect<kType>(self, &def_vector);
-  if (kType == RedefinitionType::kStructural) {
-    Transformer::RetransformClassesDirect<RedefinitionType::kNormal>(self, &def_vector);
-  }
+
+  // Call necessary hooks. According to the spec we should send class file load hooks here. We
+  // handle it slightly differently to support structural redefinition. Look at the comments
+  // in Transformer::CallClassFileLoadHooks for more details.
+  Transformer::CallClassFileLoadHooks<kType>(self, &def_vector);
+
   jvmtiError res = RedefineClassesDirect(env, runtime, self, def_vector, kType, &error_msg);
   if (res != OK) {
     JVMTI_LOG(WARNING, env) << "FAILURE TO REDEFINE " << error_msg;
@@ -629,38 +649,6 @@ jvmtiError Redefiner::RedefineClasses(jvmtiEnv* jenv,
   return RedefineClassesGeneric<RedefinitionType::kNormal>(jenv, class_count, definitions);
 }
 
-jvmtiError Redefiner::StructurallyRedefineClassDirect(jvmtiEnv* env,
-                                                      jclass klass,
-                                                      const unsigned char* data,
-                                                      jint data_size) {
-  if (env == nullptr) {
-    return ERR(INVALID_ENVIRONMENT);
-  } else if (ArtJvmTiEnv::AsArtJvmTiEnv(env)->capabilities.can_redefine_classes != 1) {
-    JVMTI_LOG(INFO, env) << "Does not have can_redefine_classes cap!";
-    return ERR(MUST_POSSESS_CAPABILITY);
-  }
-  std::vector<ArtClassDefinition> acds;
-  ArtClassDefinition acd;
-  jvmtiError err = acd.Init(
-      art::Thread::Current(),
-      jvmtiClassDefinition{ .klass = klass, .class_byte_count = data_size, .class_bytes = data });
-  if (err != OK) {
-    return err;
-  }
-  acds.push_back(std::move(acd));
-  std::string err_msg;
-  err = RedefineClassesDirect(ArtJvmTiEnv::AsArtJvmTiEnv(env),
-                              art::Runtime::Current(),
-                              art::Thread::Current(),
-                              acds,
-                              RedefinitionType::kStructural,
-                              &err_msg);
-  if (err != OK) {
-    JVMTI_LOG(WARNING, env) << "Failed structural redefinition: " << err_msg;
-  }
-  return err;
-}
-
 jvmtiError Redefiner::RedefineClassesDirect(ArtJvmTiEnv* env,
                                             art::Runtime* runtime,
                                             art::Thread* self,
@@ -676,6 +664,11 @@ jvmtiError Redefiner::RedefineClassesDirect(ArtJvmTiEnv* env,
   // no concurrent redefinitions of the same class at the same time. For simplicity and because
   // this is not expected to be a common occurrence we will just wrap the whole thing in a TOP-level
   // lock.
+  Redefiner r(env, runtime, self, type, error_msg);
+  if (!canHandleRedefinition(self)) {
+    r.RecordFailure(ERR(INTERNAL), "Another redefinition is in progress");
+    return r.result_;
+  }
 
   // Stop JIT for the duration of this redefine since the JIT might concurrently compile a method we
   // are going to redefine.
@@ -683,17 +676,19 @@ jvmtiError Redefiner::RedefineClassesDirect(ArtJvmTiEnv* env,
   art::jit::ScopedJitSuspend suspend_jit;
   // Get shared mutator lock so we can lock all the classes.
   art::ScopedObjectAccess soa(self);
-  Redefiner r(env, runtime, self, type, error_msg);
   for (const ArtClassDefinition& def : definitions) {
     // Only try to transform classes that have been modified.
     if (def.IsModified()) {
       jvmtiError res = r.AddRedefinition(env, def);
       if (res != OK) {
+        finishRedefinition(self);
         return res;
       }
     }
   }
-  return r.Run();
+  jvmtiError res = r.Run();
+  finishRedefinition(self);
+  return res;
 }
 
 jvmtiError Redefiner::AddRedefinition(ArtJvmTiEnv* env, const ArtClassDefinition& def) {
@@ -805,11 +800,6 @@ art::mirror::Object* Redefiner::ClassRedefinition::AllocateOrGetOriginalDexFile(
 
   // return the current dex_cache which has the dex file in it.
   art::ObjPtr<art::mirror::DexCache> current_dex_cache(GetMirrorClass()->GetDexCache());
-  // TODO Handle this or make it so it cannot happen.
-  if (current_dex_cache->GetDexFile()->NumClassDefs() != 1) {
-    LOG(WARNING) << "Current dex file has more than one class in it. Calling RetransformClasses "
-                 << "on this class might fail if no transformations are applied to it!";
-  }
   return current_dex_cache.Ptr();
 }
 
@@ -889,8 +879,12 @@ template <typename T> struct NameAndSignature {
 
   NameAndSignature(const std::string_view& name, const SigType& sig) : name_(name), sig_(sig) {}
 
-  bool operator==(const NameAndSignature<T>& o) {
+  bool operator==(const NameAndSignature<T>& o) const {
     return name_ == o.name_ && sig_ == o.sig_;
+  }
+
+  bool operator!=(const NameAndSignature<T>& o) const {
+    return !(*this == o);
   }
 
   std::ostream& dump(std::ostream& os) const {
@@ -1091,15 +1085,6 @@ bool Redefiner::ClassRedefinition::CheckClass() {
   // Get the class as it is now.
   art::Handle<art::mirror::Class> current_class(hs.NewHandle(GetMirrorClass()));
 
-  // Check whether the class object has been successfully acquired.
-  if (!lock_acquired_) {
-      std::string storage;
-      RecordFailure(ERR(INTERNAL),
-                    StringPrintf("Failed to lock class object '%s'",
-                                 current_class->GetDescriptor(&storage)));
-      return false;
-  }
-
   // Check the access flags didn't change.
   if (def.GetJavaAccessFlags() != (current_class->GetAccessFlags() & art::kAccValidClassFlags)) {
     RecordFailure(ERR(UNSUPPORTED_REDEFINITION_CLASS_MODIFIERS_CHANGED),
@@ -1110,7 +1095,7 @@ bool Redefiner::ClassRedefinition::CheckClass() {
   // Check class name.
   // These should have been checked by the dexfile verifier on load.
   DCHECK_NE(def.class_idx_, art::dex::TypeIndex::Invalid()) << "Invalid type index";
-  const char* descriptor = dex_file_->StringByTypeIdx(def.class_idx_);
+  const char* descriptor = dex_file_->GetTypeDescriptor(def.class_idx_);
   DCHECK(descriptor != nullptr) << "Invalid dex file structure!";
   if (!current_class->DescriptorEquals(descriptor)) {
     std::string storage;
@@ -1126,7 +1111,7 @@ bool Redefiner::ClassRedefinition::CheckClass() {
       return false;
     }
   } else {
-    const char* super_descriptor = dex_file_->StringByTypeIdx(def.superclass_idx_);
+    const char* super_descriptor = dex_file_->GetTypeDescriptor(def.superclass_idx_);
     DCHECK(descriptor != nullptr) << "Invalid dex file structure!";
     if (!current_class->GetSuperClass()->DescriptorEquals(super_descriptor)) {
       RecordFailure(ERR(UNSUPPORTED_REDEFINITION_HIERARCHY_CHANGED), "Superclass changed");
@@ -1152,8 +1137,8 @@ bool Redefiner::ClassRedefinition::CheckClass() {
     const art::DexFile& orig_dex_file = current_class->GetDexFile();
     for (uint32_t i = 0; i < interfaces->Size(); i++) {
       if (strcmp(
-            dex_file_->StringByTypeIdx(interfaces->GetTypeItem(i).type_idx_),
-            orig_dex_file.StringByTypeIdx(current_interfaces->GetTypeItem(i).type_idx_)) != 0) {
+            dex_file_->GetTypeDescriptor(interfaces->GetTypeItem(i).type_idx_),
+            orig_dex_file.GetTypeDescriptor(current_interfaces->GetTypeItem(i).type_idx_)) != 0) {
         RecordFailure(ERR(UNSUPPORTED_REDEFINITION_HIERARCHY_CHANGED),
                       "Interfaces changed or re-ordered");
         return false;
@@ -1170,9 +1155,9 @@ bool Redefiner::ClassRedefinition::CheckRedefinable() {
   art::Handle<art::mirror::Class> h_klass(hs.NewHandle(GetMirrorClass()));
   jvmtiError res;
   if (driver_->type_ == RedefinitionType::kStructural && this->IsStructuralRedefinition()) {
-    res = Redefiner::GetClassRedefinitionError<RedefinitionType::kStructural>(h_klass, &err);
+    res = Redefiner::CanRedefineClass<RedefinitionType::kStructural>(h_klass, &err);
   } else {
-    res = Redefiner::GetClassRedefinitionError<RedefinitionType::kNormal>(h_klass, &err);
+    res = Redefiner::CanRedefineClass<RedefinitionType::kNormal>(h_klass, &err);
   }
   if (res != OK) {
     RecordFailure(res, err);
@@ -2372,9 +2357,9 @@ class ClassDefinitionPauser : public art::ClassLoadCallback {
     }
   }
 
-  void ClassLoad(art::Handle<art::mirror::Class> klass ATTRIBUTE_UNUSED) override {}
-  void ClassPrepare(art::Handle<art::mirror::Class> klass1 ATTRIBUTE_UNUSED,
-                    art::Handle<art::mirror::Class> klass2 ATTRIBUTE_UNUSED) override {}
+  void ClassLoad([[maybe_unused]] art::Handle<art::mirror::Class> klass) override {}
+  void ClassPrepare([[maybe_unused]] art::Handle<art::mirror::Class> klass1,
+                    [[maybe_unused]] art::Handle<art::mirror::Class> klass2) override {}
 
   void SetRunning() {
     is_running_ = true;

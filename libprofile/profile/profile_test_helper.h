@@ -48,8 +48,10 @@ class ProfileTestHelper {
       uint16_t method_idx,
       Hotness::Flag flags,
       const ProfileSampleAnnotation& annotation = ProfileSampleAnnotation::kNone) {
-    return info->AddMethod(
-        ProfileMethodInfo(MethodReference(dex, method_idx)), flags, annotation);
+    return info->AddMethod(ProfileMethodInfo(MethodReference(dex, method_idx)),
+                           flags,
+                           annotation,
+                           /*is_test=*/ true);
   }
 
   static bool AddMethod(
@@ -68,8 +70,10 @@ class ProfileTestHelper {
       const std::vector<ProfileInlineCache>& inline_caches,
       Hotness::Flag flags,
       const ProfileSampleAnnotation& annotation = ProfileSampleAnnotation::kNone) {
-    return info->AddMethod(
-        ProfileMethodInfo(MethodReference(dex, method_idx), inline_caches), flags, annotation);
+    return info->AddMethod(ProfileMethodInfo(MethodReference(dex, method_idx), inline_caches),
+                           flags,
+                           annotation,
+                           /*is_test=*/ true);
   }
 
   static bool AddClass(ProfileCompilationInfo* info,
@@ -134,7 +138,7 @@ class ProfileTestHelper {
                              return type_index == type_ref.TypeIndex();
                            } else {
                              const char* expected_descriptor =
-                                 type_ref.dex_file->StringByTypeIdx(type_ref.TypeIndex());
+                                 type_ref.dex_file->GetTypeDescriptor(type_ref.TypeIndex());
                              const char* descriptor = info.GetTypeDescriptor(dex_file, type_index);
                              return strcmp(expected_descriptor, descriptor) == 0;
                            }
@@ -174,7 +178,7 @@ class ProfileTestHelper {
       size_t method_name_index = (method_index / num_shared_ids) / num_shared_ids;
       std::string return_type = "LSharedType" + std::to_string(return_type_index) + ";";
       std::string arg_type = "LSharedType" + std::to_string(arg_type_index) + ";";
-      std::string signature = "(" + arg_type + ")" + return_type;
+      std::string signature = ART_FORMAT("({}){}", arg_type, return_type);
       builder.AddMethod(class_descriptor, signature, "m" + std::to_string(method_name_index));
     }
     storage.push_back(builder.Build(location, location_checksum));

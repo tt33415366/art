@@ -23,7 +23,7 @@
 #include "mirror/object_array.h"
 #include "obj_ptr.h"
 
-namespace art {
+namespace art HIDDEN {
 
 namespace mirror {
 class ClassLoader;
@@ -40,7 +40,7 @@ ObjPtr<mirror::Object> GetAnnotationForField(ArtField* field,
     REQUIRES_SHARED(Locks::mutator_lock_);
 ObjPtr<mirror::ObjectArray<mirror::Object>> GetAnnotationsForField(ArtField* field)
     REQUIRES_SHARED(Locks::mutator_lock_);
-ObjPtr<mirror::ObjectArray<mirror::String>> GetSignatureAnnotationForField(ArtField* field)
+EXPORT ObjPtr<mirror::ObjectArray<mirror::String>> GetSignatureAnnotationForField(ArtField* field)
     REQUIRES_SHARED(Locks::mutator_lock_);
 bool IsFieldAnnotationPresent(ArtField* field, Handle<mirror::Class> annotation_class)
     REQUIRES_SHARED(Locks::mutator_lock_);
@@ -67,8 +67,8 @@ bool GetParametersMetadataForMethod(
     ArtMethod* method,
     /*out*/ MutableHandle<mirror::ObjectArray<mirror::String>>* names,
     /*out*/ MutableHandle<mirror::IntArray>* access_flags) REQUIRES_SHARED(Locks::mutator_lock_);
-ObjPtr<mirror::ObjectArray<mirror::String>> GetSignatureAnnotationForMethod(ArtMethod* method)
-    REQUIRES_SHARED(Locks::mutator_lock_);
+EXPORT ObjPtr<mirror::ObjectArray<mirror::String>> GetSignatureAnnotationForMethod(
+    ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_);
 // Check whether `method` is annotated with `annotation_class`.
 // If `lookup_in_resolved_boot_classes` is true, look up any of the
 // method's annotations' classes in the bootstrap class loader's
@@ -83,14 +83,20 @@ bool IsMethodAnnotationPresent(ArtMethod* method,
 // is annotated with @dalvik.annotation.optimization.FastNative or
 // @dalvik.annotation.optimization.CriticalNative with build visibility.
 // If yes, return the associated access flags, i.e. kAccFastNative or kAccCriticalNative.
+EXPORT uint32_t GetNativeMethodAnnotationAccessFlags(const DexFile& dex_file,
+                                                     const dex::ClassDef& class_def,
+                                                     uint32_t method_index);
+// An overload of `GetNativeMethodAnnotationAccessFlags()` that takes a `MethodAnnotationsItem`.
 uint32_t GetNativeMethodAnnotationAccessFlags(const DexFile& dex_file,
-                                              const dex::ClassDef& class_def,
-                                              uint32_t method_index);
+                                              const dex::MethodAnnotationsItem& method_annotations);
 // Is the method from the `dex_file` with the given `field_index`
 // annotated with @dalvik.annotation.optimization.NeverCompile?
+EXPORT bool MethodIsNeverCompile(const DexFile& dex_file,
+                                 const dex::ClassDef& class_def,
+                                 uint32_t method_index);
+// An overload of `MethodIsNeverCompile()` that takes a `MethodAnnotationsItem`.
 bool MethodIsNeverCompile(const DexFile& dex_file,
-                          const dex::ClassDef& class_def,
-                          uint32_t method_index);
+                          const dex::MethodAnnotationsItem& method_annotations);
 // Is the method from the `dex_file` with the given `field_index`
 // annotated with @dalvik.annotation.optimization.NeverInline?
 bool MethodIsNeverInline(const DexFile& dex_file,
@@ -137,13 +143,17 @@ bool GetInnerClass(Handle<mirror::Class> klass, /*out*/ ObjPtr<mirror::String>* 
     REQUIRES_SHARED(Locks::mutator_lock_);
 bool GetInnerClassFlags(Handle<mirror::Class> klass, uint32_t* flags)
     REQUIRES_SHARED(Locks::mutator_lock_);
-ObjPtr<mirror::ObjectArray<mirror::String>> GetSignatureAnnotationForClass(
+EXPORT ObjPtr<mirror::ObjectArray<mirror::String>> GetSignatureAnnotationForClass(
     Handle<mirror::Class> klass) REQUIRES_SHARED(Locks::mutator_lock_);
-const char* GetSourceDebugExtension(Handle<mirror::Class> klass)
+EXPORT const char* GetSourceDebugExtension(Handle<mirror::Class> klass)
     REQUIRES_SHARED(Locks::mutator_lock_);
 ObjPtr<mirror::Class> GetNestHost(Handle<mirror::Class> klass)
     REQUIRES_SHARED(Locks::mutator_lock_);
 ObjPtr<mirror::ObjectArray<mirror::Class>> GetNestMembers(Handle<mirror::Class> klass)
+    REQUIRES_SHARED(Locks::mutator_lock_);
+ObjPtr<mirror::Object> getRecordAnnotationElement(Handle<mirror::Class> klass,
+                                                  Handle<mirror::Class> array_class,
+                                                  const char* element_name)
     REQUIRES_SHARED(Locks::mutator_lock_);
 ObjPtr<mirror::ObjectArray<mirror::Class>> GetPermittedSubclasses(Handle<mirror::Class> klass)
     REQUIRES_SHARED(Locks::mutator_lock_);
@@ -179,6 +189,26 @@ class RuntimeEncodedStaticFieldValueIterator : public EncodedStaticFieldValueIte
   ClassLinker* const linker_;  // Linker to resolve literal objects.
   DISALLOW_IMPLICIT_CONSTRUCTORS(RuntimeEncodedStaticFieldValueIterator);
 };
+
+enum class VisitorStatus : uint8_t { kVisitBreak, kVisitNext, kVisitInner };
+
+class AnnotationVisitor {
+ public:
+  virtual ~AnnotationVisitor() {}
+  virtual VisitorStatus VisitAnnotation(const char* annotation_descriptor, uint8_t visibility) = 0;
+  virtual VisitorStatus VisitAnnotationElement(const char* element_name,
+                                               uint8_t type,
+                                               const JValue& value) = 0;
+  virtual VisitorStatus VisitArrayElement(uint8_t depth,
+                                          uint32_t index,
+                                          uint8_t type,
+                                          const JValue& value) = 0;
+};
+
+// Visit all annotation elements and array elements without creating
+// Arrays or Objects in the managed heap.
+void VisitClassAnnotations(Handle<mirror::Class> klass, AnnotationVisitor* visitor)
+    REQUIRES_SHARED(Locks::mutator_lock_);
 
 }  // namespace annotations
 

@@ -20,12 +20,14 @@
 #include <string_view>
 #include <unordered_map>
 
+#include "android-base/parsebool.h"
 #include "android-base/properties.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
 #include "arch/instruction_set.h"
 #include "base/file_utils.h"
 #include "base/globals.h"
+#include "base/mem_map.h"
 #include "base/stl_util.h"
 #include "odr_common.h"
 #include "odr_compilation_log.h"
@@ -37,11 +39,12 @@
 namespace {
 
 using ::android::base::GetProperty;
+using ::android::base::ParseBool;
+using ::android::base::ParseBoolResult;
 using ::android::base::StartsWith;
 using ::art::odrefresh::CompilationOptions;
 using ::art::odrefresh::ExitCode;
 using ::art::odrefresh::kCheckedSystemPropertyPrefixes;
-using ::art::odrefresh::kIgnoredSystemProperties;
 using ::art::odrefresh::kSystemProperties;
 using ::art::odrefresh::kSystemPropertySystemServerCompilerFilterOverride;
 using ::art::odrefresh::OdrCompilationLog;
@@ -152,15 +155,18 @@ int InitializeConfig(int argc, char** argv, OdrConfig* config) {
     } else if (ArgumentMatches(arg, "--system-server-compiler-filter=", &value)) {
       config->SetSystemServerCompilerFilter(value);
     } else if (ArgumentMatches(arg, "--staging-dir=", &value)) {
-      config->SetStagingDir(value);
+      // Keep this for compatibility with CompOS in old platforms.
+      LOG(WARNING) << "--staging-dir is deprecated and its value is ignored";
     } else if (ArgumentEquals(arg, "--dry-run")) {
       config->SetDryRun();
-    } else if (ArgumentEquals(arg, "--partial-compilation")) {
-      config->SetPartialCompilation(true);
+    } else if (ArgumentMatches(arg, "--partial-compilation=", &value)) {
+      config->SetPartialCompilation(ParseBool(value) == ParseBoolResult::kTrue);
     } else if (ArgumentEquals(arg, "--no-refresh")) {
       config->SetRefresh(false);
     } else if (ArgumentEquals(arg, "--minimal")) {
       config->SetMinimal(true);
+    } else if (ArgumentEquals(arg, "--only-boot-images")) {
+      config->SetOnlyBootImages(true);
     } else {
       ArgumentError("Unrecognized argument: '%s'", arg);
     }
@@ -201,7 +207,7 @@ void GetSystemProperties(std::unordered_map<std::string, std::string>* system_pr
       return;
     }
     for (const char* prefix : kCheckedSystemPropertyPrefixes) {
-      if (StartsWith(name, prefix) && !art::ContainsElement(kIgnoredSystemProperties, name)) {
+      if (StartsWith(name, prefix)) {
         (*system_properties)[name] = value;
       }
     }
@@ -235,8 +241,6 @@ NO_RETURN void UsageHelp(const char* argv0) {
   UsageMsg("                                 OS.");
   UsageMsg("--dalvik-cache=<DIR>             Write artifacts to .../<DIR> rather than");
   UsageMsg("                                 .../dalvik-cache");
-  UsageMsg("--staging-dir=<DIR>              Write temporary artifacts to <DIR> rather than");
-  UsageMsg("                                 .../staging");
   UsageMsg("--zygote-arch=<STRING>           Zygote kind that overrides ro.zygote");
   UsageMsg("--boot-image-compiler-filter=<STRING>");
   UsageMsg("                                 Compiler filter for the boot image. Default: ");
@@ -245,6 +249,7 @@ NO_RETURN void UsageHelp(const char* argv0) {
   UsageMsg("                                 Compiler filter that overrides");
   UsageMsg("                                 dalvik.vm.systemservercompilerfilter");
   UsageMsg("--minimal                        Generate a minimal boot image only.");
+  UsageMsg("--only-boot-images               Generate boot images only.");
 
   exit(EX_USAGE);
 }
@@ -257,14 +262,13 @@ int main(int argc, char** argv) {
   // by others and prevents system_server from loading generated artifacts.
   umask(S_IWGRP | S_IWOTH);
 
+  // Explicitly initialize logging (b/201042799).
+  android::base::InitLogging(argv, android::base::LogdLogger(android::base::SYSTEM));
+
   OdrConfig config(argv[0]);
   int n = InitializeConfig(argc, argv, &config);
 
-  // Explicitly initialize logging (b/201042799).
-  // But not in CompOS mode - logd doesn't exist in Microdroid (b/265153235).
-  if (!config.GetCompilationOsMode()) {
-    android::base::InitLogging(argv, android::base::LogdLogger(android::base::SYSTEM));
-  }
+  art::MemMap::Init();  // Needed by DexFileLoader.
 
   argv += n;
   argc -= n;
@@ -294,6 +298,11 @@ int main(int argc, char** argv) {
       metrics.SetEnabled(exit_code != ExitCode::kOkay);
       return exit_code;
     }
+    if (config.GetSystemProperties().GetBool("dalvik.vm.disable-odrefresh",
+                                             /*default_value=*/false)) {
+      LOG(INFO) << "Compilation skipped because it's disabled by system property";
+      return ExitCode::kOkay;
+    }
     OdrCompilationLog compilation_log;
     if (!compilation_log.ShouldAttemptCompile(metrics.GetTrigger())) {
       LOG(INFO) << "Compilation skipped because it was attempted recently";
@@ -313,11 +322,7 @@ int main(int argc, char** argv) {
       metrics.SetStatus(OdrMetrics::Status::kIoError);
       return ExitCode::kCleanupFailed;
     }
-    return odr.Compile(metrics,
-                       CompilationOptions{
-                           .compile_boot_classpath_for_isas = config.GetBootClasspathIsas(),
-                           .system_server_jars_to_compile = odr.AllSystemServerJars(),
-                       });
+    return odr.Compile(metrics, CompilationOptions::CompileAll(odr));
   } else if (action == "--help") {
     UsageHelp(argv[0]);
   } else {

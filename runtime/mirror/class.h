@@ -30,7 +30,7 @@
 #include "object_array.h"
 #include "read_barrier_option.h"
 
-namespace art {
+namespace art HIDDEN {
 
 namespace dex {
 struct ClassDef;
@@ -59,7 +59,7 @@ class ImTable;
 enum InvokeType : uint32_t;
 template <typename Iter> class IterationRange;
 template<typename T> class LengthPrefixedArray;
-enum class PointerSize : size_t;
+enum class PointerSize : uint32_t;
 class Signature;
 template<typename T> class StrideIterator;
 template<size_t kNumReferences> class PACKED(4) StackHandleScope;
@@ -76,13 +76,10 @@ class DexCache;
 class Field;
 class IfTable;
 class Method;
-template <typename T> struct PACKED(8) DexCachePair;
-
-using StringDexCachePair = DexCachePair<String>;
-using StringDexCacheType = std::atomic<StringDexCachePair>;
+template <typename T> struct alignas(8) DexCachePair;
 
 // C++ mirror of java.lang.Class
-class MANAGED Class final : public Object {
+class EXPORT MANAGED Class final : public Object {
  public:
   MIRROR_CLASS("Ljava/lang/Class;");
 
@@ -208,6 +205,11 @@ class MANAGED Class final : public Object {
   bool IsVisiblyInitialized() REQUIRES_SHARED(Locks::mutator_lock_) {
     // Note: Avoiding the synchronization barrier for the visibly initialized check.
     ClassStatus status = GetStatus<kVerifyFlags, /*kWithSynchronizationBarrier=*/ false>();
+
+    // We need to prevent the compiler from reordering loads that depend
+    // on the class being visibly initialized before the status load above.
+    asm volatile ("" : : : "memory");
+
     return status == ClassStatus::kVisiblyInitialized;
   }
 
@@ -290,6 +292,8 @@ class MANAGED Class final : public Object {
     SetAccessFlagsDuringLinking(flags | kAccClassIsFinalizable);
   }
 
+  ALWAYS_INLINE void ClearFinalizable() REQUIRES_SHARED(Locks::mutator_lock_);
+
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   ALWAYS_INLINE bool IsStringClass() REQUIRES_SHARED(Locks::mutator_lock_) {
     return (GetClassFlags<kVerifyFlags>() & kClassFlagString) != 0;
@@ -315,6 +319,15 @@ class MANAGED Class final : public Object {
 
   ALWAYS_INLINE void SetDexCacheClass() REQUIRES_SHARED(Locks::mutator_lock_) {
     SetClassFlags(GetClassFlags() | kClassFlagDexCache);
+  }
+
+  template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
+  ALWAYS_INLINE bool IsRecordClass() REQUIRES_SHARED(Locks::mutator_lock_) {
+    return (GetClassFlags<kVerifyFlags>() & kClassFlagRecord) != 0;
+  }
+
+  ALWAYS_INLINE void SetRecordClass() REQUIRES_SHARED(Locks::mutator_lock_) {
+    SetClassFlags(GetClassFlags() | kClassFlagRecord);
   }
 
   // Returns true if the class is abstract.
@@ -566,7 +579,7 @@ class MANAGED Class final : public Object {
   // The size of java.lang.Class.class.
   static uint32_t ClassClassSize(PointerSize pointer_size) {
     // The number of vtable entries in java.lang.Class.
-    uint32_t vtable_entries = Object::kVTableLength + 73;
+    uint32_t vtable_entries = Object::kVTableLength + 83;
     return ComputeClassSize(true, vtable_entries, 0, 0, 4, 1, 0, pointer_size);
   }
 

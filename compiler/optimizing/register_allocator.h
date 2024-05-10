@@ -38,17 +38,14 @@ class SsaLivenessAnalysis;
  */
 class RegisterAllocator : public DeletableArenaObject<kArenaAllocRegisterAllocator> {
  public:
-  enum Strategy {
-    kRegisterAllocatorLinearScan,
-    kRegisterAllocatorGraphColor
+  enum class RegisterType {
+    kCoreRegister,
+    kFpRegister
   };
-
-  static constexpr Strategy kRegisterAllocatorDefault = kRegisterAllocatorLinearScan;
 
   static std::unique_ptr<RegisterAllocator> Create(ScopedArenaAllocator* allocator,
                                                    CodeGenerator* codegen,
-                                                   const SsaLivenessAnalysis& analysis,
-                                                   Strategy strategy = kRegisterAllocatorDefault);
+                                                   const SsaLivenessAnalysis& analysis);
 
   virtual ~RegisterAllocator();
 
@@ -65,7 +62,8 @@ class RegisterAllocator : public DeletableArenaObject<kArenaAllocRegisterAllocat
                                 size_t number_of_spill_slots,
                                 size_t number_of_out_slots,
                                 const CodeGenerator& codegen,
-                                bool processing_core_registers,
+                                const SsaLivenessAnalysis* liveness,  // Can be null in tests.
+                                RegisterType register_type,
                                 bool log_fatal_on_failure);
 
   static constexpr const char* kRegisterAllocatorPassName = "register";
@@ -84,9 +82,28 @@ class RegisterAllocator : public DeletableArenaObject<kArenaAllocRegisterAllocat
   // to find an optimal split position.
   LiveInterval* SplitBetween(LiveInterval* interval, size_t from, size_t to);
 
+  // Helper for calling the right typed codegen function for dumping a register.
+  void DumpRegister(std::ostream& stream, int reg, RegisterType register_type) const {
+    DumpRegister(stream, reg, register_type, codegen_);
+  }
+  static void DumpRegister(
+      std::ostream& stream, int reg, RegisterType register_type, const CodeGenerator* codegen);
+
+  // Get a mask of all registers for an interval.
+  // Most intervals either have or do not have a register, but we're using special fixed
+  // intervals with type `Void` to mark large sets of blocked registers for calls, catch
+  // blocks and irreducible loop headers to save memory and improve performance.
+  uint32_t GetRegisterMask(LiveInterval* interval, RegisterType register_type) const;
+
   ScopedArenaAllocator* const allocator_;
   CodeGenerator* const codegen_;
   const SsaLivenessAnalysis& liveness_;
+
+  // Cached values calculated from codegen data.
+  const size_t num_core_registers_;
+  const size_t num_fp_registers_;
+  const uint32_t core_registers_blocked_for_call_;
+  const uint32_t fp_registers_blocked_for_call_;
 };
 
 }  // namespace art

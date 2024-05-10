@@ -21,6 +21,7 @@ package {
     // to get the below license kinds:
     //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["art_license"],
+    default_team: "trendy_team_art_performance",
 }
 
 cc_defaults {
@@ -57,6 +58,9 @@ cc_defaults {
         "jni_headers",
         "libdexfile_external_headers",
     ],
+    static: {
+        cflags: ["-DSTATIC_LIB"],
+    },
     target: {
         android: {
             srcs: [
@@ -170,6 +174,7 @@ art_cc_library {
         // dependency - see comment for libdexfile_support. It shouldn't be used
         // for any other purpose.
         "//external/perfetto",
+        "//frameworks/base/services/core/jni",
         "//system/core/debuggerd",
         "//system/extras/simpleperf",
         "//system/unwinding/libunwindstack",
@@ -211,7 +216,16 @@ art_cc_library {
     apex_available: [
         "com.android.art",
         "com.android.art.debug",
+        "test_broken_com.android.art",
     ],
+
+    // This library is exported in stub form by art-module-sdk, and it brings
+    // with it all the exported headers from libartbase and libbase, many of
+    // which are transitive dependencies outside ART. Those may conflict with
+    // other versions of the headers that the caller is using in their build,
+    // but in this case it's fine since external users only depend on this
+    // through runtime_libs (see comment for libdexfile_support), which doesn't
+    // propagate include dirs.
     stubs: {
         symbol_file: "libdexfile.map.txt",
         versions: ["1"],
@@ -265,6 +279,9 @@ art_cc_library {
 
 art_cc_defaults {
     name: "art_libdexfile_tests_defaults",
+    defaults: [
+        "art_libunwindstack_static_defaults", // Must be statically linked in standalone tests
+    ],
     tidy_timeout_srcs: [
         "dex/dex_file_verifier_test.cc",
     ],
@@ -275,31 +292,28 @@ art_cc_defaults {
         "dex/compact_dex_file_test.cc",
         "dex/compact_offset_table_test.cc",
         "dex/descriptors_names_test.cc",
-        "dex/test_dex_file_builder_test.cc",
         "dex/dex_file_loader_test.cc",
         "dex/dex_file_verifier_test.cc",
         "dex/dex_instruction_test.cc",
+        "dex/fuzzer_corpus_test.cc",
         "dex/primitive_test.cc",
+        "dex/proto_reference_test.cc",
         "dex/string_reference_test.cc",
+        "dex/test_dex_file_builder_test.cc",
         "dex/type_lookup_table_test.cc",
         "dex/utf_test.cc",
     ],
     data: [
         ":art-gtest-jars-GetMethodSignature",
         ":art-gtest-jars-Lookup",
+        ":art-gtest-jars-DexFuzzerFolder",
         ":art-gtest-jars-Main",
         ":art-gtest-jars-MainEmptyUncompressed",
         ":art-gtest-jars-MultiDex",
         ":art-gtest-jars-Nested",
+        ":art-gtest-jars-VerifierDeps",
     ],
     header_libs: ["jni_headers"],
-    static_libs: [
-        "libziparchive",
-    ],
-    shared_libs: [
-        "libunwindstack",
-        "libz", // libziparchive dependency; must be repeated here since it's a static lib.
-    ],
 }
 
 // Version of ART gtest `art_libdexfile_tests` bundled with the ART APEX on target.
@@ -327,8 +341,6 @@ cc_library_headers {
     defaults: ["art_defaults"],
     visibility: ["//visibility:public"],
     host_supported: true,
-    header_libs: ["libbase_headers"],
-    export_header_lib_headers: ["libbase_headers"],
     export_include_dirs: ["external/include"],
 
     target: {
@@ -374,7 +386,6 @@ art_cc_defaults {
         "external/dex_file_ext_test.cc",
     ],
     shared_libs: [
-        "libartbase",
         "libdexfile",
     ],
     header_libs: [
@@ -430,19 +441,18 @@ art_cc_library_static {
         "external/dex_file_supp.cc",
     ],
     runtime_libs: ["libdexfile"],
-    shared_libs: [
-        "liblog",
-        "libbase",
-    ],
+    // Only NDK libs may be dynamic, because this becomes a prebuilt that must work on S+.
+    shared_libs: ["liblog"],
     header_libs: ["libdexfile_external_headers"],
+    // Do not export any headers outside the ART module - they get included in
+    // the prebuilt SDK and may conflict with different versions of themselves
+    // in the build that the SDK user is using.
     export_header_lib_headers: ["libdexfile_external_headers"],
 
     apex_available: [
         "//apex_available:platform",
         "com.android.art",
         "com.android.art.debug",
-        "com.android.media",
-        "com.android.media.swcodec",
         "com.android.runtime",
     ],
 }
@@ -457,12 +467,11 @@ art_cc_defaults {
         "external/dex_file_supp_test.cc",
     ],
     shared_libs: [
-        "libartbase",
-        "libbase",
         "libdexfile",
         "liblog",
     ],
     static_libs: [
+        "libbase", // Must be statically linked in standalone tests
         "libdexfile_support",
     ],
 }
@@ -541,6 +550,13 @@ art_cc_test {
 // For use by external packages allowed to link in static libdexfile_support.
 // This is not allowed in any module that may end up in an APEX or platform
 // image, so visibility is restrictive.
+//
+// TODO(b/169885605): This library brings with it all the exported headers from
+// libdexfile_support_static_defaults into the prebuilt SDK created by
+// art-module-sdk, many of which are transitive dependencies outside ART. Those
+// may conflict with other versions that the caller is using in their build. One
+// way to deal with that is to provide minimal headers without any transitive
+// dependencies on other headers.
 cc_library_static {
     name: "libdexfile_static",
     host_supported: true,
@@ -572,6 +588,14 @@ art_cc_test {
     ],
     enabled: false,
     target: {
+        android: {
+            // Build static test binary on device, to make sure libdexfile_static can be used in
+            // static simpleperf binary in ndk.
+            static_executable: true,
+            static_libs: [
+                "libc",
+            ],
+        },
         linux: {
             enabled: true,
         },

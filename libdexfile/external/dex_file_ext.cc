@@ -22,6 +22,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <deque>
@@ -154,7 +155,15 @@ ADexFile_Error ADexFile_create(const void* _Nonnull address,
   }
 
   const art::DexFile::Header* header = reinterpret_cast<const art::DexFile::Header*>(address);
-  uint32_t file_size = header->file_size_;
+  if (size < header->header_size_) {
+    if (new_size != nullptr) {
+      *new_size = header->header_size_;
+    }
+    return ADEXFILE_ERROR_NOT_ENOUGH_DATA;
+  }
+
+  uint32_t dex_size = header->file_size_;  // Size of "one dex file" excluding any shared data.
+  uint32_t full_size = dex_size;           // Includes referenced shared data past the end of dex.
   if (art::CompactDexFile::IsMagicValid(header->magic_)) {
     // Compact dex files store the data section separately so that it can be shared.
     // Therefore we need to extend the read memory range to include it.
@@ -164,28 +173,31 @@ ADexFile_Error ADexFile_create(const void* _Nonnull address,
     if (__builtin_add_overflow(header->data_off_, header->data_size_, &computed_file_size)) {
       return ADEXFILE_ERROR_INVALID_HEADER;
     }
-    if (computed_file_size > file_size) {
-      file_size = computed_file_size;
+    if (computed_file_size > full_size) {
+      full_size = computed_file_size;
     }
-  } else if (!art::StandardDexFile::IsMagicValid(header->magic_)) {
+  } else if (art::StandardDexFile::IsMagicValid(header->magic_)) {
+    full_size = header->ContainerSize() - header->HeaderOffset();
+  } else {
     return ADEXFILE_ERROR_INVALID_HEADER;
   }
 
-  if (size < file_size) {
+  if (size < full_size) {
     if (new_size != nullptr) {
-      *new_size = file_size;
+      *new_size = full_size;
     }
     return ADEXFILE_ERROR_NOT_ENOUGH_DATA;
   }
 
   std::string loc_str(location);
   std::string error_msg;
-  art::DexFileLoader loader(static_cast<const uint8_t*>(address), size, loc_str);
-  std::unique_ptr<const art::DexFile> dex_file = loader.Open(header->checksum_,
-                                                             /*oat_dex_file=*/nullptr,
-                                                             /*verify=*/false,
-                                                             /*verify_checksum=*/false,
-                                                             &error_msg);
+  art::DexFileLoader loader(static_cast<const uint8_t*>(address), full_size, loc_str);
+  std::unique_ptr<const art::DexFile> dex_file = loader.OpenOne(/*header_offset=*/0,
+                                                                header->checksum_,
+                                                                /*oat_dex_file=*/nullptr,
+                                                                /*verify=*/false,
+                                                                /*verify_checksum=*/false,
+                                                                &error_msg);
   if (dex_file == nullptr) {
     LOG(ERROR) << "Can not open dex file " << loc_str << ": " << error_msg;
     return ADEXFILE_ERROR_INVALID_DEX;

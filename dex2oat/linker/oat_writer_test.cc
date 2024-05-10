@@ -18,8 +18,8 @@
 
 #include "arch/instruction_set_features.h"
 #include "art_method-inl.h"
-#include "base/enums.h"
 #include "base/file_utils.h"
+#include "base/pointer_size.h"
 #include "base/stl_util.h"
 #include "base/unix_file/fd_file.h"
 #include "class_linker.h"
@@ -41,8 +41,8 @@
 #include "mirror/class-inl.h"
 #include "mirror/object-inl.h"
 #include "mirror/object_array-inl.h"
-#include "oat.h"
-#include "oat_file-inl.h"
+#include "oat/oat.h"
+#include "oat/oat_file-inl.h"
 #include "oat_writer.h"
 #include "profile/profile_compilation_info.h"
 #include "scoped_thread_state_change-inl.h"
@@ -112,10 +112,8 @@ class OatTest : public CommonCompilerDriverTest {
                          /*profile_compilation_info*/nullptr,
                          CompactDexLevel::kCompactDexLevelNone);
     for (const DexFile* dex_file : dex_files) {
-      ArrayRef<const uint8_t> raw_dex_file(
-          reinterpret_cast<const uint8_t*>(&dex_file->GetHeader()),
-          dex_file->GetHeader().file_size_);
-      if (!oat_writer.AddRawDexFileSource(raw_dex_file,
+      if (!oat_writer.AddRawDexFileSource(dex_file->GetContainer(),
+                                          dex_file->Begin(),
                                           dex_file->GetLocation().c_str(),
                                           dex_file->GetLocationChecksum())) {
         return false;
@@ -212,7 +210,8 @@ class OatTest : public CommonCompilerDriverTest {
     oat_writer.PrepareLayout(&patcher);
     elf_writer->PrepareDynamicSection(oat_writer.GetOatHeader().GetExecutableOffset(),
                                       oat_writer.GetCodeSize(),
-                                      oat_writer.GetDataBimgRelRoSize(),
+                                      oat_writer.GetDataImgRelRoSize(),
+                                      oat_writer.GetDataImgRelRoAppImageOffset(),
                                       oat_writer.GetBssSize(),
                                       oat_writer.GetBssMethodsOffset(),
                                       oat_writer.GetBssRootsOffset(),
@@ -230,12 +229,12 @@ class OatTest : public CommonCompilerDriverTest {
     }
     elf_writer->EndText(text);
 
-    if (oat_writer.GetDataBimgRelRoSize() != 0u) {
-      OutputStream* data_bimg_rel_ro = elf_writer->StartDataBimgRelRo();
-      if (!oat_writer.WriteDataBimgRelRo(data_bimg_rel_ro)) {
+    if (oat_writer.GetDataImgRelRoSize() != 0u) {
+      OutputStream* data_img_rel_ro = elf_writer->StartDataImgRelRo();
+      if (!oat_writer.WriteDataImgRelRo(data_img_rel_ro)) {
         return false;
       }
-      elf_writer->EndDataBimgRelRo(data_bimg_rel_ro);
+      elf_writer->EndDataImgRelRo(data_img_rel_ro);
     }
 
     if (!oat_writer.WriteHeader(elf_writer->GetStream())) {
@@ -463,9 +462,7 @@ TEST_F(OatTest, WriteRead) {
 
   ASSERT_TRUE(java_lang_dex_file_ != nullptr);
   const DexFile& dex_file = *java_lang_dex_file_;
-  uint32_t dex_file_checksum = dex_file.GetLocationChecksum();
-  const OatDexFile* oat_dex_file = oat_file->GetOatDexFile(dex_file.GetLocation().c_str(),
-                                                           &dex_file_checksum);
+  const OatDexFile* oat_dex_file = oat_file->GetOatDexFile(dex_file.GetLocation().c_str());
   ASSERT_TRUE(oat_dex_file != nullptr);
   CHECK_EQ(dex_file.GetLocationChecksum(), oat_dex_file->GetDexFileLocationChecksum());
   ScopedObjectAccess soa(Thread::Current());

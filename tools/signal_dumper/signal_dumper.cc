@@ -403,8 +403,6 @@ void DumpABI(pid_t forked_pid) {
       case ABI::kX86_64:
         to_print = ABI::kX86_64;
         break;
-      default:
-        __builtin_unreachable();
     }
   } else {
     // Check the length of the data. Assume that it's the same arch as the tool.
@@ -420,8 +418,6 @@ void DumpABI(pid_t forked_pid) {
       case ABI::kX86_64:
         to_print = io_vec.iov_len == 17 * sizeof(uint32_t) ? ABI::kX86 : ABI::kX86_64;
         break;
-      default:
-        __builtin_unreachable();
     }
   }
   std::string abi_str;
@@ -657,7 +653,7 @@ void SetupAndWait(pid_t forked_pid, int signal, int timeout_exit_code) {
 }  // namespace
 }  // namespace art
 
-int main(int argc ATTRIBUTE_UNUSED, char** argv) {
+int main([[maybe_unused]] int argc, char** argv) {
   android::base::InitLogging(argv);
 
   int signal = SIGRTMIN + 2;

@@ -21,6 +21,7 @@ package {
     // to get the below license kinds:
     //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["art_license"],
+    default_team: "trendy_team_art_performance",
 }
 
 cc_defaults {
@@ -110,6 +111,7 @@ art_cc_binary {
     apex_available: [
         "com.android.art",
         "com.android.art.debug",
+        "test_broken_com.android.art",
     ],
 }
 
@@ -198,9 +200,6 @@ art_cc_test {
         "art_gtest_defaults",
         "art_profman_tests_defaults",
     ],
-    shared_libs: [
-        "libprofiled",
-    ],
     target: {
         host: {
             required: ["profmand"],
@@ -216,9 +215,6 @@ art_cc_test {
         "art_profman_tests_defaults",
     ],
     data: [":generate-boot-image"],
-    shared_libs: [
-        "libprofile",
-    ],
     target: {
         host: {
             required: ["profman"],

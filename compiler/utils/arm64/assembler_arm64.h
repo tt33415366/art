@@ -23,7 +23,6 @@
 
 #include <android-base/logging.h>
 
-#include "base/arena_containers.h"
 #include "base/bit_utils_iterator.h"
 #include "base/macros.h"
 #include "dwarf/register.h"
@@ -92,7 +91,7 @@ class Arm64Assembler final : public Assembler {
   const uint8_t* CodeBufferBaseAddress() const override;
 
   // Copy instructions out of assembly buffer into the given region of memory.
-  void FinalizeInstructions(const MemoryRegion& region) override;
+  void CopyInstructions(const MemoryRegion& region) override;
 
   void LoadRawPtr(ManagedRegister dest, ManagedRegister base, Offset offs);
 
@@ -146,10 +145,10 @@ class Arm64Assembler final : public Assembler {
   // MaybeGenerateMarkingRegisterCheck and is passed to the BRK instruction.
   void GenerateMarkingRegisterCheck(vixl::aarch64::Register temp, int code = 0);
 
-  void Bind(Label* label ATTRIBUTE_UNUSED) override {
+  void Bind([[maybe_unused]] Label* label) override {
     UNIMPLEMENTED(FATAL) << "Do not use Bind(Label*) for ARM64";
   }
-  void Jump(Label* label ATTRIBUTE_UNUSED) override {
+  void Jump([[maybe_unused]] Label* label) override {
     UNIMPLEMENTED(FATAL) << "Do not use Jump(Label*) for ARM64";
   }
 

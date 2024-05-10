@@ -29,25 +29,24 @@
  * questions.
  */
 
-#include <android-base/thread_annotations.h>
+#include "events.h"
 
-#include "alloc_manager.h"
-#include "base/locks.h"
-#include "base/mutex.h"
-#include "events-inl.h"
+#include <sys/time.h>
 
 #include <array>
 #include <functional>
-#include <sys/time.h>
 
+#include "alloc_manager.h"
+#include "android-base/thread_annotations.h"
 #include "arch/context.h"
 #include "art_field-inl.h"
 #include "art_jvmti.h"
 #include "art_method-inl.h"
+#include "base/locks.h"
 #include "base/mutex.h"
 #include "deopt_manager.h"
 #include "dex/dex_file_types.h"
-#include "events.h"
+#include "events-inl.h"
 #include "gc/allocation_listener.h"
 #include "gc/gc_pause_listener.h"
 #include "gc/heap.h"
@@ -71,8 +70,8 @@
 #include "scoped_thread_state_change-inl.h"
 #include "scoped_thread_state_change.h"
 #include "stack.h"
-#include "thread.h"
 #include "thread-inl.h"
+#include "thread.h"
 #include "thread_list.h"
 #include "ti_phase.h"
 #include "ti_thread.h"
@@ -738,9 +737,7 @@ class JvmtiMethodTraceListener final : public art::instrumentation::Instrumentat
 
   // Call-back for when a method is popped due to an exception throw. A method will either cause a
   // MethodExited call-back or a MethodUnwind call-back when its activation is removed.
-  void MethodUnwind(art::Thread* self,
-                    art::ArtMethod* method,
-                    uint32_t dex_pc ATTRIBUTE_UNUSED)
+  void MethodUnwind(art::Thread* self, art::ArtMethod* method, [[maybe_unused]] uint32_t dex_pc)
       REQUIRES_SHARED(art::Locks::mutator_lock_) override {
     if (!method->IsRuntimeMethod() &&
         event_handler_->IsEventEnabledAnywhere(ArtJvmtiEvent::kMethodExit)) {
@@ -768,10 +765,9 @@ class JvmtiMethodTraceListener final : public art::instrumentation::Instrumentat
 
   // Call-back for when the dex pc moves in a method.
   void DexPcMoved(art::Thread* self,
-                  art::Handle<art::mirror::Object> this_object ATTRIBUTE_UNUSED,
+                  [[maybe_unused]] art::Handle<art::mirror::Object> this_object,
                   art::ArtMethod* method,
-                  uint32_t new_dex_pc)
-      REQUIRES_SHARED(art::Locks::mutator_lock_) override {
+                  uint32_t new_dex_pc) REQUIRES_SHARED(art::Locks::mutator_lock_) override {
     DCHECK(!method->IsRuntimeMethod());
     // Default methods might be copied to multiple classes. We need to get the canonical version of
     // this method so that we can check for breakpoints correctly.
@@ -1035,10 +1031,10 @@ class JvmtiMethodTraceListener final : public art::instrumentation::Instrumentat
   }
 
   // Call-back for when we execute a branch.
-  void Branch(art::Thread* self ATTRIBUTE_UNUSED,
-              art::ArtMethod* method ATTRIBUTE_UNUSED,
-              uint32_t dex_pc ATTRIBUTE_UNUSED,
-              int32_t dex_pc_offset ATTRIBUTE_UNUSED)
+  void Branch([[maybe_unused]] art::Thread* self,
+              [[maybe_unused]] art::ArtMethod* method,
+              [[maybe_unused]] uint32_t dex_pc,
+              [[maybe_unused]] int32_t dex_pc_offset)
       REQUIRES_SHARED(art::Locks::mutator_lock_) override {
     return;
   }

@@ -56,6 +56,7 @@ public class CompOsDenialHostTest extends BaseHostJUnit4Test {
         OdsignTestUtils testUtils = new OdsignTestUtils(testInfo);
         CompOsTestUtils compOsTestUtils = new CompOsTestUtils(device);
 
+        compOsTestUtils.assumeNotOnCuttlefish();
         compOsTestUtils.assumeCompOsPresent();
 
         testUtils.installTestApex();
@@ -73,14 +74,16 @@ public class CompOsDenialHostTest extends BaseHostJUnit4Test {
     public static void afterClassWithDevice(TestInformation testInfo) throws Exception {
         OdsignTestUtils testUtils = new OdsignTestUtils(testInfo);
 
-        // Remove all test states.
-        testInfo.getDevice().executeShellV2Command("rm -rf " + PENDING_ARTIFACTS_DIR);
-        testInfo.getDevice().executeShellV2Command("rm -rf " + PENDING_ARTIFACTS_BACKUP_DIR);
-        testUtils.removeCompilationLogToAvoidBackoff();
-        testUtils.uninstallTestApex();
-
-        // Reboot should restore the device back to a good state.
-        testUtils.reboot();
+        try {
+            // Remove all test states.
+            testInfo.getDevice().executeShellV2Command("rm -rf " + PENDING_ARTIFACTS_DIR);
+            testInfo.getDevice().executeShellV2Command("rm -rf " + PENDING_ARTIFACTS_BACKUP_DIR);
+            testUtils.removeCompilationLogToAvoidBackoff();
+            testUtils.uninstallTestApex();
+        } finally {
+            // Reboot should restore the device back to a good state.
+            testUtils.reboot();
+        }
     }
 
     @Before
@@ -93,18 +96,6 @@ public class CompOsDenialHostTest extends BaseHostJUnit4Test {
         mTestUtils.assertCommandSucceeds("rm -rf " + PENDING_ARTIFACTS_DIR);
         mTestUtils.assertCommandSucceeds("cp -rp " + PENDING_ARTIFACTS_BACKUP_DIR + " " +
                 PENDING_ARTIFACTS_DIR);
-    }
-
-    @Test
-    public void vmLogCollector() throws Exception {
-        // This is not a test. The purpose is to collect VM's log, which is generated once per
-        // class, in beforeClassWithDevice before any tests run. It's implemented as a test methond
-        // because TestLogData doesn't seem to work in a class method.
-        OdsignTestUtils testUtils = new OdsignTestUtils(getTestInformation());
-        testUtils.archiveLogThenDelete(mTestLogs, CompOsTestUtils.APEXDATA_DIR + "/vm.log",
-                "vm.log-CompOsDenialHostTest");
-        testUtils.archiveLogThenDelete(mTestLogs, CompOsTestUtils.APEXDATA_DIR + "/vm_console.log",
-                "vm_console.log-CompOsDenialHostTest");
     }
 
     @Test

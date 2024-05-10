@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include "profiling_info.h"
+
 #include <gtest/gtest.h>
 #include <stdio.h>
 
@@ -33,7 +35,7 @@
 #include "profile/profile_test_helper.h"
 #include "scoped_thread_state_change-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 
 using Hotness = ProfileCompilationInfo::MethodHotness;
 
@@ -142,7 +144,10 @@ class ProfileCompilationInfoTest : public CommonRuntimeTest {
       profile_methods_map->Put(method, pmi);
     }
 
-    if (!info.AddMethods(profile_methods, flags)
+    if (!info.AddMethods(profile_methods,
+                         flags,
+                         ProfileCompilationInfo::ProfileSampleAnnotation::kNone,
+                         /*is_test=*/ true)
         || info.GetNumberOfMethods() != profile_methods.size()) {
       return false;
     }

@@ -41,11 +41,12 @@
 #include "base/os.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "oat_file_assistant.h"
+#include "oat/oat_file_assistant.h"
 #include "procinfo/process_map.h"
 
 namespace art {
 
+using ::android::base::Error;
 using ::testing::IsSupersetOf;
 
 constexpr const char* kZygote32 = "zygote";
@@ -95,10 +96,16 @@ android::base::Result<std::vector<std::pair<std::string, InstructionSet>>> GetZy
 }
 
 android::base::Result<std::vector<std::string>> GetZygoteExpectedArtifacts(InstructionSet isa) {
-  std::vector<std::string> jars = GetListFromEnv("BOOTCLASSPATH");
+  std::vector<std::string> jars = GetListFromEnv("DEX2OATBOOTCLASSPATH");
   if (jars.empty()) {
-    return Errorf("Environment variable `BOOTCLASSPATH` is not defined or empty");
+    return Errorf("Environment variable `DEX2OATBOOTCLASSPATH` is not defined or empty");
   }
+  std::string error_msg;
+  std::string first_mainline_jar = GetFirstMainlineFrameworkLibraryFilename(&error_msg);
+  if (first_mainline_jar.empty()) {
+    return Error() << error_msg;
+  }
+  jars.push_back(std::move(first_mainline_jar));
   std::string art_root = GetArtRoot();
   std::string android_root = GetAndroidRoot();
   std::vector<std::string> artifacts;
@@ -191,12 +198,7 @@ android::base::Result<std::vector<std::string>> GetSystemServerArtifactsMappedOd
   if (pids.size() != 1) {
     return Errorf("There should be exactly one `system_server` process, found {}", pids.size());
   }
-  // Unlike boot images, app images don't get unmapped if the runtime rejects them in some cases
-  // (e.g., CLC mismatch). Therefore, we need to check the PROT_EXEC flag to ensure that they are
-  // valid.
-  // The ODEX files always contain executable code because system server jars are compiled with the
-  // "speed" filter.
-  return GetMappedFiles(pids[0], ".odex", PROT_EXEC);
+  return GetMappedFiles(pids[0], ".odex", PROT_READ);
 }
 
 TEST(DexpreoptTest, ForZygote) {

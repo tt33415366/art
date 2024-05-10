@@ -16,18 +16,16 @@
 
 #include <sys/mman.h>  // For the PROT_NONE constant.
 
-#include "elf_file.h"
-
 #include "base/file_utils.h"
 #include "base/mem_map.h"
 #include "base/unix_file/fd_file.h"
 #include "base/utils.h"
 #include "common_compiler_driver_test.h"
 #include "elf/elf_builder.h"
-#include "elf_file.h"
-#include "elf_file_impl.h"
 #include "elf_writer_quick.h"
-#include "oat.h"
+#include "oat/elf_file.h"
+#include "oat/elf_file_impl.h"
+#include "oat/oat.h"
 
 namespace art {
 namespace linker {
@@ -101,7 +99,7 @@ TEST_F(ElfWriterTest, dlsym) {
     bool success = ef->GetLoadedSize(&size, &error_msg);
     CHECK(success) << error_msg;
     MemMap reservation = MemMap::MapAnonymous("ElfWriterTest#dlsym reservation",
-                                              RoundUp(size, kPageSize),
+                                              RoundUp(size, MemMap::GetPageSize()),
                                               PROT_NONE,
                                               /*low_4gb=*/ true,
                                               &error_msg);

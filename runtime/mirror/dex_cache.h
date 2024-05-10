@@ -22,6 +22,7 @@
 #include "base/atomic_pair.h"
 #include "base/bit_utils.h"
 #include "base/locks.h"
+#include "base/macros.h"
 #include "dex/dex_file.h"
 #include "dex/dex_file_types.h"
 #include "gc_root.h"  // Note: must not use -inl here to avoid circular dependency.
@@ -29,7 +30,7 @@
 #include "object.h"
 #include "object_array.h"
 
-namespace art {
+namespace art HIDDEN {
 
 namespace linker {
 class ImageWriter;
@@ -52,7 +53,7 @@ class DexCache;
 class MethodType;
 class String;
 
-template <typename T> struct PACKED(8) DexCachePair {
+template <typename T> struct alignas(8) DexCachePair {
   GcRoot<T> object;
   uint32_t index;
   // The array is initially [ {0,0}, {0,0}, {0,0} ... ]
@@ -89,7 +90,7 @@ template <typename T> struct PACKED(8) DexCachePair {
   T* GetObjectForIndex(uint32_t idx) REQUIRES_SHARED(Locks::mutator_lock_);
 };
 
-template <typename T> struct PACKED(2 * __SIZEOF_POINTER__) NativeDexCachePair {
+template <typename T> struct alignas(2 * __SIZEOF_POINTER__) NativeDexCachePair {
   T* object;
   size_t index;
   // This is similar to DexCachePair except that we're storing a native pointer
@@ -142,16 +143,16 @@ template <typename T, size_t size> class NativeDexCachePairArray {
 
  private:
   NativeDexCachePair<T> GetNativePair(std::atomic<NativeDexCachePair<T>>* pair_array, size_t idx) {
-    auto* array = reinterpret_cast<std::atomic<AtomicPair<uintptr_t>>*>(pair_array);
+    auto* array = reinterpret_cast<AtomicPair<uintptr_t>*>(pair_array);
     AtomicPair<uintptr_t> value = AtomicPairLoadAcquire(&array[idx]);
-    return NativeDexCachePair<T>(reinterpret_cast<T*>(value.first), value.second);
+    return NativeDexCachePair<T>(reinterpret_cast<T*>(value.val), value.key);
   }
 
   void SetNativePair(std::atomic<NativeDexCachePair<T>>* pair_array,
                      size_t idx,
                      NativeDexCachePair<T> pair) {
-    auto* array = reinterpret_cast<std::atomic<AtomicPair<uintptr_t>>*>(pair_array);
-    AtomicPair<uintptr_t> v(reinterpret_cast<size_t>(pair.object), pair.index);
+    auto* array = reinterpret_cast<AtomicPair<uintptr_t>*>(pair_array);
+    AtomicPair<uintptr_t> v(pair.index, reinterpret_cast<size_t>(pair.object));
     AtomicPairStoreRelease(&array[idx], v);
   }
 
@@ -178,11 +179,11 @@ template <typename T, size_t size> class DexCachePairArray {
   }
 
   DexCachePair<T> GetPair(uint32_t index) {
-    return entries_[SlotIndex(index)].load(std::memory_order_relaxed);
+    return entries_[SlotIndex(index)].load(std::memory_order_acquire);
   }
 
   void SetPair(uint32_t index, DexCachePair<T> value) {
-    entries_[SlotIndex(index)].store(value, std::memory_order_relaxed);
+    entries_[SlotIndex(index)].store(value, std::memory_order_release);
   }
 
   void Clear(uint32_t index) {
@@ -211,14 +212,21 @@ template <typename T> class GcRootArray {
 
   T* Get(uint32_t index) REQUIRES_SHARED(Locks::mutator_lock_);
 
-  GcRoot<T>& GetGcRoot(uint32_t index) REQUIRES_SHARED(Locks::mutator_lock_) {
-    return entries_[index];
+  Atomic<GcRoot<T>>* GetGcRoot(uint32_t index) REQUIRES_SHARED(Locks::mutator_lock_) {
+    return &entries_[index];
+  }
+
+  // Only to be used in locations that don't need the atomic or will later load
+  // and read atomically.
+  GcRoot<T>* GetGcRootAddress(uint32_t index) REQUIRES_SHARED(Locks::mutator_lock_) {
+    static_assert(sizeof(GcRoot<T>) == sizeof(Atomic<GcRoot<T>>));
+    return reinterpret_cast<GcRoot<T>*>(&entries_[index]);
   }
 
   void Set(uint32_t index, T* value) REQUIRES_SHARED(Locks::mutator_lock_);
 
  private:
-  GcRoot<T> entries_[0];
+  Atomic<GcRoot<T>> entries_[0];
 };
 
 template <typename T> class NativeArray {
@@ -226,25 +234,23 @@ template <typename T> class NativeArray {
   NativeArray() {}
 
   T* Get(uint32_t index) {
-    return entries_[index];
+    return entries_[index].load(std::memory_order_relaxed);
   }
 
   T** GetPtrEntryPtrSize(uint32_t index, PointerSize ptr_size) {
     if (ptr_size == PointerSize::k64) {
-      return reinterpret_cast<T**>(
-          reinterpret_cast64<uint64_t>(entries_) + index * sizeof(uint64_t));
+      return reinterpret_cast<T**>(reinterpret_cast<uint64_t*>(entries_) + index);
     } else {
-      return reinterpret_cast<T**>(
-          reinterpret_cast32<uint32_t>(entries_) + index * sizeof(uint32_t));
+      return reinterpret_cast<T**>(reinterpret_cast<uint32_t*>(entries_) + index);
     }
   }
 
   void Set(uint32_t index, T* value) {
-    entries_[index] = value;
+    entries_[index].store(value, std::memory_order_relaxed);
   }
 
  private:
-  T* entries_[0];
+  Atomic<T*> entries_[0];
 };
 
 // C++ mirror of java.lang.DexCache.
@@ -295,13 +301,12 @@ class MANAGED DexCache final : public Object {
                                      DexCachePair<Object>* pairs_end)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  void Initialize(const DexFile* dex_file, ObjPtr<ClassLoader> class_loader)
-      REQUIRES_SHARED(Locks::mutator_lock_)
-      REQUIRES(Locks::dex_lock_);
+  EXPORT void Initialize(const DexFile* dex_file, ObjPtr<ClassLoader> class_loader)
+      REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(Locks::dex_lock_);
 
   // Zero all array references.
   // WARNING: This does not free the memory since it is in LinearAlloc.
-  void ResetNativeArrays() REQUIRES_SHARED(Locks::mutator_lock_);
+  EXPORT void ResetNativeArrays() REQUIRES_SHARED(Locks::mutator_lock_);
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags,
            ReadBarrierOption kReadBarrierOption = kWithReadBarrier>
@@ -363,13 +368,13 @@ class MANAGED DexCache final : public Object {
     SetFieldPtr<false>(OFFSET_OF_OBJECT_MEMBER(DexCache, dex_file_), dex_file);
   }
 
-  void SetLocation(ObjPtr<String> location) REQUIRES_SHARED(Locks::mutator_lock_);
+  EXPORT void SetLocation(ObjPtr<String> location) REQUIRES_SHARED(Locks::mutator_lock_);
 
   void VisitReflectiveTargets(ReflectiveValueVisitor* visitor) REQUIRES(Locks::mutator_lock_);
 
   void SetClassLoader(ObjPtr<ClassLoader> class_loader) REQUIRES_SHARED(Locks::mutator_lock_);
 
-  ObjPtr<ClassLoader> GetClassLoader() REQUIRES_SHARED(Locks::mutator_lock_);
+  EXPORT ObjPtr<ClassLoader> GetClassLoader() REQUIRES_SHARED(Locks::mutator_lock_);
 
   template <VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags,
             ReadBarrierOption kReadBarrierOption = kWithReadBarrier,

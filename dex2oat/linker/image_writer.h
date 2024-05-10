@@ -30,7 +30,6 @@
 #include "art_method.h"
 #include "base/bit_utils.h"
 #include "base/dchecked_vector.h"
-#include "base/enums.h"
 #include "base/unix_file/fd_file.h"
 #include "base/hash_map.h"
 #include "base/hash_set.h"
@@ -38,15 +37,17 @@
 #include "base/macros.h"
 #include "base/mem_map.h"
 #include "base/os.h"
+#include "base/pointer_size.h"
 #include "base/utils.h"
 #include "class_table.h"
 #include "gc/accounting/space_bitmap.h"
-#include "image.h"
 #include "intern_table.h"
 #include "lock_word.h"
 #include "mirror/dex_cache.h"
-#include "oat.h"
-#include "oat_file.h"
+#include "oat/image.h"
+#include "oat/jni_stub_hash_map.h"
+#include "oat/oat.h"
+#include "oat/oat_file.h"
 #include "obj_ptr.h"
 
 namespace art {
@@ -83,7 +84,7 @@ class ImageWriter final {
               const std::vector<std::string>& oat_filenames,
               const HashMap<const DexFile*, size_t>& dex_file_oat_index_map,
               jobject class_loader,
-              const HashSet<std::string>* dirty_image_objects);
+              const std::vector<std::string>* dirty_image_objects);
   ~ImageWriter();
 
   /*
@@ -125,6 +126,15 @@ class ImageWriter final {
       const ImageInfo& image_info = GetImageInfo(oat_index);
       return reinterpret_cast<T*>(image_info.image_begin_ + GetImageOffset(object, oat_index));
     }
+  }
+
+  uint32_t GetGlobalImageOffset(mirror::Object* object) const REQUIRES_SHARED(Locks::mutator_lock_) {
+    DCHECK(object != nullptr);
+    DCHECK(!IsInBootImage(object));
+    size_t oat_index = GetOatIndex(object);
+    const ImageInfo& image_info = GetImageInfo(oat_index);
+    return dchecked_integral_cast<uint32_t>(
+        image_info.image_begin_ + GetImageOffset(object, oat_index) - global_image_begin_);
   }
 
   ArtMethod* GetImageMethodAddress(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_);
@@ -209,6 +219,8 @@ class ImageWriter final {
     kIMTConflictTable,
     // Runtime methods (always clean, do not have a length prefix array).
     kRuntimeMethod,
+    // Methods with unique JNI stubs.
+    kJniStubMethod,
     // Metadata bin for data that is temporary during image lifetime.
     kMetadata,
     kLast = kMetadata,
@@ -396,8 +408,7 @@ class ImageWriter final {
   size_t GetImageOffset(mirror::Object* object, size_t oat_index) const
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  Bin AssignImageBinSlot(mirror::Object* object, size_t oat_index)
-      REQUIRES_SHARED(Locks::mutator_lock_);
+  Bin GetImageBin(mirror::Object* object) REQUIRES_SHARED(Locks::mutator_lock_);
   void AssignImageBinSlot(mirror::Object* object, size_t oat_index, Bin bin)
       REQUIRES_SHARED(Locks::mutator_lock_);
   void RecordNativeRelocations(ObjPtr<mirror::Class> klass, size_t oat_index)
@@ -447,30 +458,11 @@ class ImageWriter final {
       REQUIRES_SHARED(Locks::mutator_lock_);
   void CreateHeader(size_t oat_index, size_t component_count)
       REQUIRES_SHARED(Locks::mutator_lock_);
-  bool CreateImageRoots()
-      REQUIRES_SHARED(Locks::mutator_lock_);
-  void CalculateObjectBinSlots(mirror::Object* obj)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-  // Undo the changes of CalculateNewObjectOffsets.
-  void ResetObjectOffsets() REQUIRES_SHARED(Locks::mutator_lock_);
-  // Reset and calculate new offsets with dirty objects optimization.
-  // Does nothing if dirty object offsets don't match with current offsets.
-  void TryRecalculateOffsetsWithDirtyObjects() REQUIRES_SHARED(Locks::mutator_lock_);
-
-  // Dirty object data from dirty-image-objects.
-  struct DirtyEntry {
-    uint32_t descriptor_hash = 0;
-    bool is_class = false;
-  };
-  // Parse dirty-image-objects into (offset->entry) map. Returns nullopt on parse error.
-  static std::optional<HashMap<uint32_t, DirtyEntry>> ParseDirtyObjectOffsets(
-      const HashSet<std::string>& dirty_image_objects) REQUIRES_SHARED(Locks::mutator_lock_);
-  // Get all objects that match dirty_entries by offset. Returns nullopt if there is a mismatch.
-  std::optional<HashSet<mirror::Object*>> MatchDirtyObjectOffsets(
-      const HashMap<uint32_t, DirtyEntry>& dirty_entries) REQUIRES_SHARED(Locks::mutator_lock_);
+  bool CreateImageRoots() REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Creates the contiguous image in memory and adjusts pointers.
   void CopyAndFixupNativeData(size_t oat_index) REQUIRES_SHARED(Locks::mutator_lock_);
+  void CopyAndFixupJniStubMethods(size_t oat_index) REQUIRES_SHARED(Locks::mutator_lock_);
   void CopyAndFixupObjects() REQUIRES_SHARED(Locks::mutator_lock_);
   void CopyAndFixupObject(mirror::Object* obj) REQUIRES_SHARED(Locks::mutator_lock_);
   template <bool kCheckIfDone>
@@ -516,6 +508,10 @@ class ImageWriter final {
                           size_t oat_index)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+  // Assign the offset for a method with unique JNI stub.
+  void AssignJniStubMethodOffset(ArtMethod* method, size_t oat_index)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
   // Return true if imt was newly inserted.
   bool TryAssignImTableOffset(ImTable* imt, size_t oat_index) REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -549,6 +545,11 @@ class ImageWriter final {
     size_t oat_index;
     uintptr_t offset;
     NativeObjectRelocationType type;
+  };
+
+  struct JniStubMethodRelocation {
+    size_t oat_index;
+    uintptr_t offset;
   };
 
   NativeObjectRelocation GetNativeRelocation(void* obj) REQUIRES_SHARED(Locks::mutator_lock_);
@@ -617,6 +618,9 @@ class ImageWriter final {
   void CopyAndFixupPointer(void* object, MemberOffset offset, ValueType src_value)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+  void ResetNterpFastPathFlags(ArtMethod* copy, ArtMethod* orig)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
   ALWAYS_INLINE
   static bool IsStronglyInternedString(ObjPtr<mirror::String> str)
       REQUIRES_SHARED(Locks::mutator_lock_);
@@ -663,6 +667,9 @@ class ImageWriter final {
   // image objects (aka sum of bin_slot_sizes_). ArtMethods are placed right after the ArtFields.
   HashMap<void*, NativeObjectRelocation> native_object_relocations_;
 
+  // HashMap used for generating JniStubMethodsSection.
+  JniStubHashMap<std::pair<ArtMethod*, JniStubMethodRelocation>> jni_stub_map_;
+
   // Runtime ArtMethods which aren't reachable from any Class but need to be copied into the image.
   ArtMethod* image_methods_[ImageHeader::kImageMethodsCount];
 
@@ -692,12 +699,12 @@ class ImageWriter final {
   const HashMap<const DexFile*, size_t>& dex_file_oat_index_map_;
 
   // Set of classes/objects known to be dirty in the image. Can be nullptr if there are none.
-  // For old dirty-image-objects format this set contains descriptors of dirty classes.
-  // For new format -- a set of dirty object offsets and descriptor hashes.
-  const HashSet<std::string>* dirty_image_objects_;
+  // Each entry contains a class descriptor with zero or more reference fields, which denote a path
+  // to the dirty object.
+  const std::vector<std::string>* dirty_image_objects_;
 
-  // Dirty object instances parsed from dirty_image_object_
-  HashSet<mirror::Object*> dirty_objects_;
+  // Dirty object instances and their sort keys parsed from dirty_image_object_
+  HashMap<mirror::Object*, uint32_t> dirty_objects_;
 
   // Objects are guaranteed to not cross the region size boundary.
   size_t region_size_ = 0u;

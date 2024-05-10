@@ -43,8 +43,11 @@ class TransformIterator {
                                   typename std::iterator_traits<BaseIterator>::iterator_category>,
                 "Transform iterator base must be an input iterator.");
 
-  using InputType = typename std::iterator_traits<BaseIterator>::reference;
-  using ResultType = std::result_of_t<Function(InputType)>;
+  using BaseReference = typename std::iterator_traits<BaseIterator>::reference;
+  using InputType = std::conditional_t<std::is_same_v<BaseReference, void>,
+                                       typename std::iterator_traits<BaseIterator>::value_type,
+                                       BaseReference>;
+  using ResultType = std::invoke_result_t<Function, InputType>;
 
  public:
   using iterator_category = typename std::iterator_traits<BaseIterator>::iterator_category;

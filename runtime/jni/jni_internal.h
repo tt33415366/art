@@ -27,14 +27,14 @@
 #include "runtime.h"
 #include "thread.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class ArtField;
 class ArtMethod;
 class ScopedObjectAccess;
 
 const JNINativeInterface* GetJniNativeInterface();
-const JNINativeInterface* GetRuntimeShutdownNativeInterface();
+EXPORT const JNINativeInterface* GetRuntimeShutdownNativeInterface();
 
 int ThrowNewException(JNIEnv* env, jclass exception_class, const char* msg, jobject cause);
 
@@ -115,8 +115,12 @@ static inline jmethodID EncodeArtMethod(ReflectiveHandle<ArtMethod> art_method)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   if (kEnableIndexIds && Runtime::Current()->GetJniIdType() != JniIdType::kPointer) {
     return Runtime::Current()->GetJniIdManager()->EncodeMethodId(art_method);
-  } else {
+  } else if (art_method == nullptr ||
+             !art_method->IsCopied() ||
+             art_method->IsDefaultConflicting()) {
     return reinterpret_cast<jmethodID>(art_method.Get());
+  } else {
+    return reinterpret_cast<jmethodID>(art_method->GetCanonicalMethod());
   }
 }
 
@@ -126,8 +130,12 @@ static inline jmethodID EncodeArtMethod(ArtMethod* art_method)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   if (kEnableIndexIds && Runtime::Current()->GetJniIdType() != JniIdType::kPointer) {
     return Runtime::Current()->GetJniIdManager()->EncodeMethodId(art_method);
-  } else {
+  } else if (art_method == nullptr ||
+             !art_method->IsCopied() ||
+             art_method->IsDefaultConflicting()) {
     return reinterpret_cast<jmethodID>(art_method);
+  } else {
+    return reinterpret_cast<jmethodID>(art_method->GetCanonicalMethod());
   }
 }
 

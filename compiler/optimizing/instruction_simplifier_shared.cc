@@ -16,7 +16,9 @@
 
 #include "instruction_simplifier_shared.h"
 
+#include "code_generator.h"
 #include "mirror/array-inl.h"
+#include "nodes.h"
 
 namespace art HIDDEN {
 
@@ -228,8 +230,38 @@ bool TryMergeNegatedInput(HBinaryOperation* op) {
   return false;
 }
 
+bool TryMergeWithAnd(HSub* instruction) {
+  HAnd* and_instr = instruction->GetRight()->AsAndOrNull();
+  if (and_instr == nullptr) {
+    return false;
+  }
 
-bool TryExtractArrayAccessAddress(HInstruction* access,
+  HInstruction* value = instruction->GetLeft();
+
+  HInstruction* left = and_instr->GetLeft();
+  const bool left_is_equal = left == value;
+  HInstruction* right = and_instr->GetRight();
+  const bool right_is_equal = right == value;
+  if (!left_is_equal && !right_is_equal) {
+    return false;
+  }
+
+  HBitwiseNegatedRight* bnr = new (instruction->GetBlock()->GetGraph()->GetAllocator())
+      HBitwiseNegatedRight(instruction->GetType(),
+                           HInstruction::InstructionKind::kAnd,
+                           value,
+                           left_is_equal ? right : left,
+                           instruction->GetDexPc());
+  instruction->GetBlock()->ReplaceAndRemoveInstructionWith(instruction, bnr);
+  // Since we don't run DCE after this phase, try to manually remove the And instruction.
+  if (!and_instr->HasUses()) {
+    and_instr->GetBlock()->RemoveInstruction(and_instr);
+  }
+  return true;
+}
+
+bool TryExtractArrayAccessAddress(CodeGenerator* codegen,
+                                  HInstruction* access,
                                   HInstruction* array,
                                   HInstruction* index,
                                   size_t data_offset) {
@@ -244,8 +276,7 @@ bool TryExtractArrayAccessAddress(HInstruction* access,
     // The access may require a runtime call or the original array pointer.
     return false;
   }
-  if (gUseReadBarrier &&
-      !kUseBakerReadBarrier &&
+  if (codegen->EmitNonBakerReadBarrier() &&
       access->IsArrayGet() &&
       access->GetType() == DataType::Type::kReference) {
     // For object arrays, the non-Baker read barrier instrumentation requires

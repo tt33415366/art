@@ -48,14 +48,8 @@ class Thread;
 
 class Compiler {
  public:
-  enum Kind {
-    kQuick,
-    kOptimizing
-  };
-
   EXPORT static Compiler* Create(const CompilerOptions& compiler_options,
-                                 CompiledCodeStorage* storage,
-                                 Kind kind);
+                                 CompiledCodeStorage* storage);
 
   virtual bool CanCompileMethod(uint32_t method_idx, const DexFile& dex_file) const = 0;
 
@@ -73,12 +67,12 @@ class Compiler {
                                      const DexFile& dex_file,
                                      Handle<mirror::DexCache> dex_cache) const = 0;
 
-  virtual bool JitCompile(Thread* self ATTRIBUTE_UNUSED,
-                          jit::JitCodeCache* code_cache ATTRIBUTE_UNUSED,
-                          jit::JitMemoryRegion* region ATTRIBUTE_UNUSED,
-                          ArtMethod* method ATTRIBUTE_UNUSED,
-                          CompilationKind compilation_kind ATTRIBUTE_UNUSED,
-                          jit::JitLogger* jit_logger ATTRIBUTE_UNUSED)
+  virtual bool JitCompile([[maybe_unused]] Thread* self,
+                          [[maybe_unused]] jit::JitCodeCache* code_cache,
+                          [[maybe_unused]] jit::JitMemoryRegion* region,
+                          [[maybe_unused]] ArtMethod* method,
+                          [[maybe_unused]] CompilationKind compilation_kind,
+                          [[maybe_unused]] jit::JitLogger* jit_logger)
       REQUIRES_SHARED(Locks::mutator_lock_) {
     return false;
   }

@@ -14,6 +14,7 @@
 
 package {
     default_applicable_licenses: ["art_license"],
+    default_team: "trendy_team_art_mainline",
 }
 
 java_defaults {
@@ -49,6 +50,9 @@ java_test_host {
     // fixed.
     data: [
         ":odsign_e2e_test_app",
+    ],
+    java_resources: [
+        ":art-gtest-jars-Main",
     ],
     test_config: "odsign-e2e-tests-full.xml",
     test_suites: [

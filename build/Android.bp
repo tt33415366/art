@@ -5,6 +5,7 @@ package {
     // to get the below license kinds:
     //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["art_license"],
+    default_team: "trendy_team_art_mainline",
 }
 
 bootstrap_go_package {
@@ -34,8 +35,10 @@ art_clang_tidy_errors = [
     "bugprone-argument-comment",
     "bugprone-lambda-function-name",
     "bugprone-macro-parentheses",
+    "bugprone-macro-repeated-side-effects",
     "bugprone-unused-raii", // Protect scoped things like MutexLock.
     "bugprone-unused-return-value",
+    "bugprone-use-after-move",
     "bugprone-virtual-near-miss",
     "misc-unused-using-decls",
     "modernize-use-bool-literals",
@@ -43,11 +46,14 @@ art_clang_tidy_errors = [
     "performance-faster-string-find",
     "performance-for-range-copy",
     "performance-implicit-conversion-in-loop",
+    "performance-inefficient-string-concatenation",
     "performance-inefficient-vector-operation",
     "performance-no-automatic-move",
     "performance-noexcept-move-constructor",
     "performance-unnecessary-copy-initialization",
     "performance-unnecessary-value-param",
+    "readability-duplicate-include",
+    "readability-redundant-string-cstr",
 ]
 
 art_clang_tidy_disabled = [
@@ -59,6 +65,7 @@ art_clang_tidy_disabled = [
     // We have lots of C-style variadic functions, and are OK with them. JNI ensures
     // that working around this warning would be extra-painful.
     "-cert-dcl50-cpp",
+    "-misc-redundant-expression",
     // "Modernization" we don't agree with.
     "-modernize-use-auto",
     "-modernize-return-braced-init-list",
@@ -72,6 +79,7 @@ art_clang_tidy_disabled = [
 soong_config_module_type_import {
     from: "art/build/SoongConfig.bp",
     module_types: [
+        "art_debug_defaults",
         "art_module_art_global_defaults",
         "art_module_cc_defaults",
         "art_module_java_defaults",
@@ -85,15 +93,7 @@ art_module_art_global_defaults {
 
     name: "art_defaults",
 
-    // Disable all ART Soong modules by default when ART prebuilts are in use.
-    // TODO(b/172480617): Clean up when sources are gone from the platform tree
-    // and we no longer need to support sources present when prebuilts are used.
-    enabled: false,
-    soong_config_variables: {
-        source_build: {
-            enabled: true,
-        },
-    },
+    cpp_std: "gnu++17", // TODO(b/311052584): fix C++20 build and revert this line
 
     // This is the default visibility for the //art package, but we repeat it
     // here so that it gets merged with other visibility rules in modules
@@ -315,6 +315,14 @@ art_debug_defaults {
             cflags: ["-Wno-frame-larger-than="],
         },
     },
+    soong_config_variables: {
+        art_debug_opt_flag: {
+            cflags: ["%s"],
+            conditions_default: {
+                cflags: ["-Og"],
+            },
+        },
+    },
 }
 
 // A version of conscrypt only for enabling the "-hostdex" version to test ART on host.
@@ -365,7 +373,7 @@ java_library {
 // from sources. TODO(b/172480617): Clean up when sources are gone from the
 // platform tree and we no longer need to support sources present when prebuilts
 // are used.
-
+// TODO(b/335854415): Remove the defaults module
 art_module_cc_defaults {
     name: "art_module_source_build_defaults",
     defaults_visibility: [
@@ -373,12 +381,6 @@ art_module_cc_defaults {
         "//libcore:__subpackages__",
         "//libnativehelper:__subpackages__",
     ],
-    enabled: false,
-    soong_config_variables: {
-        source_build: {
-            enabled: true,
-        },
-    },
     target: {
         windows: {
             // Windows is disabled by default, but if we set enabled:true
@@ -388,6 +390,7 @@ art_module_cc_defaults {
     },
 }
 
+// TODO(b/335854415): Remove the defaults module
 art_module_java_defaults {
     name: "art_module_source_build_java_defaults",
     defaults_visibility: [
@@ -395,12 +398,6 @@ art_module_java_defaults {
         "//libcore:__subpackages__",
         "//libnativehelper:__subpackages__",
     ],
-    enabled: false,
-    soong_config_variables: {
-        source_build: {
-            enabled: true,
-        },
-    },
     target: {
         windows: {
             enabled: false,
@@ -408,6 +405,7 @@ art_module_java_defaults {
     },
 }
 
+// TODO(b/335854415): Remove the defaults module
 art_module_genrule_defaults {
     name: "art_module_source_build_genrule_defaults",
     defaults_visibility: [
@@ -415,12 +413,6 @@ art_module_genrule_defaults {
         "//libcore:__subpackages__",
         "//libnativehelper:__subpackages__",
     ],
-    enabled: false,
-    soong_config_variables: {
-        source_build: {
-            enabled: true,
-        },
-    },
     target: {
         windows: {
             enabled: false,
@@ -428,6 +420,7 @@ art_module_genrule_defaults {
     },
 }
 
+// TODO(b/335854415): Remove the defaults module
 art_module_prebuilt_defaults {
     name: "art_module_source_build_prebuilt_defaults",
     defaults_visibility: [
@@ -435,12 +428,6 @@ art_module_prebuilt_defaults {
         "//libcore:__subpackages__",
         "//libnativehelper:__subpackages__",
     ],
-    enabled: false,
-    soong_config_variables: {
-        source_build: {
-            enabled: true,
-        },
-    },
     target: {
         windows: {
             enabled: false,

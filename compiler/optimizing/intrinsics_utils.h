@@ -153,24 +153,34 @@ static inline bool IsVarHandleGet(HInvoke* invoke) {
   return access_mode == mirror::VarHandle::AccessModeTemplate::kGet;
 }
 
-static inline bool IsUnsafeGetObject(HInvoke* invoke) {
+static inline bool IsUnsafeGetReference(HInvoke* invoke) {
   switch (invoke->GetIntrinsic()) {
     case Intrinsics::kUnsafeGetObject:
     case Intrinsics::kUnsafeGetObjectVolatile:
-    case Intrinsics::kJdkUnsafeGetObject:
-    case Intrinsics::kJdkUnsafeGetObjectVolatile:
-    case Intrinsics::kJdkUnsafeGetObjectAcquire:
+    case Intrinsics::kJdkUnsafeGetReference:
+    case Intrinsics::kJdkUnsafeGetReferenceVolatile:
+    case Intrinsics::kJdkUnsafeGetReferenceAcquire:
       return true;
     default:
       return false;
   }
 }
 
-static inline bool IsUnsafeCASObject(HInvoke* invoke) {
+static inline bool IsUnsafeCASReference(HInvoke* invoke) {
   switch (invoke->GetIntrinsic()) {
     case Intrinsics::kUnsafeCASObject:
     case Intrinsics::kJdkUnsafeCASObject:
-    case Intrinsics::kJdkUnsafeCompareAndSetObject:
+    case Intrinsics::kJdkUnsafeCompareAndSetReference:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static inline bool IsUnsafeGetAndSetReference(HInvoke* invoke) {
+  switch (invoke->GetIntrinsic()) {
+    case Intrinsics::kUnsafeGetAndSetObject:
+    case Intrinsics::kJdkUnsafeGetAndSetReference:
       return true;
     default:
       return false;
@@ -200,7 +210,7 @@ static inline DataType::Type GetVarHandleExpectedValueType(HInvoke* invoke,
 static inline ArtField* GetBootImageVarHandleField(HInvoke* invoke)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   DCHECK_LE(GetExpectedVarHandleCoordinatesCount(invoke), 1u);
-  DCHECK(VarHandleOptimizations(invoke).GetUseKnownBootImageVarHandle());
+  DCHECK(VarHandleOptimizations(invoke).GetUseKnownImageVarHandle());
   HInstruction* var_handle_instruction = invoke->InputAt(0);
   if (var_handle_instruction->IsNullCheck()) {
     var_handle_instruction = var_handle_instruction->InputAt(0);
@@ -209,7 +219,7 @@ static inline ArtField* GetBootImageVarHandleField(HInvoke* invoke)
   ArtField* field = var_handle_instruction->AsStaticFieldGet()->GetFieldInfo().GetField();
   DCHECK(field->IsStatic());
   DCHECK(field->IsFinal());
-  DCHECK(var_handle_instruction->InputAt(0)->AsLoadClass()->IsInBootImage());
+  DCHECK(var_handle_instruction->InputAt(0)->AsLoadClass()->IsInImage());
   ObjPtr<mirror::Object> var_handle = field->GetObject(field->GetDeclaringClass());
   DCHECK(var_handle->GetClass() ==
          (GetExpectedVarHandleCoordinatesCount(invoke) == 0u

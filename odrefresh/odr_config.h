@@ -33,6 +33,7 @@
 #include "log/log.h"
 #include "odr_common.h"
 #include "odrefresh/odrefresh.h"
+#include "tools/system_properties.h"
 
 namespace art {
 namespace odrefresh {
@@ -71,11 +72,15 @@ struct SystemPropertyConfig {
 // default value should not trigger re-compilation. This is to comply with the phenotype flag
 // requirement (go/platform-experiments-flags#pre-requisites).
 const android::base::NoDestructor<std::vector<SystemPropertyConfig>> kSystemProperties{
-    {SystemPropertyConfig{.name = "persist.device_config.runtime_native_boot.enable_uffd_gc",
+    {SystemPropertyConfig{.name = "persist.device_config.runtime_native_boot.enable_uffd_gc_2",
                           .default_value = "false"},
-     SystemPropertyConfig{.name = kPhDisableCompactDex, .default_value = "false"},
+     SystemPropertyConfig{.name = "persist.device_config.runtime_native_boot.force_disable_uffd_gc",
+                          .default_value = "false"},
      SystemPropertyConfig{.name = kSystemPropertySystemServerCompilerFilterOverride,
-                          .default_value = ""}}};
+                          .default_value = ""},
+     // For testing only (cf. odsign_e2e_tests_full).
+     SystemPropertyConfig{.name = "persist.device_config.runtime_native_boot.odrefresh_test_toggle",
+                          .default_value = "false"}}};
 
 // An enumeration of the possible zygote configurations on Android.
 enum class ZygoteKind : uint8_t {
@@ -87,6 +92,26 @@ enum class ZygoteKind : uint8_t {
   kZygote64_32 = 2,
   // 64-bit primary zygote, no secondary zygote.
   kZygote64 = 3
+};
+
+class OdrSystemProperties : public tools::SystemProperties {
+ public:
+  explicit OdrSystemProperties(
+      const std::unordered_map<std::string, std::string>* system_properties)
+      : system_properties_(system_properties) {}
+
+  // For supporting foreach loops.
+  auto begin() const { return system_properties_->begin(); }
+  auto end() const { return system_properties_->end(); }
+
+ protected:
+  std::string GetProperty(const std::string& key) const override {
+    auto it = system_properties_->find(key);
+    return it != system_properties_->end() ? it->second : "";
+  }
+
+ private:
+  const std::unordered_map<std::string, std::string>* system_properties_;
 };
 
 // Configuration class for odrefresh. Exists to enable abstracting environment variables and
@@ -111,21 +136,21 @@ class OdrConfig final {
   std::string standalone_system_server_jars_;
   bool compilation_os_mode_ = false;
   bool minimal_ = false;
+  bool only_boot_images_ = false;
 
   // The current values of system properties listed in `kSystemProperties`.
   std::unordered_map<std::string, std::string> system_properties_;
 
-  // Staging directory for artifacts. The directory must exist and will be automatically removed
-  // after compilation. If empty, use the default directory.
-  std::string staging_dir_;
+  // A helper for reading from `system_properties_`.
+  OdrSystemProperties odr_system_properties_;
 
  public:
   explicit OdrConfig(const char* program_name)
-    : dry_run_(false),
-      isa_(InstructionSet::kNone),
-      program_name_(android::base::Basename(program_name)),
-      artifact_dir_(GetApexDataDalvikCacheDirectory(InstructionSet::kNone)) {
-  }
+      : dry_run_(false),
+        isa_(InstructionSet::kNone),
+        program_name_(android::base::Basename(program_name)),
+        artifact_dir_(GetApexDataDalvikCacheDirectory(InstructionSet::kNone)),
+        odr_system_properties_(&system_properties_) {}
 
   const std::string& GetApexInfoListFile() const { return apex_info_list_file_; }
 
@@ -133,11 +158,18 @@ class OdrConfig final {
     const auto [isa32, isa64] = GetPotentialInstructionSets();
     switch (zygote_kind_) {
       case ZygoteKind::kZygote32:
+        CHECK_NE(isa32, art::InstructionSet::kNone);
         return {isa32};
       case ZygoteKind::kZygote32_64:
-      case ZygoteKind::kZygote64_32:
+        CHECK_NE(isa32, art::InstructionSet::kNone);
+        CHECK_NE(isa64, art::InstructionSet::kNone);
         return {isa32, isa64};
+      case ZygoteKind::kZygote64_32:
+        CHECK_NE(isa32, art::InstructionSet::kNone);
+        CHECK_NE(isa64, art::InstructionSet::kNone);
+        return {isa64, isa32};
       case ZygoteKind::kZygote64:
+        CHECK_NE(isa64, art::InstructionSet::kNone);
         return {isa64};
     }
   }
@@ -147,9 +179,11 @@ class OdrConfig final {
     switch (zygote_kind_) {
       case ZygoteKind::kZygote32:
       case ZygoteKind::kZygote32_64:
+        CHECK_NE(isa32, art::InstructionSet::kNone);
         return isa32;
       case ZygoteKind::kZygote64_32:
       case ZygoteKind::kZygote64:
+        CHECK_NE(isa64, art::InstructionSet::kNone);
         return isa64;
     }
   }
@@ -195,14 +229,10 @@ class OdrConfig final {
   const std::string& GetSystemServerCompilerFilter() const {
     return system_server_compiler_filter_;
   }
-  const std::string& GetStagingDir() const {
-    return staging_dir_;
-  }
   bool GetCompilationOsMode() const { return compilation_os_mode_; }
   bool GetMinimal() const { return minimal_; }
-  const std::unordered_map<std::string, std::string>& GetSystemProperties() const {
-    return system_properties_;
-  }
+  bool GetOnlyBootImages() const { return only_boot_images_; }
+  const OdrSystemProperties& GetSystemProperties() const { return odr_system_properties_; }
 
   void SetApexInfoListFile(const std::string& file_path) { apex_info_list_file_ = file_path; }
   void SetArtBinDir(const std::string& art_bin_dir) { art_bin_dir_ = art_bin_dir; }
@@ -241,10 +271,6 @@ class OdrConfig final {
 
   void SetBootClasspath(const std::string& classpath) { boot_classpath_ = classpath; }
 
-  void SetStagingDir(const std::string& staging_dir) {
-    staging_dir_ = staging_dir;
-  }
-
   const std::string& GetStandaloneSystemServerJars() const {
     return standalone_system_server_jars_;
   }
@@ -256,6 +282,8 @@ class OdrConfig final {
   void SetCompilationOsMode(bool value) { compilation_os_mode_ = value; }
 
   void SetMinimal(bool value) { minimal_ = value; }
+
+  void SetOnlyBootImages(bool value) { only_boot_images_ = value; }
 
   std::unordered_map<std::string, std::string>* MutableSystemProperties() {
     return &system_properties_;
@@ -276,6 +304,7 @@ class OdrConfig final {
       case art::InstructionSet::kX86_64:
         return std::make_pair(art::InstructionSet::kX86, art::InstructionSet::kX86_64);
       case art::InstructionSet::kRiscv64:
+        return std::make_pair(art::InstructionSet::kNone, art::InstructionSet::kRiscv64);
       case art::InstructionSet::kThumb2:
       case art::InstructionSet::kNone:
         LOG(FATAL) << "Invalid instruction set " << isa_;

@@ -20,12 +20,11 @@
 
 #include "arch/instruction_set.h"
 #include "art_method.h"
-#include "base/enums.h"
 #include "base/hex_dump.h"
 #include "base/logging.h"  // For VLOG.
 #include "base/macros.h"
-#include "base/safe_copy.h"
-#include "oat_quick_method_header.h"
+#include "base/pointer_size.h"
+#include "oat/oat_quick_method_header.h"
 #include "runtime_globals.h"
 #include "thread-current-inl.h"
 
@@ -70,7 +69,7 @@
 // X86 (and X86_64) specific fault handler functions.
 //
 
-namespace art {
+namespace art HIDDEN {
 
 extern "C" void art_quick_throw_null_pointer_exception_from_signal();
 extern "C" void art_quick_throw_stack_overflow();
@@ -259,8 +258,8 @@ static uint32_t GetInstructionSize(const uint8_t* pc, size_t bytes) {
 #undef FETCH_OR_SKIP_BYTE
 }
 
-uintptr_t FaultManager::GetFaultPc(siginfo_t* siginfo ATTRIBUTE_UNUSED, void* context) {
-  struct ucontext* uc = reinterpret_cast<struct ucontext*>(context);
+uintptr_t FaultManager::GetFaultPc([[maybe_unused]] siginfo_t* siginfo, void* context) {
+  ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
   if (uc->CTX_ESP == 0) {
     VLOG(signals) << "Missing SP";
     return 0u;
@@ -269,7 +268,7 @@ uintptr_t FaultManager::GetFaultPc(siginfo_t* siginfo ATTRIBUTE_UNUSED, void* co
 }
 
 uintptr_t FaultManager::GetFaultSp(void* context) {
-  struct ucontext* uc = reinterpret_cast<struct ucontext*>(context);
+  ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
   return uc->CTX_ESP;
 }
 
@@ -279,7 +278,7 @@ bool NullPointerHandler::Action(int, siginfo_t* sig, void* context) {
     return false;
   }
 
-  struct ucontext* uc = reinterpret_cast<struct ucontext*>(context);
+  ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
   ArtMethod** sp = reinterpret_cast<ArtMethod**>(uc->CTX_ESP);
   ArtMethod* method = *sp;
   if (!IsValidMethod(method)) {
@@ -359,7 +358,7 @@ bool SuspensionHandler::Action(int, siginfo_t*, void* context) {
 #endif
   uint8_t checkinst2[] = {0x85, 0x00};
 
-  struct ucontext* uc = reinterpret_cast<struct ucontext*>(context);
+  ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
   uint8_t* pc = reinterpret_cast<uint8_t*>(uc->CTX_EIP);
   uint8_t* sp = reinterpret_cast<uint8_t*>(uc->CTX_ESP);
 
@@ -415,7 +414,7 @@ bool SuspensionHandler::Action(int, siginfo_t*, void* context) {
 // address for the previous method is on the stack at ESP.
 
 bool StackOverflowHandler::Action(int, siginfo_t* info, void* context) {
-  struct ucontext* uc = reinterpret_cast<struct ucontext*>(context);
+  ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
   uintptr_t sp = static_cast<uintptr_t>(uc->CTX_ESP);
 
   uintptr_t fault_addr = reinterpret_cast<uintptr_t>(info->si_addr);

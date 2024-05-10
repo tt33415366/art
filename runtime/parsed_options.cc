@@ -38,7 +38,7 @@
 #include "cmdline_parser.h"
 #include "runtime_options.h"
 
-namespace art {
+namespace art HIDDEN {
 
 using MemoryKiB = Memory<1024>;
 
@@ -250,6 +250,7 @@ std::unique_ptr<RuntimeParser> ParsedOptions::MakeParser(bool ignore_unrecognize
           .WithValueMap({{"false", false}, {"true", true}})
           .IntoKey(M::DumpNativeStackOnSigQuit)
       .Define("-XX:MadviseRandomAccess:_")
+          .WithHelp("Deprecated option")
           .WithType<bool>()
           .WithValueMap({{"false", false}, {"true", true}})
           .IntoKey(M::MadviseRandomAccess)
@@ -312,6 +313,7 @@ std::unique_ptr<RuntimeParser> ParsedOptions::MakeParser(bool ignore_unrecognize
                "-Xps-min-classes-to-save:_",
                "-Xps-min-notification-before-wake:_",
                "-Xps-max-notification-before-wake:_",
+               "-Xps-inline-cache-threshold:_",
                "-Xps-profile-path:_"})
           .WithHelp("profile-saver options -Xps-<key>:<value>")
           .WithType<ProfileSaverOptions>()
@@ -340,6 +342,8 @@ std::unique_ptr<RuntimeParser> ParsedOptions::MakeParser(bool ignore_unrecognize
           .IntoKey(M::BackgroundGc)
       .Define("-XX:+DisableExplicitGC")
           .IntoKey(M::DisableExplicitGC)
+      .Define("-XX:+DisableEagerlyReleaseExplicitGC")
+          .IntoKey(M::DisableEagerlyReleaseExplicitGC)
       .Define("-Xlockprofthreshold:_")
           .WithType<unsigned int>()
           .IntoKey(M::LockProfThreshold)

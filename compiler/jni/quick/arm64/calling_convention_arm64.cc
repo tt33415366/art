@@ -142,7 +142,7 @@ static constexpr uint32_t kAapcs64FpCalleeSpillMask =
     CalculateFpCalleeSpillMask(kAapcs64CalleeSaveRegisters);
 
 // Calling convention
-static ManagedRegister ReturnRegisterForShorty(const char* shorty) {
+static ManagedRegister ReturnRegisterForShorty(std::string_view shorty) {
   if (shorty[0] == 'F') {
     return Arm64ManagedRegister::FromSRegister(S0);
   } else if (shorty[0] == 'D') {
@@ -222,7 +222,7 @@ Arm64JniCallingConvention::Arm64JniCallingConvention(bool is_static,
                                                      bool is_synchronized,
                                                      bool is_fast_native,
                                                      bool is_critical_native,
-                                                     const char* shorty)
+                                                     std::string_view shorty)
     : JniCallingConvention(is_static,
                            is_synchronized,
                            is_fast_native,
@@ -254,17 +254,16 @@ ArrayRef<const ManagedRegister> Arm64JniCallingConvention::CalleeSaveScratchRegi
 
 ArrayRef<const ManagedRegister> Arm64JniCallingConvention::ArgumentScratchRegisters() const {
   DCHECK(!IsCriticalNative());
-  // Exclude x0 if it's used as a return register.
-  static_assert(kXArgumentRegisters[0].Equals(Arm64ManagedRegister::FromXRegister(X0)));
   ArrayRef<const ManagedRegister> scratch_regs(kXArgumentRegisters);
-  Arm64ManagedRegister return_reg = ReturnRegister().AsArm64();
-  auto return_reg_overlaps = [return_reg](ManagedRegister reg) {
-    return return_reg.Overlaps(reg.AsArm64());
-  };
-  if (return_reg_overlaps(scratch_regs[0])) {
-    scratch_regs = scratch_regs.SubArray(/*pos=*/ 1u);
-  }
-  DCHECK(std::none_of(scratch_regs.begin(), scratch_regs.end(), return_reg_overlaps));
+  // Exclude return register (X0) even if unused. Using the same scratch registers helps
+  // making more JNI stubs identical for better reuse, such as deduplicating them in oat files.
+  static_assert(kXArgumentRegisters[0].Equals(Arm64ManagedRegister::FromXRegister(X0)));
+  scratch_regs = scratch_regs.SubArray(/*pos=*/ 1u);
+  DCHECK(std::none_of(scratch_regs.begin(),
+                      scratch_regs.end(),
+                      [return_reg = ReturnRegister().AsArm64()](ManagedRegister reg) {
+                        return return_reg.Overlaps(reg.AsArm64());
+                      }));
   return scratch_regs;
 }
 
@@ -307,7 +306,7 @@ size_t Arm64JniCallingConvention::OutFrameSize() const {
   }
   size_t out_args_size = RoundUp(size, kAapcs64StackAlignment);
   if (UNLIKELY(IsCriticalNative())) {
-    DCHECK_EQ(out_args_size, GetCriticalNativeStubFrameSize(GetShorty(), NumArgs() + 1u));
+    DCHECK_EQ(out_args_size, GetCriticalNativeStubFrameSize(GetShorty()));
   }
   return out_args_size;
 }
@@ -323,7 +322,7 @@ ArrayRef<const ManagedRegister> Arm64JniCallingConvention::CalleeSaveRegisters()
       static_assert(kCalleeSaveRegisters[lr_index].Equals(
                         Arm64ManagedRegister::FromXRegister(LR)));
       return ArrayRef<const ManagedRegister>(kCalleeSaveRegisters).SubArray(
-          /*pos*/ lr_index, /*length=*/ 1u);
+          /*pos=*/ lr_index, /*length=*/ 1u);
     }
   } else {
     return ArrayRef<const ManagedRegister>(kCalleeSaveRegisters);

@@ -19,6 +19,7 @@
 
 #include <android-base/logging.h>
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -53,8 +54,12 @@ namespace hiddenapi {
 enum class Domain : char;
 }  // namespace hiddenapi
 
-// Some instances of DexFile own the storage referred to by DexFile.  Clients who create
-// such management do so by subclassing Container.
+// Owns the physical storage that backs one or more DexFiles (that is, it can be shared).
+// It frees the storage (e.g. closes file) when all DexFiles that use it are all closed.
+//
+// The memory range must include all data used by the DexFiles including any shared data.
+//
+// It might also include surrounding non-dex data (e.g. it might represent vdex file).
 class DexFileContainer {
  public:
   DexFileContainer() { }
@@ -87,6 +92,7 @@ class DexFileContainer {
 class MemoryDexFileContainer : public DexFileContainer {
  public:
   MemoryDexFileContainer(const uint8_t* begin, const uint8_t* end) : begin_(begin), end_(end) {}
+  MemoryDexFileContainer(const uint8_t* begin, size_t size) : begin_(begin), end_(begin + size) {}
   bool IsReadOnly() const override { return true; }
   bool EnableWrite() override { return false; }
   bool DisableWrite() override { return false; }
@@ -110,6 +116,8 @@ class DexFile {
   static constexpr size_t kDexMagicSize = 4;
   static constexpr size_t kDexVersionLen = 4;
 
+  static constexpr uint32_t kDexContainerVersion = 41;
+
   // First Dex format version enforcing class definition ordering rules.
   static constexpr uint32_t kClassDefinitionOrderEnforcedVersion = 37;
 
@@ -120,11 +128,19 @@ class DexFile {
   static constexpr uint16_t kDexNoIndex16 = 0xFFFF;
   static constexpr uint32_t kDexNoIndex32 = 0xFFFFFFFF;
 
+  using Magic = std::array<uint8_t, 8>;
+
+  struct Sha1 : public std::array<uint8_t, kSha1DigestSize> {
+    std::string ToString() const;
+  };
+
+  static_assert(std::is_standard_layout_v<Sha1>);
+
   // Raw header_item.
   struct Header {
-    uint8_t magic_[8] = {};
+    Magic magic_ = {};
     uint32_t checksum_ = 0;  // See also location_checksum_
-    uint8_t signature_[kSha1DigestSize] = {};
+    Sha1 signature_ = {};
     uint32_t file_size_ = 0;  // size of entire file
     uint32_t header_size_ = 0;  // offset to start of next section
     uint32_t endian_tag_ = 0;
@@ -148,6 +164,29 @@ class DexFile {
 
     // Decode the dex magic version
     uint32_t GetVersion() const;
+
+    // Get the header_size that is expected for this version.
+    uint32_t GetExpectedHeaderSize() const;
+
+    // Returns true for standard DEX version 41 or newer.
+    bool HasDexContainer() const;
+
+    // Returns offset of this header within the container.
+    // Returns 0 for older dex versions without container.
+    uint32_t HeaderOffset() const;
+
+    // Returns size of the whole container.
+    // Returns file_size_ for older dex versions without container.
+    uint32_t ContainerSize() const;
+
+    // Set the DEX container fields to the given values.
+    // Must be [0, file_size_) for older dex versions.
+    void SetDexContainer(size_t header_offset, size_t container_size);
+  };
+
+  struct HeaderV41 : public Header {
+    uint32_t container_size_ = 0;  // total size of all dex files in the container.
+    uint32_t header_offset_ = 0;   // offset of this dex's header in the container.
   };
 
   // Map item type codes.
@@ -241,6 +280,8 @@ class DexFile {
     return location_checksum_;
   }
 
+  Sha1 GetSha1() const { return header_->signature_; }
+
   const Header& GetHeader() const {
     DCHECK(header_ != nullptr) << GetLocation();
     return *header_;
@@ -250,6 +291,20 @@ class DexFile {
   uint32_t GetDexVersion() const {
     return GetHeader().GetVersion();
   }
+
+  // Returns true if this is DEX V41 or later (i.e. supports container).
+  // Returns true even if the container contains just a single DEX file.
+  bool HasDexContainer() const { return GetHeader().HasDexContainer(); }
+
+  // Returns the whole memory range of the DEX V41 container.
+  // Returns just the range of the DEX file for V40 or older.
+  ArrayRef<const uint8_t> GetDexContainerRange() const {
+    return {Begin() - header_->HeaderOffset(), header_->ContainerSize()};
+  }
+
+  bool IsDexContainerFirstEntry() const { return Begin() == GetDexContainerRange().begin(); }
+
+  bool IsDexContainerLastEntry() const { return End() == GetDexContainerRange().end(); }
 
   // Returns true if the byte string points to the magic value.
   virtual bool IsMagicValid() const = 0;
@@ -285,21 +340,21 @@ class DexFile {
     return dex::StringIndex(&string_id - string_ids_);
   }
 
-  int32_t GetStringLength(const dex::StringId& string_id) const;
-
   // Returns a pointer to the UTF-8 string data referred to by the given string_id as well as the
   // length of the string when decoded as a UTF-16 string. Note the UTF-16 length is not the same
   // as the string length of the string data.
   const char* GetStringDataAndUtf16Length(const dex::StringId& string_id,
                                           uint32_t* utf16_length) const;
+  const char* GetStringDataAndUtf16Length(dex::StringIndex string_idx,
+                                          uint32_t* utf16_length) const;
+
+  uint32_t GetStringUtf16Length(const dex::StringId& string_id) const;
 
   const char* GetStringData(const dex::StringId& string_id) const;
+  const char* GetStringData(dex::StringIndex string_idx) const;
 
-  // Index version of GetStringDataAndUtf16Length.
-  const char* StringDataAndUtf16LengthByIdx(dex::StringIndex idx, uint32_t* utf16_length) const;
-
-  const char* StringDataByIdx(dex::StringIndex idx) const;
-  std::string_view StringViewByIdx(dex::StringIndex idx) const;
+  std::string_view GetStringView(const dex::StringId& string_id) const;
+  std::string_view GetStringView(dex::StringIndex string_idx) const;
 
   // Looks up a string id for a given modified utf8 string.
   const dex::StringId* FindStringId(const char* string) const;
@@ -333,14 +388,11 @@ class DexFile {
     return dex::TypeIndex(static_cast<uint16_t>(result));
   }
 
-  // Get the descriptor string associated with a given type index.
-  const char* StringByTypeIdx(dex::TypeIndex idx, uint32_t* unicode_length) const;
-
-  const char* StringByTypeIdx(dex::TypeIndex idx) const;
-
   // Returns the type descriptor string of a type id.
   const char* GetTypeDescriptor(const dex::TypeId& type_id) const;
+  const char* GetTypeDescriptor(dex::TypeIndex type_idx) const;
   std::string_view GetTypeDescriptorView(const dex::TypeId& type_id) const;
+  std::string_view GetTypeDescriptorView(dex::TypeIndex type_idx) const;
 
   // Looks up a type for the given string index
   const dex::TypeId* FindTypeId(dex::StringIndex string_idx) const;
@@ -445,10 +497,12 @@ class DexFile {
 
   // Returns the shorty of a method by its index.
   const char* GetMethodShorty(uint32_t idx) const;
+  std::string_view GetMethodShortyView(uint32_t idx) const;
 
   // Returns the shorty of a method id.
   const char* GetMethodShorty(const dex::MethodId& method_id) const;
   const char* GetMethodShorty(const dex::MethodId& method_id, uint32_t* length) const;
+  std::string_view GetMethodShortyView(const dex::MethodId& method_id) const;
 
   // Returns the number of class definitions in the .dex file.
   uint32_t NumClassDefs() const {
@@ -543,6 +597,7 @@ class DexFile {
 
   // Returns the short form method descriptor for the given prototype.
   const char* GetShorty(dex::ProtoIndex proto_idx) const;
+  std::string_view GetShortyView(dex::ProtoIndex proto_idx) const;
   std::string_view GetShortyView(const dex::ProtoId& proto_id) const;
 
   const dex::TypeList* GetProtoParameters(const dex::ProtoId& proto_id) const {
@@ -646,12 +701,14 @@ class DexFile {
 
   const dex::AnnotationSetItem* GetFieldAnnotationSetItem(
       const dex::FieldAnnotationsItem& anno_item) const {
-    return DataPointer<dex::AnnotationSetItem>(anno_item.annotations_off_);
+    // `DexFileVerifier` checks that the offset is not zero.
+    return NonNullDataPointer<dex::AnnotationSetItem>(anno_item.annotations_off_);
   }
 
   const dex::AnnotationSetItem* GetMethodAnnotationSetItem(
       const dex::MethodAnnotationsItem& anno_item) const {
-    return DataPointer<dex::AnnotationSetItem>(anno_item.annotations_off_);
+    // `DexFileVerifier` checks that the offset is not zero.
+    return NonNullDataPointer<dex::AnnotationSetItem>(anno_item.annotations_off_);
   }
 
   const dex::AnnotationSetRefList* GetParameterAnnotationSetRefList(
@@ -730,14 +787,14 @@ class DexFile {
   // Returns false if there is no debugging information or if it cannot be decoded.
   template<typename DexDebugNewPosition, typename IndexToStringData>
   static bool DecodeDebugPositionInfo(const uint8_t* stream,
-                                      const IndexToStringData& index_to_string_data,
-                                      const DexDebugNewPosition& position_functor);
+                                      IndexToStringData&& index_to_string_data,
+                                      DexDebugNewPosition&& position_functor);
 
   const char* GetSourceFile(const dex::ClassDef& class_def) const {
     if (!class_def.source_file_idx_.IsValid()) {
       return nullptr;
     } else {
-      return StringDataByIdx(class_def.source_file_idx_);
+      return GetStringData(class_def.source_file_idx_);
     }
   }
 
@@ -747,17 +804,15 @@ class DexFile {
 
   bool DisableWrite() const;
 
-  const uint8_t* Begin() const {
-    return begin_;
-  }
+  const uint8_t* Begin() const { return begin_; }
 
-  size_t Size() const {
-    return size_;
-  }
+  const uint8_t* End() const { return Begin() + Size(); }
 
-  static ArrayRef<const uint8_t> GetDataRange(const uint8_t* data,
-                                              size_t size,
-                                              DexFileContainer* container);
+  size_t Size() const { return header_->file_size_; }
+
+  size_t SizeIncludingSharedData() const { return GetDexContainerRange().end() - Begin(); }
+
+  static ArrayRef<const uint8_t> GetDataRange(const uint8_t* data, DexFileContainer* container);
 
   const uint8_t* DataBegin() const { return data_.data(); }
 
@@ -765,8 +820,14 @@ class DexFile {
 
   template <typename T>
   const T* DataPointer(size_t offset) const {
+    return (offset != 0u) ? NonNullDataPointer<T>(offset) : nullptr;
+  }
+
+  template <typename T>
+  const T* NonNullDataPointer(size_t offset) const {
+    DCHECK_NE(offset, 0u);
     DCHECK_LT(offset, DataSize()) << "Offset past end of data section";
-    return (offset != 0u) ? reinterpret_cast<const T*>(DataBegin() + offset) : nullptr;
+    return reinterpret_cast<const T*>(DataBegin() + offset);
   }
 
   const OatDexFile* GetOatDexFile() const {
@@ -832,15 +893,13 @@ class DexFile {
     return DataBegin() <= addr && addr < DataBegin() + DataSize();
   }
 
-  DexFileContainer* GetContainer() const {
-    return container_.get();
-  }
+  const std::shared_ptr<DexFileContainer>& GetContainer() const { return container_; }
 
   IterationRange<ClassIterator> GetClasses() const;
 
   template <typename Visitor>
   static uint32_t DecodeDebugInfoParameterNames(const uint8_t** debug_info,
-                                                const Visitor& visitor);
+                                                Visitor&& visitor);
 
   static inline bool StringEquals(const DexFile* df1, dex::StringIndex sidx1,
                                   const DexFile* df2, dex::StringIndex sidx2);
@@ -850,13 +909,15 @@ class DexFile {
   static constexpr uint32_t kDefaultMethodsVersion = 37;
 
   DexFile(const uint8_t* base,
-          size_t size,
           const std::string& location,
           uint32_t location_checksum,
           const OatDexFile* oat_dex_file,
           // Shared since several dex files may be stored in the same logical container.
           std::shared_ptr<DexFileContainer> container,
           bool is_compact_dex);
+
+  template <typename T>
+  const T* GetSection(const uint32_t* offset, DexFileContainer* container);
 
   // Top-level initializer that calls other Init methods.
   bool Init(std::string* error_msg);
@@ -870,17 +931,27 @@ class DexFile {
   // The base address of the memory mapping.
   const uint8_t* const begin_;
 
-  // The size of the underlying memory allocation in bytes.
-  const size_t size_;
+  size_t unused_size_ = 0;  // Preserve layout for DRM (b/305203031).
 
   // Data memory range: Most dex offsets are relative to this memory range.
   // Standard dex: same as (begin_, size_).
+  // Dex container: all dex files (starting from the first header).
   // Compact: shared data which is located after all non-shared data.
   //
   // This is different to the "data section" in the standard dex header.
   ArrayRef<const uint8_t> const data_;
 
-  // Typically the dex file name when available, alternatively some identifying string.
+  // The full absolute path to the dex file, if it was loaded from disk.
+  //
+  // Can also be a path to a multidex container (typically apk), followed by
+  // DexFileLoader.kMultiDexSeparator (i.e. '!') and the file inside the
+  // container.
+  //
+  // On host this may not be an absolute path.
+  //
+  // On device libnativeloader uses this to determine the location of the java
+  // package or shared library, which decides where to load native libraries
+  // from.
   //
   // The ClassLinker will use this to match DexFiles the boot class
   // path to DexCache::GetLocation when loading from an image.
@@ -965,7 +1036,7 @@ class DexFileParameterIterator {
     return type_list_->GetTypeItem(pos_).type_idx_;
   }
   const char* GetDescriptor() {
-    return dex_file_.StringByTypeIdx(dex::TypeIndex(GetTypeIdx()));
+    return dex_file_.GetTypeDescriptor(dex::TypeIndex(GetTypeIdx()));
   }
  private:
   const DexFile& dex_file_;
@@ -981,7 +1052,12 @@ class EncodedArrayValueIterator {
 
   bool HasNext() const { return pos_ < array_size_; }
 
-  void Next();
+  WARN_UNUSED bool MaybeNext();
+
+  ALWAYS_INLINE void Next() {
+    bool ok = MaybeNext();
+    DCHECK(ok) << "Unknown type: " << GetValueType();
+  }
 
   enum ValueType {
     kByte         = 0x00,
@@ -1002,6 +1078,7 @@ class EncodedArrayValueIterator {
     kAnnotation   = 0x1d,
     kNull         = 0x1e,
     kBoolean      = 0x1f,
+    kEndOfInput   = 0xff,
   };
 
   ValueType GetValueType() const { return type_; }

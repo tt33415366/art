@@ -18,9 +18,9 @@
 
 #include <android-base/logging.h>
 
-#include "aot_class_linker.h"
 #include "base/mutex-inl.h"
 #include "base/stl_util.h"
+#include "common_throws.h"
 #include "dex/descriptors_names.h"
 #include "gc/accounting/card_table-inl.h"
 #include "gc/heap.h"
@@ -30,12 +30,13 @@
 #include "mirror/dex_cache-inl.h"
 #include "mirror/object-inl.h"
 #include "mirror/object_array-inl.h"
+#include "oat/aot_class_linker.h"
 #include "obj_ptr-inl.h"
 #include "runtime.h"
 
 #include <list>
 
-namespace art {
+namespace art HIDDEN {
 
 // TODO: remove (only used for debugging purpose).
 static constexpr bool kEnableTransactionStats = false;
@@ -104,17 +105,15 @@ void Transaction::Abort(const std::string& abort_message) {
 void Transaction::ThrowAbortError(Thread* self, const std::string* abort_message) {
   const bool rethrow = (abort_message == nullptr);
   if (kIsDebugBuild && rethrow) {
-    CHECK(IsAborted()) << "Rethrow " << DescriptorToDot(Transaction::kAbortExceptionDescriptor)
+    CHECK(IsAborted()) << "Rethrow " << DescriptorToDot(kTransactionAbortErrorDescriptor)
                        << " while transaction is not aborted";
   }
   if (rethrow) {
     // Rethrow an exception with the earlier abort message stored in the transaction.
-    self->ThrowNewWrappedException(Transaction::kAbortExceptionDescriptor,
-                                   GetAbortMessage().c_str());
+    self->ThrowNewWrappedException(kTransactionAbortErrorDescriptor, GetAbortMessage().c_str());
   } else {
     // Throw an exception with the given abort message.
-    self->ThrowNewWrappedException(Transaction::kAbortExceptionDescriptor,
-                                   abort_message->c_str());
+    self->ThrowNewWrappedException(kTransactionAbortErrorDescriptor, abort_message->c_str());
   }
 }
 
@@ -141,16 +140,15 @@ bool Transaction::WriteValueConstraint(ObjPtr<mirror::Object> value) const {
   if (value == nullptr) {
     return false;  // We can always store null values.
   }
-  gc::Heap* heap = Runtime::Current()->GetHeap();
   if (IsStrict()) {
     // TODO: Should we restrict writes the same way as for boot image extension?
     return false;
-  } else if (heap->GetBootImageSpaces().empty()) {
+  } else if (heap_->GetBootImageSpaces().empty()) {
     return false;  // No constraints for boot image.
   } else {
     // Boot image extension.
     ObjPtr<mirror::Class> klass = value->IsClass() ? value->AsClass() : value->GetClass();
-    return !AotClassLinker::CanReferenceInBootImageExtension(klass, heap);
+    return !AotClassLinker::CanReferenceInBootImageExtensionOrAppImage(klass, heap_);
   }
 }
 
@@ -582,9 +580,6 @@ void Transaction::ObjectLog::UndoFieldWrite(mirror::Object* obj,
             reinterpret_cast<mirror::Object*>(field_value.value));
       }
       break;
-    default:
-      LOG(FATAL) << "Unknown value kind " << static_cast<int>(field_value.kind);
-      UNREACHABLE();
   }
 }
 

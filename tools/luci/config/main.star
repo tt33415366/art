@@ -154,7 +154,7 @@ luci.gitiles_poller(
     refs = ["refs/heads/master-art"],
 )
 
-def ci_builder(name, category, short_name, dimensions):
+def ci_builder(name, category, short_name, dimensions, properties={}, is_fyi=False):
     luci.builder(
         name = name,
         bucket = "ci",
@@ -176,9 +176,7 @@ def ci_builder(name, category, short_name, dimensions):
         expiration_timeout = 17 * time.hour,
         execution_timeout = 30 * time.hour,
         build_numbers = True,
-        properties = {
-            "builder_group": "client.art",
-        },
+        properties = properties,
         caches = [
             # Directory called "art" that persists from build to build (one per bot).
             # We can checkout and build in this directory to get fast incremental builds.
@@ -192,44 +190,108 @@ def ci_builder(name, category, short_name, dimensions):
             "vogar",
         ],
     )
-    luci.console_view_entry(
-        console_view = "luci",
-        builder = name,
-        category = category,
-        short_name = short_name,
-    )
+    if not is_fyi:
+        luci.console_view_entry(
+            console_view = "luci",
+            builder = name,
+            category = category,
+            short_name = short_name,
+        )
 
-# Dimensions specify which bots we can run on.
-host_dims = {"os": "Linux"}
-target_dims = {"os": "Android"}
-arm_target_dims = target_dims | {"device_type": "bonito|oriole|walleye"}
-x86_target_dims = target_dims | {"device_type": "fugu"}
+def add_builder(name,
+                mode,
+                arch,
+                bitness,
+                debug=False,
+                cc=True,
+                gen_cc=True,
+                gcstress=False,
+                heap_poisoning=False,
+                cdex=False):
+    def check_arg(value, valid_values):
+      if value not in valid_values:
+        fail("Argument '{}' was expected to be on of {}".format(value, valid_values))
+    check_arg(mode, ["target", "host", "qemu"])
+    check_arg(arch, ["arm", "x86", "riscv"])
+    check_arg(bitness, [32, 64])
 
-# userfault-GC configurations must be run on Pixel 6.
-userfault_gc_target_dims = target_dims | {"device_type": "oriole"}
+    # Create abbreviated named which is used to create the LUCI console header.
+    # TODO: Rename the builders to remove old device names and make it more uniform.
+    short_name = name
+    short_name = short_name.replace("-x86-poison-debug", "-x86-psn")
+    short_name = short_name.replace("-x86-gcstress-debug", "-x86-gcs")
+    short_name = short_name.replace("-x86_64-poison-debug", "-x86_64-psn")
+    short_name = short_name.replace("-x86_64", "-x64")
+    short_name = short_name.replace("-ndebug-build_only", "-bo")
+    short_name = short_name.replace("-non-gen-cc", "-ngen")
+    short_name = short_name.replace("-cdex-fast", "-cdx")
+    short_name = short_name.replace("-debug", "-dbg")
+    short_name = short_name.replace("-ndebug", "-ndbg")
 
-ci_builder("angler-armv7-debug", "angler|armv7", "dbg", arm_target_dims)
-ci_builder("angler-armv7-non-gen-cc", "angler|armv7", "ngen", userfault_gc_target_dims)
-ci_builder("angler-armv7-ndebug", "angler|armv7", "ndbg", arm_target_dims)
-ci_builder("angler-armv8-debug", "angler|armv8", "dbg", arm_target_dims)
-ci_builder("angler-armv8-non-gen-cc", "angler|armv8", "ngen", userfault_gc_target_dims)
-ci_builder("angler-armv8-ndebug", "angler|armv8", "ndbg", arm_target_dims)
-ci_builder("bullhead-armv7-gcstress-ndebug", "bullhead|armv7|gcstress", "dbg", arm_target_dims)
-ci_builder("bullhead-armv8-gcstress-debug", "bullhead|armv8|gcstress", "dbg", arm_target_dims)
-ci_builder("bullhead-armv8-gcstress-ndebug", "bullhead|armv8|gcstress", "ndbg", arm_target_dims)
-ci_builder("fugu-debug", "fugu", "dbg", x86_target_dims)
-ci_builder("fugu-ndebug", "fugu", "ndbg", x86_target_dims)
-ci_builder("host-x86-cms", "host|x86", "cms", host_dims)
-ci_builder("host-x86-debug", "host|x86", "dbg", host_dims)
-ci_builder("host-x86-ndebug", "host|x86", "ndbg", host_dims)
-ci_builder("host-x86-gcstress-debug", "host|x86", "gcs", host_dims)
-ci_builder("host-x86-poison-debug", "host|x86", "psn", host_dims)
-ci_builder("host-x86_64-cdex-fast", "host|x64", "cdx", host_dims)
-ci_builder("host-x86_64-cms", "host|x64", "cms", host_dims)
-ci_builder("host-x86_64-debug", "host|x64", "dbg", host_dims)
-ci_builder("host-x86_64-non-gen-cc", "host|x64", "ngen", host_dims)
-ci_builder("host-x86_64-ndebug", "host|x64", "ndbg", host_dims)
-ci_builder("host-x86_64-poison-debug", "host|x64", "psn", host_dims)
-ci_builder("walleye-armv7-poison-debug", "walleye|armv7|poison", "dbg", arm_target_dims)
-ci_builder("walleye-armv8-poison-debug", "walleye|armv8|poison", "dbg", arm_target_dims)
-ci_builder("walleye-armv8-poison-ndebug", "walleye|armv8|poison", "ndbg", arm_target_dims)
+    product = None
+    if arch == "arm":
+      product = "armv8" if bitness == 64 else "arm_krait"
+    if arch == "riscv":
+      product = "riscv64"
+
+    dimensions = {"os": "Android" if mode == "target" else "Linux"}
+    if mode == "target" and not cc:
+      # userfault-GC configurations must be run on Pixel 6.
+      dimensions |= {"device_type": "oriole"}
+
+    testrunner_args = ['--verbose', '--host'] if mode == 'host' else ['--target', '--verbose']
+    testrunner_args += ['--debug'] if debug else ['--ndebug']
+    testrunner_args += ['--gcstress'] if gcstress else []
+    testrunner_args += ['--cdex-fast'] if cdex else []
+
+    properties = {
+        "builder_group": "client.art",
+        "bitness": bitness,
+        "build_only": ("build_only" in name),
+        "debug": debug,
+        "device": None if mode == "host" else "-".join(name.split("-")[:2]),
+        "on_virtual_machine": mode == "qemu",
+        "product": product,
+        "concurrent_collector": cc,
+        "generational_cc": gen_cc,
+        "gcstress": gcstress,
+        "heap_poisoning": heap_poisoning,
+        "cdex_level": "fast" if cdex else False,
+        "testrunner_args": testrunner_args,
+    }
+
+    is_fyi = (name == "qemu-riscv64-ndebug")
+
+    ci_builder(name,
+               category="|".join(short_name.split("-")[:-1]),
+               short_name=short_name.split("-")[-1],
+               dimensions=dimensions,
+               properties={k:v for k, v in properties.items() if v},
+               is_fyi=is_fyi)
+
+add_builder("angler-armv7-debug", 'target', 'arm', 32, debug=True)
+add_builder("angler-armv7-non-gen-cc", 'target', 'arm', 32, debug=True, cc=False, gen_cc=False)
+add_builder("angler-armv7-ndebug", 'target', 'arm', 32)
+add_builder("angler-armv8-debug", 'target', 'arm', 64, debug=True)
+add_builder("angler-armv8-non-gen-cc", 'target', 'arm', 64, debug=True, cc=False, gen_cc=False)
+add_builder("angler-armv8-ndebug", 'target', 'arm', 64)
+add_builder("bullhead-armv7-gcstress-ndebug", 'target', 'arm', 32, gcstress=True)
+add_builder("bullhead-armv8-gcstress-debug", 'target', 'arm', 64, debug=True, gcstress=True)
+add_builder("bullhead-armv8-gcstress-ndebug", 'target', 'arm', 64, gcstress=True)
+add_builder("walleye-armv7-poison-debug", 'target', 'arm', 32, debug=True, heap_poisoning=True)
+add_builder("walleye-armv8-poison-debug", 'target', 'arm', 64, debug=True, heap_poisoning=True)
+add_builder("walleye-armv8-poison-ndebug", 'target', 'arm', 64, heap_poisoning=True)
+add_builder("host-x86-cms", 'host', 'x86', 32, debug=True, cc=False, gen_cc=False)
+add_builder("host-x86-debug", 'host', 'x86', 32, debug=True)
+add_builder("host-x86-ndebug", 'host', 'x86', 32)
+add_builder("host-x86-gcstress-debug", 'host', 'x86', 32, debug=True, gcstress=True)
+add_builder("host-x86-poison-debug", 'host', 'x86', 32, debug=True, heap_poisoning=True)
+add_builder("host-x86_64-cdex-fast", 'host', 'x86', 64, cdex=True, debug=True)
+add_builder("host-x86_64-cms", 'host', 'x86', 64, cc=False, debug=True, gen_cc=False)
+add_builder("host-x86_64-debug", 'host', 'x86', 64, debug=True)
+add_builder("host-x86_64-non-gen-cc", 'host', 'x86', 64, debug=True, gen_cc=False)
+add_builder("host-x86_64-ndebug", 'host', 'x86', 64)
+add_builder("host-x86_64-poison-debug", 'host', 'x86', 64, debug=True, heap_poisoning=True)
+add_builder("qemu-armv8-ndebug", 'qemu', 'arm', 64)
+add_builder("qemu-riscv64-ndebug", 'qemu', 'riscv', 64)
+add_builder("qemu-riscv64-ndebug-build_only", 'qemu', 'riscv', 64)

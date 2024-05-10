@@ -18,8 +18,8 @@
 
 #include <stdlib.h>
 
+#include "android-base/macros.h"
 #include "android-base/stringprintf.h"
-
 #include "art_field-inl.h"
 #include "art_method-alloc-inl.h"
 #include "base/sdk_version.h"
@@ -35,14 +35,13 @@
 #include "mirror/method.h"
 #include "mirror/object_array-alloc-inl.h"
 #include "mirror/object_array-inl.h"
-#include "oat_file.h"
+#include "oat/oat_file.h"
 #include "obj_ptr-inl.h"
-#include "quicken_info.h"
 #include "reflection.h"
 #include "thread.h"
 #include "well_known_classes.h"
 
-namespace art {
+namespace art HIDDEN {
 
 using android::base::StringPrintf;
 
@@ -194,12 +193,16 @@ const AnnotationItem* SearchAnnotationSet(const DexFile& dex_file,
     const uint8_t* annotation = annotation_item->annotation_;
     uint32_t type_index = DecodeUnsignedLeb128(&annotation);
 
-    if (strcmp(descriptor, dex_file.StringByTypeIdx(dex::TypeIndex(type_index))) == 0) {
+    if (strcmp(descriptor, dex_file.GetTypeDescriptor(dex::TypeIndex(type_index))) == 0) {
       result = annotation_item;
       break;
     }
   }
   return result;
+}
+
+inline static void SkipEncodedValueHeaderByte(const uint8_t** annotation_ptr) {
+  (*annotation_ptr)++;
 }
 
 bool SkipAnnotationValue(const DexFile& dex_file, const uint8_t** annotation_ptr)
@@ -492,7 +495,7 @@ bool ProcessAnnotationValue(const ClassData& klass,
         if (element_object == nullptr) {
           CHECK(self->IsExceptionPending());
           if (result_style == DexFile::kAllObjects) {
-            const char* msg = dex_file.StringByTypeIdx(type_index);
+            const char* msg = dex_file.GetTypeDescriptor(type_index);
             self->ThrowNewWrappedException("Ljava/lang/TypeNotPresentException;", msg);
             element_object = self->GetException();
             self->ClearException();
@@ -698,7 +701,7 @@ ObjPtr<mirror::Object> CreateAnnotationMember(const ClassData& klass,
   ScopedObjectAccessUnchecked soa(self);
   StackHandleScope<5> hs(self);
   uint32_t element_name_index = DecodeUnsignedLeb128(annotation);
-  const char* name = dex_file.StringDataByIdx(dex::StringIndex(element_name_index));
+  const char* name = dex_file.GetStringData(dex::StringIndex(element_name_index));
 
   PointerSize pointer_size = Runtime::Current()->GetClassLinker()->GetImagePointerSize();
   ArtMethod* annotation_method =
@@ -1283,13 +1286,34 @@ static bool IsMethodBuildAnnotationPresent(const DexFile& dex_file,
     }
     const uint8_t* annotation = annotation_item->annotation_;
     uint32_t type_index = DecodeUnsignedLeb128(&annotation);
-    const char* descriptor = dex_file.StringByTypeIdx(dex::TypeIndex(type_index));
+    const char* descriptor = dex_file.GetTypeDescriptor(dex::TypeIndex(type_index));
     if (strcmp(descriptor, annotation_descriptor) == 0) {
       DCheckNativeAnnotation(descriptor, annotation_class);
       return true;
     }
   }
   return false;
+}
+
+static uint32_t GetNativeMethodAnnotationAccessFlags(const DexFile& dex_file,
+                                                     const dex::AnnotationSetItem& annotation_set) {
+  uint32_t access_flags = 0u;
+  if (IsMethodBuildAnnotationPresent(
+          dex_file,
+          annotation_set,
+          "Ldalvik/annotation/optimization/FastNative;",
+          WellKnownClasses::dalvik_annotation_optimization_FastNative)) {
+    access_flags |= kAccFastNative;
+  }
+  if (IsMethodBuildAnnotationPresent(
+          dex_file,
+          annotation_set,
+          "Ldalvik/annotation/optimization/CriticalNative;",
+          WellKnownClasses::dalvik_annotation_optimization_CriticalNative)) {
+    access_flags |= kAccCriticalNative;
+  }
+  CHECK_NE(access_flags, kAccFastNative | kAccCriticalNative);
+  return access_flags;
 }
 
 uint32_t GetNativeMethodAnnotationAccessFlags(const DexFile& dex_file,
@@ -1300,23 +1324,22 @@ uint32_t GetNativeMethodAnnotationAccessFlags(const DexFile& dex_file,
   if (annotation_set == nullptr) {
     return 0u;
   }
-  uint32_t access_flags = 0u;
-  if (IsMethodBuildAnnotationPresent(
-          dex_file,
-          *annotation_set,
-          "Ldalvik/annotation/optimization/FastNative;",
-          WellKnownClasses::dalvik_annotation_optimization_FastNative)) {
-    access_flags |= kAccFastNative;
-  }
-  if (IsMethodBuildAnnotationPresent(
-          dex_file,
-          *annotation_set,
-          "Ldalvik/annotation/optimization/CriticalNative;",
-          WellKnownClasses::dalvik_annotation_optimization_CriticalNative)) {
-    access_flags |= kAccCriticalNative;
-  }
-  CHECK_NE(access_flags, kAccFastNative | kAccCriticalNative);
-  return access_flags;
+  return GetNativeMethodAnnotationAccessFlags(dex_file, *annotation_set);
+}
+
+uint32_t GetNativeMethodAnnotationAccessFlags(const DexFile& dex_file,
+                                              const dex::MethodAnnotationsItem& method_annotations) {
+  return GetNativeMethodAnnotationAccessFlags(
+      dex_file, *dex_file.GetMethodAnnotationSetItem(method_annotations));
+}
+
+static bool MethodIsNeverCompile(const DexFile& dex_file,
+                                 const dex::AnnotationSetItem& annotation_set) {
+  return IsMethodBuildAnnotationPresent(
+      dex_file,
+      annotation_set,
+      "Ldalvik/annotation/optimization/NeverCompile;",
+      WellKnownClasses::dalvik_annotation_optimization_NeverCompile);
 }
 
 bool MethodIsNeverCompile(const DexFile& dex_file,
@@ -1327,11 +1350,12 @@ bool MethodIsNeverCompile(const DexFile& dex_file,
   if (annotation_set == nullptr) {
     return false;
   }
-  return IsMethodBuildAnnotationPresent(
-      dex_file,
-      *annotation_set,
-      "Ldalvik/annotation/optimization/NeverCompile;",
-      WellKnownClasses::dalvik_annotation_optimization_NeverCompile);
+  return MethodIsNeverCompile(dex_file, *annotation_set);
+}
+
+bool MethodIsNeverCompile(const DexFile& dex_file,
+                          const dex::MethodAnnotationsItem& method_annotations) {
+  return MethodIsNeverCompile(dex_file, *dex_file.GetMethodAnnotationSetItem(method_annotations));
 }
 
 bool MethodIsNeverInline(const DexFile& dex_file,
@@ -1730,7 +1754,7 @@ const char* GetSourceDebugExtension(Handle<mirror::Class> klass) {
     return nullptr;
   }
   dex::StringIndex index(static_cast<uint32_t>(annotation_value.value_.GetI()));
-  return data.GetDexFile().StringDataByIdx(index);
+  return data.GetDexFile().GetStringData(index);
 }
 
 ObjPtr<mirror::Class> GetNestHost(Handle<mirror::Class> klass) {
@@ -1771,6 +1795,43 @@ ObjPtr<mirror::ObjectArray<mirror::Class>> GetPermittedSubclasses(Handle<mirror:
   return GetAnnotationArrayValue<mirror::Class>(klass,
                                                 "Ldalvik/annotation/PermittedSubclasses;",
                                                 "value");
+}
+
+ObjPtr<mirror::Object> getRecordAnnotationElement(Handle<mirror::Class> klass,
+                                                  Handle<mirror::Class> array_class,
+                                                  const char* element_name) {
+  ClassData data(klass);
+  const DexFile& dex_file = klass->GetDexFile();
+  const AnnotationSetItem* annotation_set = FindAnnotationSetForClass(data);
+  if (annotation_set == nullptr) {
+    return nullptr;
+  }
+  const AnnotationItem* annotation_item = SearchAnnotationSet(
+      dex_file, annotation_set, "Ldalvik/annotation/Record;", DexFile::kDexVisibilitySystem);
+  if (annotation_item == nullptr) {
+    return nullptr;
+  }
+  const uint8_t* annotation =
+      SearchEncodedAnnotation(dex_file, annotation_item->annotation_, element_name);
+  if (annotation == nullptr) {
+    return nullptr;
+  }
+  DexFile::AnnotationValue annotation_value;
+  bool result = Runtime::Current()->IsActiveTransaction()
+      ? ProcessAnnotationValue<true>(data,
+                                     &annotation,
+                                     &annotation_value,
+                                     array_class,
+                                     DexFile::kPrimitivesOrObjects)
+      : ProcessAnnotationValue<false>(data,
+                                      &annotation,
+                                      &annotation_value,
+                                      array_class,
+                                      DexFile::kPrimitivesOrObjects);
+  if (!result) {
+    return nullptr;
+  }
+  return annotation_value.value_.GetL();
 }
 
 bool IsClassAnnotationPresent(Handle<mirror::Class> klass, Handle<mirror::Class> annotation_class) {
@@ -1834,6 +1895,132 @@ template
 void RuntimeEncodedStaticFieldValueIterator::ReadValueToField<true>(ArtField* field) const;
 template
 void RuntimeEncodedStaticFieldValueIterator::ReadValueToField<false>(ArtField* field) const;
+
+inline static VisitorStatus VisitElement(AnnotationVisitor* visitor,
+                                         const char* element_name,
+                                         uint8_t depth,
+                                         uint32_t element_index,
+                                         const DexFile::AnnotationValue& annotation_value)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  if (depth == 0) {
+    return visitor->VisitAnnotationElement(
+        element_name, annotation_value.type_, annotation_value.value_);
+  } else {
+    return visitor->VisitArrayElement(
+        depth - 1, element_index, annotation_value.type_, annotation_value.value_);
+  }
+}
+
+static VisitorStatus VisitEncodedValue(const ClassData& klass,
+                                       const DexFile& dex_file,
+                                       const uint8_t** annotation_ptr,
+                                       AnnotationVisitor* visitor,
+                                       const char* element_name,
+                                       uint8_t depth,
+                                       uint32_t element_index)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  DexFile::AnnotationValue annotation_value;
+  // kTransactionActive is safe because the result_style is kAllRaw.
+  bool is_consumed = ProcessAnnotationValue<false>(klass,
+                                                   annotation_ptr,
+                                                   &annotation_value,
+                                                   ScopedNullHandle<mirror::Class>(),
+                                                   DexFile::kAllRaw);
+
+  VisitorStatus status =
+      VisitElement(visitor, element_name, depth, element_index, annotation_value);
+  switch (annotation_value.type_) {
+    case DexFile::kDexAnnotationArray: {
+      DCHECK(!is_consumed) << " unexpected consumption of array-typed element '" << element_name
+                           << "' annotating the class " << klass.GetRealClass()->PrettyClass();
+      SkipEncodedValueHeaderByte(annotation_ptr);
+      uint32_t array_size = DecodeUnsignedLeb128(annotation_ptr);
+      uint8_t next_depth = depth + 1;
+      VisitorStatus element_status = (status == VisitorStatus::kVisitInner) ?
+                                         VisitorStatus::kVisitNext :
+                                         VisitorStatus::kVisitBreak;
+      uint32_t i = 0;
+      for (; i < array_size && element_status != VisitorStatus::kVisitBreak; ++i) {
+        element_status = VisitEncodedValue(
+            klass, dex_file, annotation_ptr, visitor, element_name, next_depth, i);
+      }
+      for (; i < array_size; ++i) {
+        SkipAnnotationValue(dex_file, annotation_ptr);
+      }
+      break;
+    }
+    case DexFile::kDexAnnotationAnnotation: {
+      DCHECK(!is_consumed) << " unexpected consumption of annotation-typed element '"
+                           << element_name << "' annotating the class "
+                           << klass.GetRealClass()->PrettyClass();
+      SkipEncodedValueHeaderByte(annotation_ptr);
+      DecodeUnsignedLeb128(annotation_ptr);  // unused type_index
+      uint32_t size = DecodeUnsignedLeb128(annotation_ptr);
+      for (; size != 0u; --size) {
+        DecodeUnsignedLeb128(annotation_ptr);  // unused element_name_index
+        SkipAnnotationValue(dex_file, annotation_ptr);
+      }
+      break;
+    }
+    default: {
+      // kDexAnnotationArray and kDexAnnotationAnnotation are the only 2 known value_types causing
+      // ProcessAnnotationValue return false. For other value_types, we shouldn't need to iterate
+      // over annotation_ptr and skip the value here.
+      DCHECK(is_consumed) << StringPrintf(
+          "consumed annotation element type 0x%02x of %s for the class %s",
+          annotation_value.type_,
+          element_name,
+          klass.GetRealClass()->PrettyClass().c_str());
+      if (UNLIKELY(!is_consumed)) {
+        SkipAnnotationValue(dex_file, annotation_ptr);
+      }
+      break;
+    }
+  }
+
+  return status;
+}
+
+void VisitClassAnnotations(Handle<mirror::Class> klass, AnnotationVisitor* visitor) {
+  ClassData data(klass);
+  const AnnotationSetItem* annotation_set = FindAnnotationSetForClass(data);
+  if (annotation_set == nullptr) {
+    return;
+  }
+
+  const DexFile& dex_file = data.GetDexFile();
+  for (uint32_t i = 0; i < annotation_set->size_; ++i) {
+    const AnnotationItem* annotation_item = dex_file.GetAnnotationItem(annotation_set, i);
+    uint8_t visibility = annotation_item->visibility_;
+    const uint8_t* annotation = annotation_item->annotation_;
+    uint32_t type_index = DecodeUnsignedLeb128(&annotation);
+    const char* annotation_descriptor = dex_file.GetTypeDescriptor(dex::TypeIndex(type_index));
+    VisitorStatus status = visitor->VisitAnnotation(annotation_descriptor, visibility);
+    switch (status) {
+      case VisitorStatus::kVisitBreak:
+        return;
+      case VisitorStatus::kVisitNext:
+        continue;
+      case VisitorStatus::kVisitInner:
+        // Visit the annotation elements
+        break;
+    }
+
+    uint32_t size = DecodeUnsignedLeb128(&annotation);
+    while (size != 0) {
+      uint32_t element_name_index = DecodeUnsignedLeb128(&annotation);
+      const char* element_name =
+          dex_file.GetStringData(dex_file.GetStringId(dex::StringIndex(element_name_index)));
+
+      status = VisitEncodedValue(
+          data, dex_file, &annotation, visitor, element_name, /*depth=*/0, /*ignored*/ 0);
+      if (status == VisitorStatus::kVisitBreak) {
+        break;
+      }
+      size--;
+    }
+  }
+}
 
 }  // namespace annotations
 

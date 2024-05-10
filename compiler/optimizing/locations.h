@@ -79,7 +79,7 @@ class Location : public ValueObject {
     kUnallocated = 11,
   };
 
-  Location() : ValueObject(), value_(kInvalid) {
+  constexpr Location() : ValueObject(), value_(kInvalid) {
     // Verify that non-constant location kinds do not interfere with kConstant.
     static_assert((kInvalid & kLocationConstantMask) != kConstant, "TagError");
     static_assert((kUnallocated & kLocationConstantMask) != kConstant, "TagError");
@@ -95,7 +95,7 @@ class Location : public ValueObject {
     DCHECK(!IsValid());
   }
 
-  Location(const Location& other) = default;
+  constexpr Location(const Location& other) = default;
 
   Location& operator=(const Location& other) = default;
 
@@ -103,8 +103,12 @@ class Location : public ValueObject {
     return (value_ & kLocationConstantMask) == kConstant;
   }
 
-  static Location ConstantLocation(HConstant* constant) {
+  static Location ConstantLocation(HInstruction* constant) {
     DCHECK(constant != nullptr);
+    if (kIsDebugBuild) {
+      // Call out-of-line helper to avoid circular dependency with `nodes.h`.
+      DCheckInstructionIsConstant(constant);
+    }
     return Location(kConstant | reinterpret_cast<uintptr_t>(constant));
   }
 
@@ -122,24 +126,24 @@ class Location : public ValueObject {
   }
 
   // Empty location. Used if there the location should be ignored.
-  static Location NoLocation() {
+  static constexpr Location NoLocation() {
     return Location();
   }
 
   // Register locations.
-  static Location RegisterLocation(int reg) {
+  static constexpr Location RegisterLocation(int reg) {
     return Location(kRegister, reg);
   }
 
-  static Location FpuRegisterLocation(int reg) {
+  static constexpr Location FpuRegisterLocation(int reg) {
     return Location(kFpuRegister, reg);
   }
 
-  static Location RegisterPairLocation(int low, int high) {
+  static constexpr Location RegisterPairLocation(int low, int high) {
     return Location(kRegisterPair, low << 16 | high);
   }
 
-  static Location FpuRegisterPairLocation(int low, int high) {
+  static constexpr Location FpuRegisterPairLocation(int low, int high) {
     return Location(kFpuRegisterPair, low << 16 | high);
   }
 
@@ -419,12 +423,14 @@ class Location : public ValueObject {
 
   explicit Location(uintptr_t value) : value_(value) {}
 
-  Location(Kind kind, uintptr_t payload)
+  constexpr Location(Kind kind, uintptr_t payload)
       : value_(KindField::Encode(kind) | PayloadField::Encode(payload)) {}
 
   uintptr_t GetPayload() const {
     return PayloadField::Decode(value_);
   }
+
+  static void DCheckInstructionIsConstant(HInstruction* instruction);
 
   using KindField = BitField<Kind, 0, kBitsForKind>;
   using PayloadField = BitField<uintptr_t, kBitsForKind, kBitsForPayload>;
@@ -731,7 +737,8 @@ class LocationSummary : public ArenaObject<kArenaAllocLocationSummary> {
   // Custom slow path caller saves. Valid only if indicated by slow_path_calling_convention_.
   RegisterSet custom_slow_path_caller_saves_;
 
-  friend class RegisterAllocatorTest;
+  ART_FRIEND_TEST(RegisterAllocatorTest, ExpectedInRegisterHint);
+  ART_FRIEND_TEST(RegisterAllocatorTest, SameAsFirstInputHint);
   DISALLOW_COPY_AND_ASSIGN(LocationSummary);
 };
 

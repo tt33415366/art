@@ -29,8 +29,8 @@
 #include "lock_word.h"
 #include "mirror/array-inl.h"
 #include "mirror/object.h"
-#include "oat.h"
-#include "oat_quick_method_header.h"
+#include "oat/oat.h"
+#include "oat/oat_quick_method_header.h"
 #include "read_barrier.h"
 #include "stream/output_stream.h"
 
@@ -61,16 +61,18 @@ inline bool IsAdrpPatch(const LinkerPatch& patch) {
     case LinkerPatch::Type::kBakerReadBarrierBranch:
       return false;
     case LinkerPatch::Type::kIntrinsicReference:
-    case LinkerPatch::Type::kDataBimgRelRo:
+    case LinkerPatch::Type::kBootImageRelRo:
     case LinkerPatch::Type::kMethodRelative:
     case LinkerPatch::Type::kMethodBssEntry:
     case LinkerPatch::Type::kJniEntrypointRelative:
     case LinkerPatch::Type::kTypeRelative:
+    case LinkerPatch::Type::kTypeAppImageRelRo:
     case LinkerPatch::Type::kTypeBssEntry:
     case LinkerPatch::Type::kPublicTypeBssEntry:
     case LinkerPatch::Type::kPackageTypeBssEntry:
     case LinkerPatch::Type::kStringRelative:
     case LinkerPatch::Type::kStringBssEntry:
+    case LinkerPatch::Type::kMethodTypeBssEntry:
       return patch.LiteralOffset() == patch.PcInsnOffset();
   }
 }
@@ -251,13 +253,13 @@ void Arm64RelativePatcher::PatchPcRelativeReference(std::vector<uint8_t>* code,
   } else {
     if ((insn & 0xfffffc00) == 0x91000000) {
       // ADD immediate, 64-bit with imm12 == 0 (unset).
-      if (!gUseReadBarrier) {
+      if (kUseBakerReadBarrier) {
         DCHECK(patch.GetType() == LinkerPatch::Type::kIntrinsicReference ||
                patch.GetType() == LinkerPatch::Type::kMethodRelative ||
                patch.GetType() == LinkerPatch::Type::kTypeRelative ||
                patch.GetType() == LinkerPatch::Type::kStringRelative) << patch.GetType();
       } else {
-        // With the read barrier (non-Baker) enabled, it could be kStringBssEntry or kTypeBssEntry.
+        // With the read barrier (non-Baker) enabled, it could be kStringBssEntry or k*TypeBssEntry.
         DCHECK(patch.GetType() == LinkerPatch::Type::kIntrinsicReference ||
                patch.GetType() == LinkerPatch::Type::kMethodRelative ||
                patch.GetType() == LinkerPatch::Type::kTypeRelative ||
@@ -270,9 +272,10 @@ void Arm64RelativePatcher::PatchPcRelativeReference(std::vector<uint8_t>* code,
       shift = 0u;  // No shift for ADD.
     } else {
       // LDR/STR 32-bit or 64-bit with imm12 == 0 (unset).
-      DCHECK(patch.GetType() == LinkerPatch::Type::kDataBimgRelRo ||
+      DCHECK(patch.GetType() == LinkerPatch::Type::kBootImageRelRo ||
              patch.GetType() == LinkerPatch::Type::kMethodBssEntry ||
              patch.GetType() == LinkerPatch::Type::kJniEntrypointRelative ||
+             patch.GetType() == LinkerPatch::Type::kTypeAppImageRelRo ||
              patch.GetType() == LinkerPatch::Type::kTypeBssEntry ||
              patch.GetType() == LinkerPatch::Type::kPublicTypeBssEntry ||
              patch.GetType() == LinkerPatch::Type::kPackageTypeBssEntry ||

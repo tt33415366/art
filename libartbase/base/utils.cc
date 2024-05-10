@@ -31,12 +31,14 @@
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
 
+#include "base/mem_map.h"
 #include "base/stl_util.h"
 #include "bit_utils.h"
 #include "os.h"
 
 #if defined(__APPLE__)
 #include <crt_externs.h>
+// NOLINTNEXTLINE - inclusion of syscall is dependent on arch
 #include <sys/syscall.h>
 #include "AvailabilityMacros.h"  // For MAC_OS_X_VERSION_MAX_ALLOWED
 #endif
@@ -44,11 +46,13 @@
 #if defined(__BIONIC__)
 // membarrier(2) is only supported for target builds (b/111199492).
 #include <linux/membarrier.h>
+// NOLINTNEXTLINE - inclusion of syscall is dependent on arch
 #include <sys/syscall.h>
 #endif
 
 #if defined(__linux__)
 #include <linux/unistd.h>
+// NOLINTNEXTLINE - inclusion of syscall is dependent on arch
 #include <sys/syscall.h>
 #endif
 
@@ -86,9 +90,10 @@ int CacheFlush(uintptr_t start, uintptr_t limit) {
   return r;
 }
 
-bool TouchAndFlushCacheLinesWithinPage(uintptr_t start, uintptr_t limit, size_t attempts) {
+bool TouchAndFlushCacheLinesWithinPage(uintptr_t start, uintptr_t limit, size_t attempts,
+                                       size_t page_size) {
   CHECK_LT(start, limit);
-  CHECK_EQ(RoundDown(start, kPageSize), RoundDown(limit - 1, kPageSize)) << "range spans pages";
+  CHECK_EQ(RoundDown(start, page_size), RoundDown(limit - 1, page_size)) << "range spans pages";
   // Declare a volatile variable so the compiler does not elide reads from the page being touched.
   [[maybe_unused]] volatile uint8_t v = 0;
   for (size_t i = 0; i < attempts; ++i) {
@@ -127,6 +132,8 @@ bool FlushCpuCaches(void* begin, void* end) {
   // (2) fault handling that allows flushing/invalidation to continue after
   //     a missing page has been faulted in.
 
+  const size_t page_size = MemMap::GetPageSize();
+
   uintptr_t start = reinterpret_cast<uintptr_t>(begin);
   const uintptr_t limit = reinterpret_cast<uintptr_t>(end);
   if (LIKELY(CacheFlush(start, limit) == 0)) {
@@ -136,14 +143,14 @@ bool FlushCpuCaches(void* begin, void* end) {
   // A rare failure has occurred implying that part of the range (begin, end] has been swapped
   // out. Retry flushing but this time grouping cache-line flushes on individual pages and
   // touching each page before flushing.
-  uintptr_t next_page = RoundUp(start + 1, kPageSize);
+  uintptr_t next_page = RoundUp(start + 1, page_size);
   while (start < limit) {
     uintptr_t boundary = std::min(next_page, limit);
-    if (!TouchAndFlushCacheLinesWithinPage(start, boundary, kMaxFlushAttempts)) {
+    if (!TouchAndFlushCacheLinesWithinPage(start, boundary, kMaxFlushAttempts, page_size)) {
       return false;
     }
     start = boundary;
-    next_page += kPageSize;
+    next_page += page_size;
   }
   return true;
 }
@@ -359,44 +366,77 @@ std::string GetProcessStatus(const char* key) {
   return "<unknown>";
 }
 
-bool IsAddressKnownBackedByFileOrShared(const void* addr) {
-  // We use the Linux pagemap interface for knowing if an address is backed
-  // by a file or is shared. See:
-  // https://www.kernel.org/doc/Documentation/vm/pagemap.txt
-  uintptr_t vmstart = reinterpret_cast<uintptr_t>(AlignDown(addr, kPageSize));
-  off_t index = (vmstart / kPageSize) * sizeof(uint64_t);
-  android::base::unique_fd pagemap(open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC));
-  if (pagemap == -1) {
-    return false;
+size_t GetOsThreadStat(pid_t tid, char* buf, size_t len) {
+#if defined(__linux__)
+  static constexpr int NAME_BUF_SIZE = 50;
+  char file_name_buf[NAME_BUF_SIZE];
+  snprintf(file_name_buf, NAME_BUF_SIZE, "/proc/%d/stat", tid);
+  int stat_fd = open(file_name_buf, O_RDONLY | O_CLOEXEC);
+  if (stat_fd >= 0) {
+    ssize_t bytes_read = TEMP_FAILURE_RETRY(read(stat_fd, buf, len));
+    CHECK_GT(bytes_read, 0) << strerror(errno);
+    int ret = close(stat_fd);
+    CHECK_EQ(ret, 0) << strerror(errno);
+    buf[len - 1] = '\0';
+    return bytes_read;
   }
-  if (lseek(pagemap, index, SEEK_SET) != index) {
-    return false;
-  }
-  uint64_t flags;
-  if (read(pagemap, &flags, sizeof(uint64_t)) != sizeof(uint64_t)) {
-    return false;
-  }
-  // From https://www.kernel.org/doc/Documentation/vm/pagemap.txt:
-  //  * Bit  61    page is file-page or shared-anon (since 3.5)
-  return (flags & (1LL << 61)) != 0;
+#else
+  UNUSED(tid);
+  UNUSED(buf);
+  UNUSED(len);
+#endif
+  return 0;
 }
 
-int GetTaskCount() {
-  DIR* directory = opendir("/proc/self/task");
-  if (directory == nullptr) {
-    return -1;
+std::string GetOsThreadStatQuick(pid_t tid) {
+  static constexpr int BUF_SIZE = 90;
+  char buf[BUF_SIZE];
+#if defined(__linux__)
+  if (GetOsThreadStat(tid, buf, BUF_SIZE) == 0) {
+    snprintf(buf, BUF_SIZE, "Unknown state: %d", tid);
   }
+#else
+  UNUSED(tid);
+  strcpy(buf, "Unknown state");  // snprintf may not be usable.
+#endif
+  return buf;
+}
 
-  uint32_t count = 0;
-  struct dirent* entry = nullptr;
-  while ((entry = readdir(directory)) != nullptr) {
-    if ((strcmp(entry->d_name, ".") == 0) || (strcmp(entry->d_name, "..") == 0)) {
+std::string GetOtherThreadOsStats() {
+#if defined(__linux__)
+  DIR* dir = opendir("/proc/self/task");
+  if (dir == nullptr) {
+    return std::string("Failed to open /proc/self/task: ") + strerror(errno);
+  }
+  pid_t me = GetTid();
+  struct dirent* de;
+  std::string result;
+  bool found_me = false;
+  errno = 0;
+  while ((de = readdir(dir)) != nullptr) {
+    if (de->d_name[0] == '.') {
       continue;
     }
-    ++count;
+    pid_t tid = atoi(de->d_name);
+    if (tid == me) {
+      found_me = true;
+    } else {
+      if (!result.empty()) {
+        result += "; ";
+      }
+      result += tid == 0 ? std::string("bad tid: ") + de->d_name : GetOsThreadStatQuick(tid);
+    }
   }
-  closedir(directory);
-  return count;
+  if (errno == EBADF) {
+    result += "(Bad directory)";
+  }
+  if (!found_me) {
+    result += "(Failed to find requestor)";
+  }
+  return result;
+#else
+  return "Can't get other threads";
+#endif
 }
 
 }  // namespace art

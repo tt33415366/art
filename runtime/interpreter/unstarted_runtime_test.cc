@@ -20,11 +20,12 @@
 #include <locale>
 
 #include "base/casts.h"
-#include "base/enums.h"
 #include "base/memory_tool.h"
+#include "base/pointer_size.h"
 #include "class_linker.h"
 #include "class_root-inl.h"
 #include "common_runtime_test.h"
+#include "common_throws.h"
 #include "dex/descriptors_names.h"
 #include "dex/dex_instruction.h"
 #include "handle.h"
@@ -42,10 +43,9 @@
 #include "scoped_thread_state_change-inl.h"
 #include "shadow_frame-inl.h"
 #include "thread.h"
-#include "transaction.h"
 #include "unstarted_runtime_list.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace interpreter {
 
 // Deleter to be used with ShadowFrame::CreateDeoptimizedFrame objects.
@@ -125,7 +125,7 @@ class UnstartedRuntimeTest : public CommonRuntimeTest {
                                const StackHandleScope<3>& data)
       REQUIRES_SHARED(Locks::mutator_lock_) {
     CHECK_EQ(array->GetLength(), 3);
-    CHECK_EQ(data.NumberOfReferences(), 3U);
+    CHECK_EQ(data.Size(), 3U);
     for (size_t i = 0; i < 3; ++i) {
       EXPECT_OBJ_PTR_EQ(data.GetReference(i), array->Get(static_cast<int32_t>(i))) << i;
     }
@@ -216,7 +216,7 @@ class UnstartedRuntimeTest : public CommonRuntimeTest {
   void PrepareForAborts() REQUIRES_SHARED(Locks::mutator_lock_) {
     ObjPtr<mirror::Object> result = Runtime::Current()->GetClassLinker()->FindClass(
         Thread::Current(),
-        Transaction::kAbortExceptionDescriptor,
+        kTransactionAbortErrorDescriptor,
         ScopedNullHandle<mirror::ClassLoader>());
     CHECK(result != nullptr);
   }
@@ -1305,7 +1305,9 @@ TEST_F(UnstartedRuntimeTest, ClassGetSignatureAnnotation) {
     oss << elem->AsString()->ToModifiedUtf8();
   }
   std::string output_string = oss.str();
-  ASSERT_EQ(output_string, "<E:Ljava/lang/Object;>Ljava/lang/Object;Ljava/util/Collection<TE;>;");
+  ASSERT_EQ(output_string,
+            "<E:Ljava/lang/Object;>Ljava/lang/Object;Ljava/util/SequencedCollection<TE;>;"
+            "Ljava/util/Collection<TE;>;");
 }
 
 TEST_F(UnstartedRuntimeTest, ConstructorNewInstance0) {

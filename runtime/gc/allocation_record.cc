@@ -17,8 +17,8 @@
 #include "allocation_record.h"
 
 #include "art_method-inl.h"
-#include "base/enums.h"
 #include "base/logging.h"  // For VLOG
+#include "base/pointer_size.h"
 #include "base/stl_util.h"
 #include "obj_ptr-inl.h"
 #include "object_callbacks.h"
@@ -27,7 +27,7 @@
 
 #include <android-base/properties.h>
 
-namespace art {
+namespace art HIDDEN {
 namespace gc {
 
 int32_t AllocRecordStackTraceElement::ComputeLineNumber() const {
@@ -59,11 +59,9 @@ AllocRecordObjectMap::~AllocRecordObjectMap() {
 }
 
 void AllocRecordObjectMap::VisitRoots(RootVisitor* visitor) {
-  gc::Heap* const heap = Runtime::Current()->GetHeap();
   // When we are compacting in userfaultfd GC, the class GC-roots are already
   // updated in SweepAllocationRecords()->SweepClassObject().
-  if (heap->CurrentCollectorType() == gc::CollectorType::kCollectorTypeCMC
-      && heap->MarkCompactCollector()->IsCompacting(Thread::Current())) {
+  if (Runtime::Current()->GetHeap()->IsPerformingUffdCompaction()) {
     return;
   }
   CHECK_LE(recent_record_max_, alloc_record_max_);

@@ -213,7 +213,7 @@ class JavaHprofDataSource : public perfetto::DataSource<JavaHprofDataSource> {
     dump_smaps_ = cfg->dump_smaps();
     for (auto it = cfg->ignored_types(); it; ++it) {
       std::string name = (*it).ToStdString();
-      ignored_types_.emplace_back(std::move(name));
+      ignored_types_.emplace_back(art::InversePrettyDescriptor(name));
     }
     // This tracing session ID matches the requesting tracing session ID, so we know heapprofd
     // has verified it targets this process.
@@ -412,8 +412,9 @@ class Writer {
 class ReferredObjectsFinder {
  public:
   explicit ReferredObjectsFinder(
-      std::vector<std::pair<std::string, art::mirror::Object*>>* referred_objects)
-      : referred_objects_(referred_objects) {}
+      std::vector<std::pair<std::string, art::mirror::Object*>>* referred_objects,
+      bool emit_field_ids)
+      : referred_objects_(referred_objects), emit_field_ids_(emit_field_ids) {}
 
   // For art::mirror::Object::VisitReferences.
   void operator()(art::ObjPtr<art::mirror::Object> obj, art::MemberOffset offset,
@@ -431,21 +432,23 @@ class ReferredObjectsFinder {
       field = art::ArtField::FindInstanceFieldWithOffset(obj->GetClass(), offset.Uint32Value());
     }
     std::string field_name = "";
-    if (field != nullptr) {
+    if (field != nullptr && emit_field_ids_) {
       field_name = field->PrettyField(/*with_type=*/true);
     }
     referred_objects_->emplace_back(std::move(field_name), ref);
   }
 
-  void VisitRootIfNonNull(art::mirror::CompressedReference<art::mirror::Object>* root
-                              ATTRIBUTE_UNUSED) const {}
-  void VisitRoot(art::mirror::CompressedReference<art::mirror::Object>* root
-                     ATTRIBUTE_UNUSED) const {}
+  void VisitRootIfNonNull(
+      [[maybe_unused]] art::mirror::CompressedReference<art::mirror::Object>* root) const {}
+  void VisitRoot(
+      [[maybe_unused]] art::mirror::CompressedReference<art::mirror::Object>* root) const {}
 
  private:
   // We can use a raw Object* pointer here, because there are no concurrent GC threads after the
   // fork.
   std::vector<std::pair<std::string, art::mirror::Object*>>* referred_objects_;
+  // Prettifying field names is expensive; avoid if field name will not be used.
+  bool emit_field_ids_;
 };
 
 class RootFinder : public art::SingleRootVisitor {
@@ -504,8 +507,10 @@ perfetto::protos::pbzero::HeapGraphType::Kind ProtoClassKind(uint32_t class_flag
   using perfetto::protos::pbzero::HeapGraphType;
   switch (class_flags) {
     case art::mirror::kClassFlagNormal:
+    case art::mirror::kClassFlagRecord:
       return HeapGraphType::KIND_NORMAL;
     case art::mirror::kClassFlagNoReferenceFields:
+    case art::mirror::kClassFlagNoReferenceFields | art::mirror::kClassFlagRecord:
       return HeapGraphType::KIND_NOREFERENCES;
     case art::mirror::kClassFlagString | art::mirror::kClassFlagNoReferenceFields:
       return HeapGraphType::KIND_STRING;
@@ -583,13 +588,18 @@ size_t EncodedSize(uint64_t n) {
 
 // Returns all the references that `*obj` (an object of type `*klass`) is holding.
 std::vector<std::pair<std::string, art::mirror::Object*>> GetReferences(art::mirror::Object* obj,
-                                                                        art::mirror::Class* klass)
+                                                                        art::mirror::Class* klass,
+                                                                        bool emit_field_ids)
     REQUIRES_SHARED(art::Locks::mutator_lock_) {
   std::vector<std::pair<std::string, art::mirror::Object*>> referred_objects;
-  ReferredObjectsFinder objf(&referred_objects);
+  ReferredObjectsFinder objf(&referred_objects, emit_field_ids);
 
-  if (klass->GetClassFlags() != art::mirror::kClassFlagNormal &&
-      klass->GetClassFlags() != art::mirror::kClassFlagPhantomReference) {
+  uint32_t klass_flags = klass->GetClassFlags();
+  if (klass_flags != art::mirror::kClassFlagNormal &&
+      klass_flags != art::mirror::kClassFlagSoftReference &&
+      klass_flags != art::mirror::kClassFlagWeakReference &&
+      klass_flags != art::mirror::kClassFlagFinalizerReference &&
+      klass_flags != art::mirror::kClassFlagPhantomReference) {
     obj->VisitReferences(objf, art::VoidFunctor());
   } else {
     for (art::mirror::Class* cls = klass; cls != nullptr; cls = cls->GetSuperClass().Ptr()) {
@@ -797,16 +807,19 @@ class HeapGraphDumper {
                       art::mirror::Class* klass,
                       perfetto::protos::pbzero::HeapGraphObject* object_proto)
       REQUIRES_SHARED(art::Locks::mutator_lock_) {
+    const uint32_t klass_flags = klass->GetClassFlags();
+    const bool emit_field_ids = klass_flags != art::mirror::kClassFlagObjectArray &&
+                                klass_flags != art::mirror::kClassFlagNormal &&
+                                klass_flags != art::mirror::kClassFlagSoftReference &&
+                                klass_flags != art::mirror::kClassFlagWeakReference &&
+                                klass_flags != art::mirror::kClassFlagFinalizerReference &&
+                                klass_flags != art::mirror::kClassFlagPhantomReference;
     std::vector<std::pair<std::string, art::mirror::Object*>> referred_objects =
-        GetReferences(obj, klass);
+        GetReferences(obj, klass, emit_field_ids);
 
     art::mirror::Object* min_nonnull_ptr = FilterIgnoredReferencesAndFindMin(referred_objects);
 
     uint64_t base_obj_id = EncodeBaseObjId(referred_objects, min_nonnull_ptr);
-
-    const bool emit_field_ids = klass->GetClassFlags() != art::mirror::kClassFlagObjectArray &&
-                                klass->GetClassFlags() != art::mirror::kClassFlagNormal &&
-                                klass->GetClassFlags() != art::mirror::kClassFlagPhantomReference;
 
     for (const auto& p : referred_objects) {
       const std::string& field_name = p.first;
@@ -885,8 +898,9 @@ class HeapGraphDumper {
       return false;
     }
     art::mirror::Class* klass = obj->GetClass();
-    return std::find(ignored_types_.begin(), ignored_types_.end(), PrettyType(klass)) !=
-           ignored_types_.end();
+    std::string temp;
+    std::string_view name(klass->GetDescriptor(&temp));
+    return std::find(ignored_types_.begin(), ignored_types_.end(), name) != ignored_types_.end();
   }
 
   // Name of classes whose instances should be ignored.
@@ -1132,6 +1146,7 @@ void DumpPerfettoOutOfMemory() REQUIRES_SHARED(art::Locks::mutator_lock_) {
     // child process
     [self](pid_t dumped_pid, uint64_t timestamp) {
       ArmWatchdogOrDie();
+      art::SetThreadName("perfetto_oome_hprof");
       art::ScopedTrace trace("perfetto_hprof oome");
       SetupDataSource("android.java_hprof.oom", true);
       perfetto::Tracing::ActivateTriggers({"com.android.telemetry.art-outofmemory"}, 500);

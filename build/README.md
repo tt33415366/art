@@ -8,10 +8,6 @@ directory) of platform releases, to ensure it is always available.
 The recommended way to build the ART Module is to use the `master-art` manifest,
 which only has the sources and dependencies required for the module.
 
-Currently it is also possible to build ART directly from sources in a platform
-build, i.e. as has been the traditional way up until Android S. However that
-method is being phased out.
-
 The ART Module is available as a debug variant, `com.android.art.debug.apex`,
 which has extra internal consistency checks enabled, and some debug tools. A
 device cannot have both the non-debug and debug variants installed at once - it
@@ -35,22 +31,20 @@ the module. It is also mutually exclusive with the other ones.
 
 2.  Set up the development environment:
 
+    See
+    [art/test/README.chroot.md](https://android.googlesource.com/platform/art/+/refs/heads/main/test/README.chroot.md)
+    for details on how to set up the environment on `master-art`, but the
+    `lunch` step can be skipped. Instead use `banchan` to initialize an
+    unbundled module build:
+
     ```
+    source build/envsetup.sh
     banchan com.android.art <arch>
-    export SOONG_ALLOW_MISSING_DEPENDENCIES=true BUILD_BROKEN_DISABLE_BAZEL=true
     ```
 
-    For Google internal builds on the internal master-art branch, specify
-    instead the Google variant of the module and product:
-
-    ```
-    banchan com.google.android.art mainline_modules_<arch>
-    export SOONG_ALLOW_MISSING_DEPENDENCIES=true BUILD_BROKEN_DISABLE_BAZEL=true
-    ```
-
-    `<arch>` is the device architecture, one of `arm`, `arm64`, `x86`, or
-    `x86_64`. Regardless of the device architecture, the build also includes the
-    usual host architectures, and 64/32-bit multilib for the 64-bit products.
+    `<arch>` is the device architecture - use `hmm` to see the options.
+    Regardless of the device architecture, the build also includes the usual
+    host architectures, and 64/32-bit multilib for the 64-bit products.
 
     To build the debug variant of the module, specify `com.android.art.debug`
     instead of `com.android.art`. It is also possible to list both.
@@ -81,12 +75,29 @@ module build on `master-art` above (b/172480617).
 
 2.  Ensure the ART Module is built from source:
 
+    Active development on ART module happens in `trunk_staging` release
+    configuration. Whenever possible, use this configuration for local development.
+
     ```
-    export ART_MODULE_BUILD_FROM_SOURCE=true
+    lunch <product>-trunk_staging-<variant>
     ```
 
-    If this isn't set then the build may use prebuilts of the ART Module that
-    may be older than the sources.
+    Some release configurations use prebuilts of ART module. To verify whether a
+    particular release configuration uses ART prebuilts, run the following command
+
+    ```
+    get_build_var RELEASE_APEX_CONTRIBUTIONS_ART
+    ```
+
+    If this returns a non-empty value, it usually means that this release
+    configuration uses ART prebuilts. (To verify, you can inspect the `contents` of
+    the `apex_contributions` Android.bp module reported by the above command.)
+
+    For troubleshooting, it might be desirable to build ART from source in that
+    release configuration. To do so, please modify the <release>.scl file and unset
+    the `RELEASE_APEX_CONTIRBUTIONS_ART` build flag. To determine which .scl files
+    are used in the current release configuration, please refer to
+    `out/release_config_entrypoint.scl`.
 
 3.  Build the system image the normal way, for example:
 

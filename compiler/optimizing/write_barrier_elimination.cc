@@ -21,9 +21,12 @@
 #include "base/scoped_arena_containers.h"
 #include "optimizing/nodes.h"
 
+// TODO(b/310755375, solanes): Enable WBE with the fixes.
+constexpr bool kWBEEnabled = true;
+
 namespace art HIDDEN {
 
-class WBEVisitor : public HGraphVisitor {
+class WBEVisitor final : public HGraphVisitor {
  public:
   WBEVisitor(HGraph* graph, OptimizingCompilerStats* stats)
       : HGraphVisitor(graph),
@@ -35,14 +38,14 @@ class WBEVisitor : public HGraphVisitor {
     // We clear the map to perform this optimization only in the same block. Doing it across blocks
     // would entail non-trivial merging of states.
     current_write_barriers_.clear();
-    HGraphVisitor::VisitBasicBlock(block);
+    VisitNonPhiInstructions(block);
   }
 
   void VisitInstanceFieldSet(HInstanceFieldSet* instruction) override {
     DCHECK(!instruction->GetSideEffects().Includes(SideEffects::CanTriggerGC()));
 
     if (instruction->GetFieldType() != DataType::Type::kReference ||
-        instruction->GetValue()->IsNullConstant()) {
+        HuntForOriginalReference(instruction->GetValue())->IsNullConstant()) {
       instruction->SetWriteBarrierKind(WriteBarrierKind::kDontEmit);
       return;
     }
@@ -55,7 +58,7 @@ class WBEVisitor : public HGraphVisitor {
       DCHECK(it->second->AsInstanceFieldSet()->GetWriteBarrierKind() !=
              WriteBarrierKind::kDontEmit);
       DCHECK_EQ(it->second->GetBlock(), instruction->GetBlock());
-      it->second->AsInstanceFieldSet()->SetWriteBarrierKind(WriteBarrierKind::kEmitNoNullCheck);
+      it->second->AsInstanceFieldSet()->SetWriteBarrierKind(WriteBarrierKind::kEmitBeingReliedOn);
       instruction->SetWriteBarrierKind(WriteBarrierKind::kDontEmit);
       MaybeRecordStat(stats_, MethodCompilationStat::kRemovedWriteBarrier);
     } else {
@@ -69,7 +72,7 @@ class WBEVisitor : public HGraphVisitor {
     DCHECK(!instruction->GetSideEffects().Includes(SideEffects::CanTriggerGC()));
 
     if (instruction->GetFieldType() != DataType::Type::kReference ||
-        instruction->GetValue()->IsNullConstant()) {
+        HuntForOriginalReference(instruction->GetValue())->IsNullConstant()) {
       instruction->SetWriteBarrierKind(WriteBarrierKind::kDontEmit);
       return;
     }
@@ -81,7 +84,7 @@ class WBEVisitor : public HGraphVisitor {
       DCHECK(it->second->IsStaticFieldSet());
       DCHECK(it->second->AsStaticFieldSet()->GetWriteBarrierKind() != WriteBarrierKind::kDontEmit);
       DCHECK_EQ(it->second->GetBlock(), instruction->GetBlock());
-      it->second->AsStaticFieldSet()->SetWriteBarrierKind(WriteBarrierKind::kEmitNoNullCheck);
+      it->second->AsStaticFieldSet()->SetWriteBarrierKind(WriteBarrierKind::kEmitBeingReliedOn);
       instruction->SetWriteBarrierKind(WriteBarrierKind::kDontEmit);
       MaybeRecordStat(stats_, MethodCompilationStat::kRemovedWriteBarrier);
     } else {
@@ -97,7 +100,7 @@ class WBEVisitor : public HGraphVisitor {
     }
 
     if (instruction->GetComponentType() != DataType::Type::kReference ||
-        instruction->GetValue()->IsNullConstant()) {
+        HuntForOriginalReference(instruction->GetValue())->IsNullConstant()) {
       instruction->SetWriteBarrierKind(WriteBarrierKind::kDontEmit);
       return;
     }
@@ -109,8 +112,7 @@ class WBEVisitor : public HGraphVisitor {
       DCHECK(it->second->IsArraySet());
       DCHECK(it->second->AsArraySet()->GetWriteBarrierKind() != WriteBarrierKind::kDontEmit);
       DCHECK_EQ(it->second->GetBlock(), instruction->GetBlock());
-      // We never skip the null check in ArraySets so that value is already set.
-      DCHECK(it->second->AsArraySet()->GetWriteBarrierKind() == WriteBarrierKind::kEmitNoNullCheck);
+      it->second->AsArraySet()->SetWriteBarrierKind(WriteBarrierKind::kEmitBeingReliedOn);
       instruction->SetWriteBarrierKind(WriteBarrierKind::kDontEmit);
       MaybeRecordStat(stats_, MethodCompilationStat::kRemovedWriteBarrier);
     } else {
@@ -153,8 +155,10 @@ class WBEVisitor : public HGraphVisitor {
 };
 
 bool WriteBarrierElimination::Run() {
-  WBEVisitor wbe_visitor(graph_, stats_);
-  wbe_visitor.VisitReversePostOrder();
+  if (kWBEEnabled) {
+    WBEVisitor wbe_visitor(graph_, stats_);
+    wbe_visitor.VisitReversePostOrder();
+  }
   return true;
 }
 

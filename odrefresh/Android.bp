@@ -21,6 +21,7 @@ package {
     // to get the below license kinds:
     //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["art_license"],
+    default_team: "trendy_team_art_mainline",
 }
 
 cc_defaults {
@@ -41,10 +42,8 @@ cc_defaults {
         "art-odrefresh-operator-srcs",
     ],
     shared_libs: [
-        "libartpalette",
-        "libarttools", // Contains "libc++fs".
-        "libbase",
         "liblog",
+        "libselinux",
     ],
     static_libs: [
         "libmodules-utils-build",
@@ -65,6 +64,8 @@ cc_defaults {
     ],
     srcs: ["odrefresh_main.cc"],
     shared_libs: [
+        "libarttools", // Contains "libc++fs".
+        "libbase",
         "libdexfile",
     ],
     target: {
@@ -74,18 +75,38 @@ cc_defaults {
     },
 }
 
-cc_library_headers {
-    name: "odrefresh_headers",
+cc_defaults {
+    name: "odrefresh_headers_defaults",
     defaults: ["art_defaults"],
     export_include_dirs: ["include"],
     host_supported: true,
     stl: "none",
     system_shared_libs: [],
     sdk_version: "minimum", // The minimum sdk version required by users of this module.
+}
+
+cc_library_headers {
+    name: "odrefresh_headers",
+    defaults: ["odrefresh_headers_defaults"],
     apex_available: [
         "//apex_available:platform", // For odsign.
     ],
     visibility: ["//visibility:public"],
+}
+
+// Same header as above, but for use within the ART module. This is separated
+// from above so that the build system doesn't incorrectly recognize it as a
+// dependency of the ART module exported by the platform.
+cc_library_headers {
+    name: "odrefresh_headers_art",
+    defaults: ["odrefresh_headers_defaults"],
+    apex_available: [
+        "com.android.art",
+        "com.android.art.debug",
+    ],
+    visibility: [
+        "//art:__subpackages__",
+    ],
 }
 
 gensrcs {
@@ -112,6 +133,7 @@ art_cc_binary {
     apex_available: [
         "com.android.art",
         "com.android.art.debug",
+        "test_broken_com.android.art",
     ],
 }
 
@@ -147,6 +169,7 @@ art_cc_binary {
         // apex_available lists need to be the same for internal libs to avoid
         // stubs, and this depends on libartd.
         "com.android.art",
+        "test_broken_com.android.art",
     ],
 }
 
@@ -166,7 +189,10 @@ cc_library_static {
                 "odr_metrics_record.cc",
                 "odr_statslog_android.cc",
             ],
-            shared_libs: ["libstatssocket"],
+            shared_libs: [
+                "libstatspull",
+                "libstatssocket",
+            ],
         },
         host: {
             srcs: ["odr_statslog_host.cc"],
@@ -206,7 +232,8 @@ art_cc_test {
     ],
     host_supported: false,
     shared_libs: [
-        "libdexfiled",
+        "libarttools",
+        "libbase",
     ],
     // The test config template is needed even though it's not used by the test
     // runner. Otherwise, Soong will generate a test config, which is adding
@@ -223,8 +250,9 @@ art_cc_test {
         "art_standalone_gtest_defaults",
         "art_odrefresh_tests_defaults",
     ],
-    shared_libs: [
-        "libdexfile",
+    static_libs: [
+        "libarttools",
+        "libbase",
     ],
 }
 

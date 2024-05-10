@@ -22,8 +22,8 @@
 #include "mirror/dex_cache.h"
 #include "mirror/executable.h"
 #include "mirror/object-inl.h"
+#include "oat/oat_file.h"
 #include "obj_ptr.h"
-#include "oat_file.h"
 #include "runtime.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread.h"
@@ -70,7 +70,6 @@ extern "C" JNIEXPORT jboolean JNICALL Java_Main_hasOatCompiledCode(JNIEnv* env,
       return true;
 
     case OatClassType::kNoneCompiled:
-    case OatClassType::kOatClassMax:
       return false;
   }
 

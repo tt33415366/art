@@ -20,9 +20,9 @@
 #include <android-base/stringprintf.h>
 
 #include "art_method-inl.h"
-#include "base/enums.h"
 #include "base/locks.h"
 #include "base/logging.h"
+#include "base/pointer_size.h"
 #include "base/systrace.h"
 #include "base/utils.h"
 #include "class_linker.h"
@@ -42,7 +42,7 @@
 #include "verifier/method_verifier.h"
 #include "verifier/reg_type_cache.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace verifier {
 
 using android::base::StringPrintf;
@@ -159,8 +159,9 @@ FailureKind ClassVerifier::VerifyClass(Thread* self,
             StringPrintf("Method %s failed lock verification and will run slower.",
                          dex_file->PrettyMethod(method.GetIndex()).c_str());
         if (!gPrintedDxMonitorText) {
-          tmp = tmp + "\nCommon causes for lock verification issues are non-optimized dex code\n"
-                      "and incorrect proguard optimizations.";
+          tmp +=
+              "\nCommon causes for lock verification issues are non-optimized dex code\n"
+              "and incorrect proguard optimizations.";
           gPrintedDxMonitorText = true;
         }
         LOG(WARNING) << tmp;
@@ -185,18 +186,6 @@ FailureKind ClassVerifier::VerifyClass(Thread* self,
   }
 
   return failure_data.kind;
-}
-
-void ClassVerifier::Init(ClassLinker* class_linker) {
-  MethodVerifier::Init(class_linker);
-}
-
-void ClassVerifier::Shutdown() {
-  MethodVerifier::Shutdown();
-}
-
-void ClassVerifier::VisitStaticRoots(RootVisitor* visitor) {
-  MethodVerifier::VisitStaticRoots(visitor);
 }
 
 }  // namespace verifier

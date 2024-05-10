@@ -45,7 +45,7 @@ extern "C" bool artCheckForArmSdivInstruction();
 extern "C" bool artCheckForArmv8AInstructions();
 #endif
 
-namespace art {
+namespace art HIDDEN {
 
 using android::base::StringPrintf;
 
@@ -243,14 +243,14 @@ ArmFeaturesUniquePtr ArmInstructionSetFeatures::FromHwcap() {
 // A signal handler called by a fault for an illegal instruction.  We record the fact in r0
 // and then increment the PC in the signal context to return to the next instruction.  We know the
 // instruction is 4 bytes long.
-static void bad_instr_handle(int signo ATTRIBUTE_UNUSED,
-                            siginfo_t* si ATTRIBUTE_UNUSED,
-                            void* data) {
+static void bad_instr_handle([[maybe_unused]] int signo,
+                             [[maybe_unused]] siginfo_t* si,
+                             void* data) {
 #if defined(__arm__)
-  struct ucontext *uc = (struct ucontext *)data;
-  struct sigcontext *sc = &uc->uc_mcontext;
-  sc->arm_r0 = 0;     // Set R0 to #0 to signal error.
-  sc->arm_pc += 4;    // Skip offending instruction.
+  ucontext_t* uc = reinterpret_cast<ucontext_t*>(data);
+  mcontext_t* mc = &uc->uc_mcontext;
+  mc->arm_r0 = 0;   // Set R0 to #0 to signal error.
+  mc->arm_pc += 4;  // Skip offending instruction.
 #else
   UNUSED(data);
 #endif

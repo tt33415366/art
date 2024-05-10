@@ -21,6 +21,7 @@ package {
     // to get the below license kinds:
     //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["art_license"],
+    default_team: "trendy_team_art_performance",
 }
 
 cc_defaults {
@@ -40,7 +41,6 @@ art_cc_library_static {
     device_supported: false,
     host_supported: true,
     defaults: [
-        "libart-compiler_static_defaults",
         "libart-dexlayout_static_defaults",
         "libart-disassembler_static_defaults",
         "libart_static_defaults",
@@ -62,7 +62,6 @@ art_cc_binary {
         android: {
             shared_libs: [
                 "libart",
-                "libart-compiler",
                 "libart-dexlayout",
                 "libart-disassembler",
                 "libartbase",
@@ -84,6 +83,7 @@ art_cc_binary {
     apex_available: [
         "com.android.art",
         "com.android.art.debug",
+        "test_broken_com.android.art",
     ],
 }
 
@@ -94,7 +94,6 @@ art_cc_library_static {
     device_supported: false,
     host_supported: true,
     defaults: [
-        "libartd-compiler_static_defaults",
         "libartd-dexlayout_static_defaults",
         "libartd-disassembler_static_defaults",
         "libartd_static_defaults",
@@ -120,7 +119,6 @@ art_cc_binary {
             shared_libs: [
                 "libartbased",
                 "libartd",
-                "libartd-compiler",
                 "libartd-dexlayout",
                 "libartd-disassembler",
                 "libbase",
@@ -173,7 +171,6 @@ art_cc_binary {
         "libartbase_static_defaults",
         "libdexfile_static_defaults",
         "libprofile_static_defaults",
-        "libart-compiler_static_defaults",
         "libart-dexlayout_static_defaults",
         "oatdumps-defaults",
     ],
@@ -191,7 +188,6 @@ art_cc_binary {
         "libartbased_static_defaults",
         "libdexfiled_static_defaults",
         "libprofiled_static_defaults",
-        "libartd-compiler_static_defaults",
         "libartd-dexlayout_static_defaults",
         "oatdumps-defaults",
     ],
@@ -243,4 +239,9 @@ art_cc_test {
     ],
     data: [":generate-boot-image"],
     test_config: "art_standalone_oatdump_tests.xml",
+}
+
+phony_rule {
+    name: "dump-oat",
+    phony_deps: ["dump-oat-boot"],
 }

@@ -21,14 +21,14 @@
 
 #include "base/macros.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace riscv64 {
 
 enum XRegister {
   Zero = 0,  // X0, hard-wired zero
   RA = 1,    // X1, return address
   SP = 2,    // X2, stack pointer
-  GP = 3,    // X3, global pointer
+  GP = 3,    // X3, global pointer (unavailable, used for shadow stack by the compiler / libc)
   TP = 4,    // X4, thread pointer (points to TLS area, not ART-internal thread)
 
   T0 = 5,  // X5, temporary 0
@@ -36,7 +36,7 @@ enum XRegister {
   T2 = 7,  // X7, temporary 2
 
   S0 = 8,  // X8/FP, callee-saved 0 / frame pointer
-  S1 = 9,  // X9, callee-saved 1
+  S1 = 9,  // X9, callee-saved 1 / ART thread register
 
   A0 = 10,  // X10, argument 0 / return value 0
   A1 = 11,  // X11, argument 1 / return value 1
@@ -47,7 +47,7 @@ enum XRegister {
   A6 = 16,  // X16, argument 6
   A7 = 17,  // X17, argument 7
 
-  S2 = 18,   // X18, callee-saved 2 (unavailable, used for shadow stack by the compiler / libc)
+  S2 = 18,   // X18, callee-saved 2
   S3 = 19,   // X19, callee-saved 3
   S4 = 20,   // X20, callee-saved 4
   S5 = 21,   // X21, callee-saved 5
@@ -64,10 +64,12 @@ enum XRegister {
   T6 = 31,  // X31, temporary 6
 
   kNumberOfXRegisters = 32,
-  kNoRegister = -1,  // Signals an illegal register.
+  kNoXRegister = -1,  // Signals an illegal X register.
 
   // Aliases.
-  TR = S1,  // ART Thread Register - managed runtime
+  TR = S1,    // ART Thread Register - managed runtime
+  TMP = T6,   // Reserved for special uses, such as assembler macro instructions.
+  TMP2 = T5,  // Reserved for special uses, such as assembler macro instructions.
 };
 
 std::ostream& operator<<(std::ostream& os, const XRegister& rhs);
@@ -111,9 +113,55 @@ enum FRegister {
   FT11 = 31,  // F31, temporary 11
 
   kNumberOfFRegisters = 32,
+  kNoFRegister = -1,  // Signals an illegal F register.
+
+  FTMP = FT11,  // Reserved for special uses, such as assembler macro instructions.
 };
 
 std::ostream& operator<<(std::ostream& os, const FRegister& rhs);
+
+enum VRegister {
+  V0 = 0,  // V0, argument 0
+  V1 = 1,  // V1, callee-saved 0
+  V2 = 2,  // V2, callee-saved 1
+  V3 = 3,  // V3, callee-saved 2
+  V4 = 4,  // V4, callee-saved 3
+  V5 = 5,  // V5, callee-saved 4
+  V6 = 6,  // V6, callee-saved 5
+  V7 = 7,  // V7, callee-saved 6
+
+  V8 = 8,    // V8, argument 1
+  V9 = 9,    // V9, argument 2
+  V10 = 10,  // V10, argument 3
+  V11 = 11,  // V11, argument 4
+  V12 = 12,  // V12, argument 5
+  V13 = 13,  // V13, argument 6
+  V14 = 14,  // V14, argument 7
+  V15 = 15,  // V15, argument 8
+
+  V16 = 16,  // V16, argument 9
+  V17 = 17,  // V17, argument 10
+  V18 = 18,  // V18, argument 11
+  V19 = 19,  // V19, argument 12
+  V20 = 20,  // V20, argument 13
+  V21 = 21,  // V21, argument 14
+  V22 = 22,  // V22, argument 15
+  V23 = 23,  // V23, argument 16
+
+  V24 = 24,  // V24, callee-saved 7
+  V25 = 25,  // V25, callee-saved 8
+  V26 = 26,  // V26, callee-saved 9
+  V27 = 27,  // V27, callee-saved 10
+  V28 = 28,  // V28, callee-saved 11
+  V29 = 29,  // V29, callee-saved 12
+  V30 = 30,  // V30, callee-saved 13
+  V31 = 31,  // V31, callee-saved 14
+
+  kNumberOfVRegisters = 32,
+  kNoVRegister = -1,  // Signals an illegal V register.
+};
+
+std::ostream& operator<<(std::ostream& os, const VRegister& rhs);
 
 }  // namespace riscv64
 }  // namespace art

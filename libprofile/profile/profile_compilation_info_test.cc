@@ -956,9 +956,9 @@ TEST_F(ProfileCompilationInfoTest, UpdateProfileKeyOk) {
   AddMethod(&info, dex2, /*method_idx=*/ 0);
 
   // Update the profile keys based on the original dex files
-  bool updated = false;
-  ASSERT_TRUE(info.UpdateProfileKeys(dex_files, &updated));
-  ASSERT_TRUE(updated);
+  bool matched = false;
+  ASSERT_TRUE(info.UpdateProfileKeys(dex_files, &matched));
+  ASSERT_TRUE(matched);
 
   // Verify that we find the methods when searched with the original dex files.
   for (const std::unique_ptr<const DexFile>& dex : dex_files) {
@@ -984,9 +984,9 @@ TEST_F(ProfileCompilationInfoTest, UpdateProfileKeyOkWithAnnotation) {
   AddMethod(&info, dex2, /*method_idx=*/ 0, Hotness::kFlagHot, annotation);
 
   // Update the profile keys based on the original dex files
-  bool updated = false;
-  ASSERT_TRUE(info.UpdateProfileKeys(dex_files, &updated));
-  ASSERT_TRUE(updated);
+  bool matched = false;
+  ASSERT_TRUE(info.UpdateProfileKeys(dex_files, &matched));
+  ASSERT_TRUE(matched);
 
   // Verify that we find the methods when searched with the original dex files.
   for (const std::unique_ptr<const DexFile>& dex : dex_files) {
@@ -1001,30 +1001,78 @@ TEST_F(ProfileCompilationInfoTest, UpdateProfileKeyOkWithAnnotation) {
   }
 }
 
-TEST_F(ProfileCompilationInfoTest, UpdateProfileKeyOkButNoUpdate) {
+TEST_F(ProfileCompilationInfoTest, UpdateProfileKeyOkMatchedButNoUpdate) {
   std::vector<std::unique_ptr<const DexFile>> dex_files;
   dex_files.push_back(std::unique_ptr<const DexFile>(dex1));
 
+  // Both the checksum and the location match the original dex file.
   ProfileCompilationInfo info;
-  AddMethod(&info, dex2, /*method_idx=*/ 0);
+  AddMethod(&info, dex1, /*method_idx=*/0);
 
-  // Update the profile keys based on the original dex files.
-  bool updated = false;
-  ASSERT_TRUE(info.UpdateProfileKeys(dex_files, &updated));
-  ASSERT_FALSE(updated);
+  // No update should happen, but this should be considered as a happy case.
+  bool matched = false;
+  ASSERT_TRUE(info.UpdateProfileKeys(dex_files, &matched));
+  ASSERT_TRUE(matched);
 
-  // Verify that we did not perform any update and that we cannot find anything with the new
-  // location.
+  // Verify that we find the methods when searched with the original dex files.
   for (const std::unique_ptr<const DexFile>& dex : dex_files) {
     ProfileCompilationInfo::MethodHotness loaded_hotness =
         GetMethod(info, dex.get(), /*method_idx=*/ 0);
-    ASSERT_FALSE(loaded_hotness.IsHot());
+    ASSERT_TRUE(loaded_hotness.IsHot());
   }
 
-  // Verify that we can find the original entry.
-  ProfileCompilationInfo::MethodHotness loaded_hotness =
-        GetMethod(info, dex2, /*method_idx=*/ 0);
+  // Release the ownership as this is held by the test class;
+  for (std::unique_ptr<const DexFile>& dex : dex_files) {
+    UNUSED(dex.release());
+  }
+}
+
+TEST_F(ProfileCompilationInfoTest, UpdateProfileKeyOkButNoMatch) {
+  std::vector<std::unique_ptr<const DexFile>> dex_files;
+  dex_files.push_back(std::unique_ptr<const DexFile>(dex1_renamed));
+  dex_files.push_back(std::unique_ptr<const DexFile>(dex2_renamed));
+
+  // This is a partial match: `dex1` matches `dex1_renamed`, but `dex3` matches nothing. It should
+  // be treated as a match failure.
+  ProfileCompilationInfo info;
+  AddMethod(&info, dex1, /*method_idx=*/0);
+  AddMethod(&info, dex3, /*method_idx=*/0);
+
+  // Update the profile keys based on the original dex files.
+  bool matched = false;
+  ASSERT_TRUE(info.UpdateProfileKeys(dex_files, &matched));
+  ASSERT_FALSE(matched);
+
+  // Verify that the unmatched entry is kept.
+  ProfileCompilationInfo::MethodHotness loaded_hotness = GetMethod(info, dex3, /*method_idx=*/0);
   ASSERT_TRUE(loaded_hotness.IsHot());
+
+  // Verify that we can find the updated entry.
+  ProfileCompilationInfo::MethodHotness loaded_hotness_2 =
+      GetMethod(info, dex1_renamed, /*method_idx=*/0);
+  ASSERT_TRUE(loaded_hotness_2.IsHot());
+
+  // Release the ownership as this is held by the test class;
+  for (std::unique_ptr<const DexFile>& dex : dex_files) {
+    UNUSED(dex.release());
+  }
+}
+
+TEST_F(ProfileCompilationInfoTest, UpdateProfileKeyOkButEmpty) {
+  std::vector<std::unique_ptr<const DexFile>> dex_files;
+  dex_files.push_back(std::unique_ptr<const DexFile>(dex1_renamed));
+  dex_files.push_back(std::unique_ptr<const DexFile>(dex2_renamed));
+
+  // Empty profile.
+  ProfileCompilationInfo info;
+
+  // Update the profile keys based on the original dex files.
+  bool matched = false;
+  ASSERT_TRUE(info.UpdateProfileKeys(dex_files, &matched));
+  ASSERT_FALSE(matched);
+
+  // Verify that the updated profile is still empty.
+  EXPECT_TRUE(info.IsEmpty());
 
   // Release the ownership as this is held by the test class;
   for (std::unique_ptr<const DexFile>& dex : dex_files) {
@@ -1043,9 +1091,9 @@ TEST_F(ProfileCompilationInfoTest, UpdateProfileKeyFail) {
   // This will cause the rename to fail because an existing entry would already have that name.
   AddMethod(&info, dex1_renamed, /*method_idx=*/ 0);
 
-  bool updated = false;
-  ASSERT_FALSE(info.UpdateProfileKeys(dex_files, &updated));
-  ASSERT_FALSE(updated);
+  bool matched = false;
+  ASSERT_FALSE(info.UpdateProfileKeys(dex_files, &matched));
+  ASSERT_TRUE(matched);
 
   // Release the ownership as this is held by the test class;
   for (std::unique_ptr<const DexFile>& dex : dex_files) {
@@ -1450,10 +1498,16 @@ TEST_F(ProfileCompilationInfoTest, AddMethodsProfileMethodInfoInlineCaches) {
 
   // Add inline caches with the methods. The profile should record only the one for the hot method.
   std::vector<TypeReference> types = {};
-  ProfileMethodInfo::ProfileInlineCache ic(/*dex_pc*/ 0, /*missing_types*/true, types);
+  ProfileMethodInfo::ProfileInlineCache ic(/*dex_pc=*/ 0, /*missing_types=*/ true, types);
   std::vector<ProfileMethodInfo::ProfileInlineCache> inline_caches = {ic};
-  info.AddMethod(ProfileMethodInfo(hot, inline_caches), Hotness::kFlagHot);
-  info.AddMethod(ProfileMethodInfo(startup, inline_caches), Hotness::kFlagStartup);
+  info.AddMethod(ProfileMethodInfo(hot, inline_caches),
+                 Hotness::kFlagHot,
+                 ProfileSampleAnnotation::kNone,
+                 /*is_test=*/ true);
+  info.AddMethod(ProfileMethodInfo(startup, inline_caches),
+                 Hotness::kFlagStartup,
+                 ProfileSampleAnnotation::kNone,
+                 /*is_test=*/ true);
 
   // Check the hot method's inline cache.
   ProfileCompilationInfo::MethodHotness hot_hotness = GetMethod(info, dex1, hot.index);

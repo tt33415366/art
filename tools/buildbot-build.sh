@@ -36,8 +36,32 @@ else
   out_dir=${OUT_DIR}
 fi
 
+# On master-art, we need to copy ART-local riscv64 prebuilts for conscrypt and
+# statsd into their own repositories, as mainline doesn't support riscv64 yet.
+# Android.bp file changes are stored as patch files which need to be applied
+# afterwards.
+#
+# TODO(b/286551985): Remove this after riscv64 support is added to mainline.
+if [[ $TARGET_ARCH = "riscv64" && ! ( -d frameworks/base ) ]]; then
+  msginfo "Copying prebuilt dependencies for riscv64"
+  cp -u -r prebuilts/runtime/mainline/local_riscv64/prebuilts/module_sdk/conscrypt \
+    prebuilts/module_sdk
+  cp -u -r prebuilts/runtime/mainline/local_riscv64/prebuilts/module_sdk/StatsD \
+    prebuilts/module_sdk
+  for patch_file in $(find prebuilts/module_sdk -name Android.bp.patch) ; do
+    bp_file=${patch_file%.patch}
+    # Only apply the patches if they haven't been applied already. Assume the
+    # patch files contain the bug number, and look for that.
+    if grep -q b/286551985 $bp_file ; then
+      msginfo "Patch for riscv64 already present in $bp_file"
+    else
+      patch -f $bp_file < $patch_file
+    fi
+  done
+fi
+
 java_libraries_dir=${out_dir}/target/common/obj/JAVA_LIBRARIES
-common_targets="vogar core-tests core-ojtests apache-harmony-jdwp-tests-hostdex jsr166-tests libartpalette-system mockito-target"
+common_targets="vogar core-tests core-ojtests apache-harmony-jdwp-tests-hostdex jsr166-tests libartpalette-system mockito-target desugar"
 # These build targets have different names on device and host.
 specific_targets="libjavacoretests libwrapagentproperties libwrapagentpropertiesd"
 build_host="no"
@@ -84,11 +108,25 @@ if [[ $build_host == "no" ]] && [[ $build_target == "no" ]]; then
   build_target="yes"
 fi
 
-# Allow to build successfully in master-art.
-extra_args="SOONG_ALLOW_MISSING_DEPENDENCIES=true BUILD_BROKEN_DISABLE_BAZEL=true"
+implementation_libs=(
+  "heapprofd_client_api"
+  "libandroid_runtime_lazy"
+  "libartpalette-system"
+  "libbinder"
+  "libbinder_ndk"
+  "libcutils"
+  "libutils"
+  "libvndksupport"
+)
 
-# Switch the build system to unbundled mode in the reduced manifest branch.
-if [ ! -d frameworks/base ]; then
+if [ -d frameworks/base ]; then
+  # In full manifest branches, build the implementation libraries from source
+  # instead of using prebuilts.
+  common_targets="$common_targets ${implementation_libs[*]}"
+else
+  # Necessary to build successfully in master-art.
+  extra_args="SOONG_ALLOW_MISSING_DEPENDENCIES=true"
+  # Switch the build system to unbundled mode in the reduced manifest branch.
   extra_args="$extra_args TARGET_BUILD_UNBUNDLED=true"
 fi
 
@@ -130,13 +168,15 @@ if [[ $build_target == "yes" ]]; then
   # Targets required to generate a linker configuration for device within the
   # chroot environment. The *.libraries.txt targets are required by
   # the source linkerconfig but not included in the prebuilt one.
-  make_command+=" linkerconfig conv_linker_config sanitizer.libraries.txt vndkcorevariant.libraries.txt"
+  make_command+=" linkerconfig conv_linker_config sanitizer.libraries.txt llndk.libraries.txt"
   # Additional targets needed for the chroot environment.
   make_command+=" event-log-tags"
   # Needed to extract prebuilt APEXes.
   make_command+=" deapexer"
   # Needed to generate the primary boot image for testing.
   make_command+=" generate-boot-image"
+  # Data file needed by the `ArtExecTest.SetTaskProfiles` test.
+  make_command+=" task_profiles.json"
   # Build/install the required APEXes.
   make_command+=" ${apexes[*]}"
   make_command+=" ${specific_targets}"
@@ -167,7 +207,6 @@ if [[ $build_target == "yes" ]]; then
   # Extract prebuilt APEXes.
   debugfs=$ANDROID_HOST_OUT/bin/debugfs_static
   fsckerofs=$ANDROID_HOST_OUT/bin/fsck.erofs
-  blkid=$ANDROID_HOST_OUT/bin/blkid_static
   for apex in ${apexes[@]}; do
     dir="$ANDROID_PRODUCT_OUT/system/apex/${apex}"
     apexbase="$ANDROID_PRODUCT_OUT/system/apex/${apex}"
@@ -182,7 +221,7 @@ if [[ $build_target == "yes" ]]; then
       rm -rf $dir
       mkdir -p $dir
       $ANDROID_HOST_OUT/bin/deapexer --debugfs_path $debugfs --fsckerofs_path $fsckerofs \
-        --blkid_path $blkid extract $file $dir
+        extract $file $dir
     fi
   done
 
@@ -190,40 +229,29 @@ if [[ $build_target == "yes" ]]; then
   # testing, we need to install an implementation of the libraries (and cannot
   # rely on the one already installed on the device, if the device is post R and
   # has it).
-  implementation_libs=(
-    "heapprofd_client_api.so"
-    "libandroid_runtime_lazy.so"
-    "libartpalette-system.so"
-    "libbinder.so"
-    "libbinder_ndk.so"
-    "libcutils.so"
-    "libutils.so"
-    "libvndksupport.so"
-  )
-  if [ -d prebuilts/runtime/mainline/platform/impl ]; then
+  if [ -d prebuilts/runtime/mainline/platform/impl -a ! -d frameworks/base ]; then
     if [[ $TARGET_ARCH = arm* ]]; then
       arch32=arm
       arch64=arm64
+    elif [[ $TARGET_ARCH = riscv64 ]]; then
+      arch32=none # there is no 32-bit arch for RISC-V
+      arch64=riscv64
     else
       arch32=x86
       arch64=x86_64
     fi
-    if [ "$TARGET_ARCH" = riscv64 ]; then
-      true # no 32-bit arch for RISC-V
-    else
-      for so in ${implementation_libs[@]}; do
-        if [ -d "$ANDROID_PRODUCT_OUT/system/lib" ]; then
-          cmd="cp -p prebuilts/runtime/mainline/platform/impl/$arch32/$so $ANDROID_PRODUCT_OUT/system/lib/$so"
-          msginfo "Executing" "$cmd"
-          eval "$cmd"
-        fi
-        if [ -d "$ANDROID_PRODUCT_OUT/system/lib64" ]; then
-          cmd="cp -p prebuilts/runtime/mainline/platform/impl/$arch64/$so $ANDROID_PRODUCT_OUT/system/lib64/$so"
-          msginfo "Executing" "$cmd"
-          eval "$cmd"
-        fi
-      done
-    fi
+    for so in ${implementation_libs[@]}; do
+      if [ -d "$ANDROID_PRODUCT_OUT/system/lib" -a $arch32 != none ]; then
+        cmd="cp -p prebuilts/runtime/mainline/platform/impl/$arch32/${so}.so $ANDROID_PRODUCT_OUT/system/lib/${so}.so"
+        msginfo "Executing" "$cmd"
+        eval "$cmd"
+      fi
+      if [ -d "$ANDROID_PRODUCT_OUT/system/lib64" -a $arch64 != none ]; then
+        cmd="cp -p prebuilts/runtime/mainline/platform/impl/$arch64/${so}.so $ANDROID_PRODUCT_OUT/system/lib64/${so}.so"
+        msginfo "Executing" "$cmd"
+        eval "$cmd"
+      fi
+    done
   fi
 
   # Create canonical name -> file name symlink in the symbol directory for the
@@ -407,6 +435,5 @@ EOF
   msginfo "Generating linkerconfig" "in $linkerconfig_out"
   rm -rf $linkerconfig_out
   mkdir -p $linkerconfig_out
-  $ANDROID_HOST_OUT/bin/linkerconfig --target $linkerconfig_out --root $linkerconfig_root --vndk $platform_version
-  msgnote "Don't be scared by \"Unable to access VNDK APEX\" message, it's not fatal"
+  $ANDROID_HOST_OUT/bin/linkerconfig --target $linkerconfig_out --root $linkerconfig_root
 fi
