@@ -302,7 +302,7 @@ uint32_t ArtMethod::FindDexMethodIndexInOtherDexFile(const DexFile& other_dexfil
   if (dexfile == &other_dexfile) {
     return dex_method_idx;
   }
-  const char* mid_declaring_class_descriptor = dexfile->GetTypeDescriptor(mid.class_idx_);
+  std::string_view mid_declaring_class_descriptor = dexfile->GetTypeDescriptorView(mid.class_idx_);
   const dex::TypeId* other_type_id = other_dexfile.FindTypeId(mid_declaring_class_descriptor);
   if (other_type_id != nullptr) {
     const dex::MethodId* other_mid = other_dexfile.FindMethodId(
@@ -487,9 +487,8 @@ static const OatFile::OatMethod FindOatMethodFromDexFileFor(ArtMethod* method, b
   const DexFile* dex_file = method->GetDexFile();
 
   // recreate the class_def_index from the descriptor.
-  std::string descriptor_storage;
   const dex::TypeId* declaring_class_type_id =
-      dex_file->FindTypeId(method->GetDeclaringClass()->GetDescriptor(&descriptor_storage));
+      dex_file->FindTypeId(method->GetDeclaringClassDescriptorView());
   CHECK(declaring_class_type_id != nullptr);
   dex::TypeIndex declaring_class_type_index = dex_file->GetIndexForTypeId(*declaring_class_type_id);
   const dex::ClassDef* declaring_class_type_def =
@@ -848,8 +847,7 @@ std::string ArtMethod::PrettyMethod(ArtMethod* m, bool with_signature) {
 
 std::string ArtMethod::PrettyMethod(bool with_signature) {
   if (UNLIKELY(IsRuntimeMethod())) {
-    std::string result = GetDeclaringClassDescriptor();
-    result += '.';
+    std::string result = "<runtime method>.";
     result += GetName();
     // Do not add "<no signature>" even if `with_signature` is true.
     return result;
@@ -924,19 +922,32 @@ ALWAYS_INLINE static inline void DoGetAccessFlagsHelper(ArtMethod* method)
         method->GetDeclaringClass<kReadBarrierOption>()->IsErroneous());
 }
 
+template <typename T>
+const void* Exchange(uintptr_t ptr, uintptr_t new_value) {
+  std::atomic<T>* atomic_addr = reinterpret_cast<std::atomic<T>*>(ptr);
+  return reinterpret_cast<const void*>(
+      atomic_addr->exchange(dchecked_integral_cast<T>(new_value), std::memory_order_relaxed));
+}
+
 void ArtMethod::SetEntryPointFromQuickCompiledCodePtrSize(
     const void* entry_point_from_quick_compiled_code, PointerSize pointer_size) {
   const void* current_entry_point = GetEntryPointFromQuickCompiledCodePtrSize(pointer_size);
   if (current_entry_point == entry_point_from_quick_compiled_code) {
     return;
   }
+
+  // Do an atomic exchange to avoid potentially unregistering JIT code twice.
+  MemberOffset offset = EntryPointFromQuickCompiledCodeOffset(pointer_size);
+  uintptr_t new_value = reinterpret_cast<uintptr_t>(entry_point_from_quick_compiled_code);
+  uintptr_t ptr = reinterpret_cast<uintptr_t>(this) + offset.Uint32Value();
+  const void* old_value = (pointer_size == PointerSize::k32)
+      ? Exchange<uint32_t>(ptr, new_value)
+      : Exchange<uint64_t>(ptr, new_value);
+
   jit::Jit* jit = Runtime::Current()->GetJit();
-  SetNativePointer(EntryPointFromQuickCompiledCodeOffset(pointer_size),
-                   entry_point_from_quick_compiled_code,
-                   pointer_size);
   if (jit != nullptr &&
-      jit->GetCodeCache()->ContainsPc(current_entry_point)) {
-    jit->GetCodeCache()->AddZombieCode(this, current_entry_point);
+      jit->GetCodeCache()->ContainsPc(old_value)) {
+    jit->GetCodeCache()->AddZombieCode(this, old_value);
   }
 }
 

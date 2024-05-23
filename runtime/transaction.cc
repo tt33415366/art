@@ -20,6 +20,7 @@
 
 #include "base/mutex-inl.h"
 #include "base/stl_util.h"
+#include "common_throws.h"
 #include "dex/descriptors_names.h"
 #include "gc/accounting/card_table-inl.h"
 #include "gc/heap.h"
@@ -104,17 +105,15 @@ void Transaction::Abort(const std::string& abort_message) {
 void Transaction::ThrowAbortError(Thread* self, const std::string* abort_message) {
   const bool rethrow = (abort_message == nullptr);
   if (kIsDebugBuild && rethrow) {
-    CHECK(IsAborted()) << "Rethrow " << DescriptorToDot(Transaction::kAbortExceptionDescriptor)
+    CHECK(IsAborted()) << "Rethrow " << DescriptorToDot(kTransactionAbortErrorDescriptor)
                        << " while transaction is not aborted";
   }
   if (rethrow) {
     // Rethrow an exception with the earlier abort message stored in the transaction.
-    self->ThrowNewWrappedException(Transaction::kAbortExceptionDescriptor,
-                                   GetAbortMessage().c_str());
+    self->ThrowNewWrappedException(kTransactionAbortErrorDescriptor, GetAbortMessage().c_str());
   } else {
     // Throw an exception with the given abort message.
-    self->ThrowNewWrappedException(Transaction::kAbortExceptionDescriptor,
-                                   abort_message->c_str());
+    self->ThrowNewWrappedException(kTransactionAbortErrorDescriptor, abort_message->c_str());
   }
 }
 
@@ -141,16 +140,15 @@ bool Transaction::WriteValueConstraint(ObjPtr<mirror::Object> value) const {
   if (value == nullptr) {
     return false;  // We can always store null values.
   }
-  gc::Heap* heap = Runtime::Current()->GetHeap();
   if (IsStrict()) {
     // TODO: Should we restrict writes the same way as for boot image extension?
     return false;
-  } else if (heap->GetBootImageSpaces().empty()) {
+  } else if (heap_->GetBootImageSpaces().empty()) {
     return false;  // No constraints for boot image.
   } else {
     // Boot image extension.
     ObjPtr<mirror::Class> klass = value->IsClass() ? value->AsClass() : value->GetClass();
-    return !AotClassLinker::CanReferenceInBootImageExtensionOrAppImage(klass, heap);
+    return !AotClassLinker::CanReferenceInBootImageExtensionOrAppImage(klass, heap_);
   }
 }
 
@@ -746,7 +744,8 @@ void Transaction::ArrayLog::UndoArrayWrite(mirror::Array* array,
 Transaction* ScopedAssertNoNewTransactionRecords::InstallAssertion(const char* reason) {
   Transaction* transaction = nullptr;
   if (kIsDebugBuild && Runtime::Current()->IsActiveTransaction()) {
-    transaction = Runtime::Current()->GetTransaction();
+    AotClassLinker* class_linker = down_cast<AotClassLinker*>(Runtime::Current()->GetClassLinker());
+    transaction = class_linker->GetTransaction();
     if (transaction != nullptr) {
       CHECK(transaction->assert_no_new_records_reason_ == nullptr)
           << "old: " << transaction->assert_no_new_records_reason_ << " new: " << reason;
@@ -758,7 +757,8 @@ Transaction* ScopedAssertNoNewTransactionRecords::InstallAssertion(const char* r
 
 void ScopedAssertNoNewTransactionRecords::RemoveAssertion(Transaction* transaction) {
   if (kIsDebugBuild) {
-    CHECK(Runtime::Current()->GetTransaction() == transaction);
+    AotClassLinker* class_linker = down_cast<AotClassLinker*>(Runtime::Current()->GetClassLinker());
+    CHECK(class_linker->GetTransaction() == transaction);
     CHECK(transaction->assert_no_new_records_reason_ != nullptr);
     transaction->assert_no_new_records_reason_ = nullptr;
   }

@@ -1011,6 +1011,7 @@ CodeGeneratorARM64::CodeGeneratorARM64(HGraph* graph,
       boot_image_method_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       method_bss_entry_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       boot_image_type_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
+      app_image_type_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       type_bss_entry_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       public_type_bss_entry_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       package_type_bss_entry_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
@@ -1349,18 +1350,18 @@ void CodeGeneratorARM64::GenerateFrameEntry() {
     // We don't emit a read barrier here to save on code size. We rely on the
     // resolution trampoline to do a suspend check before re-entering this code.
     __ Ldr(temp1, MemOperand(kArtMethodRegister, ArtMethod::DeclaringClassOffset().Int32Value()));
-    __ Ldrb(temp2, HeapOperand(temp1, status_byte_offset));
-    __ Cmp(temp2, shifted_visibly_initialized_value);
+    __ Ldrb(temp2, HeapOperand(temp1, kClassStatusByteOffset));
+    __ Cmp(temp2, kShiftedVisiblyInitializedValue);
     __ B(hs, &frame_entry_label_);
 
     // Check if we're initialized and jump to code that does a memory barrier if
     // so.
-    __ Cmp(temp2, shifted_initialized_value);
+    __ Cmp(temp2, kShiftedInitializedValue);
     __ B(hs, &memory_barrier);
 
     // Check if we're initializing and the thread initializing is the one
     // executing the code.
-    __ Cmp(temp2, shifted_initializing_value);
+    __ Cmp(temp2, kShiftedInitializingValue);
     __ B(lo, &resolution);
 
     __ Ldr(temp1, HeapOperand(temp1, mirror::Class::ClinitThreadIdOffset().Int32Value()));
@@ -2079,8 +2080,8 @@ void InstructionCodeGeneratorARM64::GenerateClassInitializationCheck(SlowPathCod
   // size, load only the high byte of the field and compare with 0xf0.
   // Note: The same code size could be achieved with LDR+MNV(asr #24)+CBNZ but benchmarks
   // show that this pattern is slower (tested on little cores).
-  __ Ldrb(temp, HeapOperand(class_reg, status_byte_offset));
-  __ Cmp(temp, shifted_visibly_initialized_value);
+  __ Ldrb(temp, HeapOperand(class_reg, kClassStatusByteOffset));
+  __ Cmp(temp, kShiftedVisiblyInitializedValue);
   __ B(lo, slow_path->GetEntryLabel());
   __ Bind(slow_path->GetExitLabel());
 }
@@ -5155,6 +5156,13 @@ vixl::aarch64::Label* CodeGeneratorARM64::NewBootImageTypePatch(
   return NewPcRelativePatch(&dex_file, type_index.index_, adrp_label, &boot_image_type_patches_);
 }
 
+vixl::aarch64::Label* CodeGeneratorARM64::NewAppImageTypePatch(
+    const DexFile& dex_file,
+    dex::TypeIndex type_index,
+    vixl::aarch64::Label* adrp_label) {
+  return NewPcRelativePatch(&dex_file, type_index.index_, adrp_label, &app_image_type_patches_);
+}
+
 vixl::aarch64::Label* CodeGeneratorARM64::NewBssEntryTypePatch(
     HLoadClass* load_class,
     vixl::aarch64::Label* adrp_label) {
@@ -5365,6 +5373,7 @@ void CodeGeneratorARM64::EmitLinkerPatches(ArenaVector<linker::LinkerPatch>* lin
       boot_image_method_patches_.size() +
       method_bss_entry_patches_.size() +
       boot_image_type_patches_.size() +
+      app_image_type_patches_.size() +
       type_bss_entry_patches_.size() +
       public_type_bss_entry_patches_.size() +
       package_type_bss_entry_patches_.size() +
@@ -5387,12 +5396,15 @@ void CodeGeneratorARM64::EmitLinkerPatches(ArenaVector<linker::LinkerPatch>* lin
     DCHECK(boot_image_type_patches_.empty());
     DCHECK(boot_image_string_patches_.empty());
   }
+  DCHECK_IMPLIES(!GetCompilerOptions().IsAppImage(), app_image_type_patches_.empty());
   if (GetCompilerOptions().IsBootImage()) {
     EmitPcRelativeLinkerPatches<NoDexFileAdapter<linker::LinkerPatch::IntrinsicReferencePatch>>(
         boot_image_other_patches_, linker_patches);
   } else {
     EmitPcRelativeLinkerPatches<NoDexFileAdapter<linker::LinkerPatch::BootImageRelRoPatch>>(
         boot_image_other_patches_, linker_patches);
+    EmitPcRelativeLinkerPatches<linker::LinkerPatch::TypeAppImageRelRoPatch>(
+        app_image_type_patches_, linker_patches);
   }
   EmitPcRelativeLinkerPatches<linker::LinkerPatch::MethodBssEntryPatch>(
       method_bss_entry_patches_, linker_patches);
@@ -5504,6 +5516,7 @@ HLoadClass::LoadKind CodeGeneratorARM64::GetSupportedLoadClassKind(
       break;
     case HLoadClass::LoadKind::kBootImageLinkTimePcRelative:
     case HLoadClass::LoadKind::kBootImageRelRo:
+    case HLoadClass::LoadKind::kAppImageRelRo:
     case HLoadClass::LoadKind::kBssEntry:
     case HLoadClass::LoadKind::kBssEntryPublic:
     case HLoadClass::LoadKind::kBssEntryPackage:
@@ -5611,6 +5624,20 @@ void InstructionCodeGeneratorARM64::VisitLoadClass(HLoadClass* cls) NO_THREAD_SA
       DCHECK(!codegen_->GetCompilerOptions().IsBootImage());
       uint32_t boot_image_offset = CodeGenerator::GetBootImageOffset(cls);
       codegen_->LoadBootImageRelRoEntry(out.W(), boot_image_offset);
+      break;
+    }
+    case HLoadClass::LoadKind::kAppImageRelRo: {
+      DCHECK(codegen_->GetCompilerOptions().IsAppImage());
+      DCHECK_EQ(read_barrier_option, kWithoutReadBarrier);
+      // Add ADRP with its PC-relative type patch.
+      const DexFile& dex_file = cls->GetDexFile();
+      dex::TypeIndex type_index = cls->GetTypeIndex();
+      vixl::aarch64::Label* adrp_label = codegen_->NewAppImageTypePatch(dex_file, type_index);
+      codegen_->EmitAdrpPlaceholder(adrp_label, out.X());
+      // Add LDR with its PC-relative type patch.
+      vixl::aarch64::Label* ldr_label =
+          codegen_->NewAppImageTypePatch(dex_file, type_index, adrp_label);
+      codegen_->EmitLdrOffsetPlaceholder(ldr_label, out.W(), out.X());
       break;
     }
     case HLoadClass::LoadKind::kBssEntry:

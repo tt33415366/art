@@ -1173,6 +1173,7 @@ CodeGeneratorX86::CodeGeneratorX86(HGraph* graph,
       boot_image_method_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       method_bss_entry_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       boot_image_type_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
+      app_image_type_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       type_bss_entry_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       public_type_bss_entry_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       package_type_bss_entry_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
@@ -1389,17 +1390,18 @@ void CodeGeneratorX86::GenerateFrameEntry() {
     NearLabel continue_execution, resolution;
     // We'll use EBP as temporary.
     __ pushl(EBP);
+    __ cfi().AdjustCFAOffset(4);
     // Check if we're visibly initialized.
 
     // We don't emit a read barrier here to save on code size. We rely on the
     // resolution trampoline to do a suspend check before re-entering this code.
     __ movl(EBP, Address(kMethodRegisterArgument, ArtMethod::DeclaringClassOffset().Int32Value()));
-    __ cmpb(Address(EBP,  status_byte_offset), Immediate(shifted_visibly_initialized_value));
+    __ cmpb(Address(EBP, kClassStatusByteOffset), Immediate(kShiftedVisiblyInitializedValue));
     __ j(kAboveEqual, &continue_execution);
 
     // Check if we're initializing and the thread initializing is the one
     // executing the code.
-    __ cmpb(Address(EBP,  status_byte_offset), Immediate(shifted_initializing_value));
+    __ cmpb(Address(EBP, kClassStatusByteOffset), Immediate(kShiftedInitializingValue));
     __ j(kBelow, &resolution);
 
     __ movl(EBP, Address(EBP, mirror::Class::ClinitThreadIdOffset().Int32Value()));
@@ -1408,13 +1410,16 @@ void CodeGeneratorX86::GenerateFrameEntry() {
     __ Bind(&resolution);
 
     __ popl(EBP);
+    __ cfi().AdjustCFAOffset(-4);
     // Jump to the resolution stub.
     ThreadOffset32 entrypoint_offset =
         GetThreadOffset<kX86PointerSize>(kQuickQuickResolutionTrampoline);
     __ fs()->jmp(Address::Absolute(entrypoint_offset));
 
     __ Bind(&continue_execution);
+    __ cfi().AdjustCFAOffset(4);  // Undo the `-4` adjustment above. We get here with EBP pushed.
     __ popl(EBP);
+    __ cfi().AdjustCFAOffset(-4);
   }
 
   __ Bind(&frame_entry_label_);
@@ -5715,6 +5720,14 @@ void CodeGeneratorX86::RecordBootImageTypePatch(HLoadClass* load_class) {
   __ Bind(&boot_image_type_patches_.back().label);
 }
 
+void CodeGeneratorX86::RecordAppImageTypePatch(HLoadClass* load_class) {
+  HX86ComputeBaseMethodAddress* method_address =
+      load_class->InputAt(0)->AsX86ComputeBaseMethodAddress();
+  app_image_type_patches_.emplace_back(
+      method_address, &load_class->GetDexFile(), load_class->GetTypeIndex().index_);
+  __ Bind(&app_image_type_patches_.back().label);
+}
+
 Label* CodeGeneratorX86::NewTypeBssEntryPatch(HLoadClass* load_class) {
   HX86ComputeBaseMethodAddress* method_address =
       load_class->InputAt(0)->AsX86ComputeBaseMethodAddress();
@@ -5844,6 +5857,7 @@ void CodeGeneratorX86::EmitLinkerPatches(ArenaVector<linker::LinkerPatch>* linke
       boot_image_method_patches_.size() +
       method_bss_entry_patches_.size() +
       boot_image_type_patches_.size() +
+      app_image_type_patches_.size() +
       type_bss_entry_patches_.size() +
       public_type_bss_entry_patches_.size() +
       package_type_bss_entry_patches_.size() +
@@ -5864,12 +5878,15 @@ void CodeGeneratorX86::EmitLinkerPatches(ArenaVector<linker::LinkerPatch>* linke
     DCHECK(boot_image_type_patches_.empty());
     DCHECK(boot_image_string_patches_.empty());
   }
+  DCHECK_IMPLIES(!GetCompilerOptions().IsAppImage(), app_image_type_patches_.empty());
   if (GetCompilerOptions().IsBootImage()) {
     EmitPcRelativeLinkerPatches<NoDexFileAdapter<linker::LinkerPatch::IntrinsicReferencePatch>>(
         boot_image_other_patches_, linker_patches);
   } else {
     EmitPcRelativeLinkerPatches<NoDexFileAdapter<linker::LinkerPatch::BootImageRelRoPatch>>(
         boot_image_other_patches_, linker_patches);
+    EmitPcRelativeLinkerPatches<linker::LinkerPatch::TypeAppImageRelRoPatch>(
+        app_image_type_patches_, linker_patches);
   }
   EmitPcRelativeLinkerPatches<linker::LinkerPatch::MethodBssEntryPatch>(
       method_bss_entry_patches_, linker_patches);
@@ -7283,6 +7300,7 @@ HLoadClass::LoadKind CodeGeneratorX86::GetSupportedLoadClassKind(
       break;
     case HLoadClass::LoadKind::kBootImageLinkTimePcRelative:
     case HLoadClass::LoadKind::kBootImageRelRo:
+    case HLoadClass::LoadKind::kAppImageRelRo:
     case HLoadClass::LoadKind::kBssEntry:
     case HLoadClass::LoadKind::kBssEntryPublic:
     case HLoadClass::LoadKind::kBssEntryPackage:
@@ -7396,6 +7414,14 @@ void InstructionCodeGeneratorX86::VisitLoadClass(HLoadClass* cls) NO_THREAD_SAFE
                                           CodeGenerator::GetBootImageOffset(cls));
       break;
     }
+    case HLoadClass::LoadKind::kAppImageRelRo: {
+      DCHECK(codegen_->GetCompilerOptions().IsAppImage());
+      DCHECK_EQ(read_barrier_option, kWithoutReadBarrier);
+      Register method_address = locations->InAt(0).AsRegister<Register>();
+      __ movl(out, Address(method_address, CodeGeneratorX86::kPlaceholder32BitOffset));
+      codegen_->RecordAppImageTypePatch(cls);
+      break;
+    }
     case HLoadClass::LoadKind::kBssEntry:
     case HLoadClass::LoadKind::kBssEntryPublic:
     case HLoadClass::LoadKind::kBssEntryPackage: {
@@ -7488,7 +7514,7 @@ void InstructionCodeGeneratorX86::VisitClinitCheck(HClinitCheck* check) {
 
 void InstructionCodeGeneratorX86::GenerateClassInitializationCheck(
     SlowPathCode* slow_path, Register class_reg) {
-  __ cmpb(Address(class_reg,  status_byte_offset), Immediate(shifted_visibly_initialized_value));
+  __ cmpb(Address(class_reg, kClassStatusByteOffset), Immediate(kShiftedVisiblyInitializedValue));
   __ j(kBelow, slow_path->GetEntryLabel());
   __ Bind(slow_path->GetExitLabel());
 }

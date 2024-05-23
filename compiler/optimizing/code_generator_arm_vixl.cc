@@ -1946,6 +1946,7 @@ CodeGeneratorARMVIXL::CodeGeneratorARMVIXL(HGraph* graph,
       boot_image_method_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       method_bss_entry_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       boot_image_type_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
+      app_image_type_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       type_bss_entry_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       public_type_bss_entry_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       package_type_bss_entry_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
@@ -2353,18 +2354,18 @@ void CodeGeneratorARMVIXL::GenerateFrameEntry() {
     // We don't emit a read barrier here to save on code size. We rely on the
     // resolution trampoline to do a suspend check before re-entering this code.
     __ Ldr(temp1, MemOperand(kMethodRegister, ArtMethod::DeclaringClassOffset().Int32Value()));
-    __ Ldrb(temp2, MemOperand(temp1, status_byte_offset));
-    __ Cmp(temp2, shifted_visibly_initialized_value);
+    __ Ldrb(temp2, MemOperand(temp1, kClassStatusByteOffset));
+    __ Cmp(temp2, kShiftedVisiblyInitializedValue);
     __ B(cs, &frame_entry_label_);
 
     // Check if we're initialized and jump to code that does a memory barrier if
     // so.
-    __ Cmp(temp2, shifted_initialized_value);
+    __ Cmp(temp2, kShiftedInitializedValue);
     __ B(cs, &memory_barrier);
 
     // Check if we're initializing and the thread initializing is the one
     // executing the code.
-    __ Cmp(temp2, shifted_initializing_value);
+    __ Cmp(temp2, kShiftedInitializingValue);
     __ B(lo, &resolution);
 
     __ Ldr(temp1, MemOperand(temp1, mirror::Class::ClinitThreadIdOffset().Int32Value()));
@@ -7657,6 +7658,7 @@ HLoadClass::LoadKind CodeGeneratorARMVIXL::GetSupportedLoadClassKind(
       break;
     case HLoadClass::LoadKind::kBootImageLinkTimePcRelative:
     case HLoadClass::LoadKind::kBootImageRelRo:
+    case HLoadClass::LoadKind::kAppImageRelRo:
     case HLoadClass::LoadKind::kBssEntry:
     case HLoadClass::LoadKind::kBssEntryPublic:
     case HLoadClass::LoadKind::kBssEntryPackage:
@@ -7760,6 +7762,15 @@ void InstructionCodeGeneratorARMVIXL::VisitLoadClass(HLoadClass* cls) NO_THREAD_
       codegen_->LoadBootImageRelRoEntry(out, boot_image_offset);
       break;
     }
+    case HLoadClass::LoadKind::kAppImageRelRo: {
+      DCHECK(codegen_->GetCompilerOptions().IsAppImage());
+      DCHECK_EQ(read_barrier_option, kWithoutReadBarrier);
+      CodeGeneratorARMVIXL::PcRelativePatchInfo* labels =
+          codegen_->NewAppImageTypePatch(cls->GetDexFile(), cls->GetTypeIndex());
+      codegen_->EmitMovwMovtPlaceholder(labels, out);
+      __ Ldr(out, MemOperand(out, /*offset=*/ 0));
+      break;
+    }
     case HLoadClass::LoadKind::kBssEntry:
     case HLoadClass::LoadKind::kBssEntryPublic:
     case HLoadClass::LoadKind::kBssEntryPackage: {
@@ -7851,8 +7862,8 @@ void InstructionCodeGeneratorARMVIXL::GenerateClassInitializationCheck(
     LoadClassSlowPathARMVIXL* slow_path, vixl32::Register class_reg) {
   UseScratchRegisterScope temps(GetVIXLAssembler());
   vixl32::Register temp = temps.Acquire();
-  __ Ldrb(temp, MemOperand(class_reg, status_byte_offset));
-  __ Cmp(temp, shifted_visibly_initialized_value);
+  __ Ldrb(temp, MemOperand(class_reg, kClassStatusByteOffset));
+  __ Cmp(temp, kShiftedVisiblyInitializedValue);
   __ B(lo, slow_path->GetEntryLabel());
   __ Bind(slow_path->GetExitLabel());
 }
@@ -9691,6 +9702,11 @@ CodeGeneratorARMVIXL::PcRelativePatchInfo* CodeGeneratorARMVIXL::NewBootImageTyp
   return NewPcRelativePatch(&dex_file, type_index.index_, &boot_image_type_patches_);
 }
 
+CodeGeneratorARMVIXL::PcRelativePatchInfo* CodeGeneratorARMVIXL::NewAppImageTypePatch(
+    const DexFile& dex_file, dex::TypeIndex type_index) {
+  return NewPcRelativePatch(&dex_file, type_index.index_, &app_image_type_patches_);
+}
+
 CodeGeneratorARMVIXL::PcRelativePatchInfo* CodeGeneratorARMVIXL::NewTypeBssEntryPatch(
     HLoadClass* load_class) {
   const DexFile& dex_file = load_class->GetDexFile();
@@ -9877,6 +9893,7 @@ void CodeGeneratorARMVIXL::EmitLinkerPatches(ArenaVector<linker::LinkerPatch>* l
       /* MOVW+MOVT for each entry */ 2u * boot_image_method_patches_.size() +
       /* MOVW+MOVT for each entry */ 2u * method_bss_entry_patches_.size() +
       /* MOVW+MOVT for each entry */ 2u * boot_image_type_patches_.size() +
+      /* MOVW+MOVT for each entry */ 2u * app_image_type_patches_.size() +
       /* MOVW+MOVT for each entry */ 2u * type_bss_entry_patches_.size() +
       /* MOVW+MOVT for each entry */ 2u * public_type_bss_entry_patches_.size() +
       /* MOVW+MOVT for each entry */ 2u * package_type_bss_entry_patches_.size() +
@@ -9898,12 +9915,15 @@ void CodeGeneratorARMVIXL::EmitLinkerPatches(ArenaVector<linker::LinkerPatch>* l
     DCHECK(boot_image_type_patches_.empty());
     DCHECK(boot_image_string_patches_.empty());
   }
+  DCHECK_IMPLIES(!GetCompilerOptions().IsAppImage(), app_image_type_patches_.empty());
   if (GetCompilerOptions().IsBootImage()) {
     EmitPcRelativeLinkerPatches<NoDexFileAdapter<linker::LinkerPatch::IntrinsicReferencePatch>>(
         boot_image_other_patches_, linker_patches);
   } else {
     EmitPcRelativeLinkerPatches<NoDexFileAdapter<linker::LinkerPatch::BootImageRelRoPatch>>(
         boot_image_other_patches_, linker_patches);
+    EmitPcRelativeLinkerPatches<linker::LinkerPatch::TypeAppImageRelRoPatch>(
+        app_image_type_patches_, linker_patches);
   }
   EmitPcRelativeLinkerPatches<linker::LinkerPatch::MethodBssEntryPatch>(
       method_bss_entry_patches_, linker_patches);

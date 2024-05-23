@@ -31,7 +31,6 @@ import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.os.UserHandle;
 import android.text.TextUtils;
-import android.util.Log;
 
 import androidx.annotation.RequiresApi;
 
@@ -56,8 +55,6 @@ import java.util.Objects;
 /** @hide */
 @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
 public class PrimaryDexopter extends Dexopter<DetailedPrimaryDexInfo> {
-    private static final String TAG = ArtManagerLocal.TAG;
-
     private final int mSharedGid;
 
     public PrimaryDexopter(@NonNull Context context, @NonNull Config config,
@@ -72,7 +69,11 @@ public class PrimaryDexopter extends Dexopter<DetailedPrimaryDexInfo> {
             @NonNull CancellationSignal cancellationSignal) {
         super(injector, pkgState, pkg, params, cancellationSignal);
 
-        mSharedGid = UserHandle.getSharedAppGid(pkgState.getAppId());
+        if (pkgState.getAppId() < 0) {
+            mSharedGid = Process.SYSTEM_UID;
+        } else {
+            mSharedGid = UserHandle.getSharedAppGid(pkgState.getAppId());
+        }
         if (mSharedGid < 0) {
             throw new IllegalStateException(
                     String.format("Unable to get shared gid for package '%s' (app ID: %d)",
