@@ -20,6 +20,7 @@
 
 #include "base/casts.h"
 #include "base/pointer_size.h"
+#include "class_linker.h"
 #include "class_root-inl.h"
 #include "debugger.h"
 #include "dex/dex_file_types.h"
@@ -1507,58 +1508,11 @@ bool DoFilledNewArray(const Instruction* inst,
   return true;
 }
 
-// TODO: Use ObjPtr here.
-template<typename T>
-static void RecordArrayElementsInTransactionImpl(ObjPtr<mirror::PrimitiveArray<T>> array,
-                                                 int32_t count)
-    REQUIRES_SHARED(Locks::mutator_lock_) {
-  Runtime* runtime = Runtime::Current();
-  for (int32_t i = 0; i < count; ++i) {
-    runtime->RecordWriteArray(array.Ptr(), i, array->GetWithoutChecks(i));
-  }
-}
-
-void RecordArrayElementsInTransaction(ObjPtr<mirror::Array> array, int32_t count)
-    REQUIRES_SHARED(Locks::mutator_lock_) {
-  DCHECK(Runtime::Current()->IsActiveTransaction());
-  DCHECK(array != nullptr);
-  DCHECK_LE(count, array->GetLength());
-  Primitive::Type primitive_component_type = array->GetClass()->GetComponentType()->GetPrimitiveType();
-  switch (primitive_component_type) {
-    case Primitive::kPrimBoolean:
-      RecordArrayElementsInTransactionImpl(array->AsBooleanArray(), count);
-      break;
-    case Primitive::kPrimByte:
-      RecordArrayElementsInTransactionImpl(array->AsByteArray(), count);
-      break;
-    case Primitive::kPrimChar:
-      RecordArrayElementsInTransactionImpl(array->AsCharArray(), count);
-      break;
-    case Primitive::kPrimShort:
-      RecordArrayElementsInTransactionImpl(array->AsShortArray(), count);
-      break;
-    case Primitive::kPrimInt:
-      RecordArrayElementsInTransactionImpl(array->AsIntArray(), count);
-      break;
-    case Primitive::kPrimFloat:
-      RecordArrayElementsInTransactionImpl(array->AsFloatArray(), count);
-      break;
-    case Primitive::kPrimLong:
-      RecordArrayElementsInTransactionImpl(array->AsLongArray(), count);
-      break;
-    case Primitive::kPrimDouble:
-      RecordArrayElementsInTransactionImpl(array->AsDoubleArray(), count);
-      break;
-    default:
-      LOG(FATAL) << "Unsupported primitive type " << primitive_component_type
-                 << " in fill-array-data";
-      UNREACHABLE();
-  }
-}
-
 void UnlockHeldMonitors(Thread* self, ShadowFrame* shadow_frame)
     REQUIRES_SHARED(Locks::mutator_lock_) {
-  DCHECK(shadow_frame->GetForcePopFrame() || Runtime::Current()->IsTransactionAborted());
+  DCHECK(shadow_frame->GetForcePopFrame() ||
+         (Runtime::Current()->IsActiveTransaction() &&
+             Runtime::Current()->GetClassLinker()->IsTransactionAborted()));
   // Unlock all monitors.
   if (shadow_frame->GetMethod()->MustCountLocks()) {
     DCHECK(!shadow_frame->GetMethod()->SkipAccessChecks());
@@ -1585,6 +1539,26 @@ void UnlockHeldMonitors(Thread* self, ShadowFrame* shadow_frame)
             self, shadow_frame, shadow_frame->GetVRegReference(*reg.dex_registers.begin()));
       }
     }
+  }
+}
+
+void PerformNonStandardReturn(Thread* self,
+                              ShadowFrame& frame,
+                              JValue& result,
+                              const instrumentation::Instrumentation* instrumentation,
+                              bool unlock_monitors) {
+  if (UNLIKELY(self->IsExceptionPending())) {
+    LOG(WARNING) << "Suppressing exception for non-standard method exit: "
+                 << self->GetException()->Dump();
+    self->ClearException();
+  }
+  if (unlock_monitors) {
+    UnlockHeldMonitors(self, &frame);
+    DoMonitorCheckOnExit(self, &frame);
+  }
+  result = JValue();
+  if (UNLIKELY(NeedsMethodExitEvent(instrumentation))) {
+    SendMethodExitEvents(self, instrumentation, frame, frame.GetMethod(), result);
   }
 }
 
