@@ -56,6 +56,12 @@ class InactiveTransactionChecker {
   static void RecordArrayElementsInTransaction([[maybe_unused]] ObjPtr<mirror::Object> array,
                                                [[maybe_unused]] int32_t count)
       REQUIRES_SHARED(Locks::mutator_lock_) {}
+
+  ALWAYS_INLINE static void RecordNewObject([[maybe_unused]] ObjPtr<mirror::Object> new_object)
+      REQUIRES_SHARED(Locks::mutator_lock_) {}
+
+  ALWAYS_INLINE static void RecordNewArray([[maybe_unused]] ObjPtr<mirror::Array> new_array)
+      REQUIRES_SHARED(Locks::mutator_lock_) {}
 };
 
 class ActiveInstrumentationHandler {
