@@ -193,8 +193,14 @@ class TraceWriter {
   // thread.
   void RecordThreadInfo(Thread* thread) REQUIRES(!tracing_lock_);
 
-  // Records information about all methods in the newly loaded class.
-  void RecordMethodInfo(mirror::Class* klass) REQUIRES_SHARED(Locks::mutator_lock_);
+  // Records information about all methods in the newly loaded class in the buffer. If the buffer
+  // doesn't have enough space to record the entry, then it adds a task to flush the buffer
+  // contents and uses a new buffer to record the information.
+  // buffer is the pointer to buffer that is used to record method info and the offset is the
+  // offset in the buffer to start recording method info. If *buffer is nullptr then a new one is
+  // allocated and buffer is updated to point to the newly allocated one.
+  void RecordMethodInfoV2(mirror::Class* klass, uint8_t** buffer, size_t* offset)
+      REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!tracing_lock_);
 
   bool HasOverflow() { return overflow_; }
   TraceOutputMode GetOutputMode() { return trace_output_mode_; }
@@ -206,6 +212,10 @@ class TraceWriter {
 
   // Releases the trace buffer and signals any waiting threads about a free buffer.
   void ReleaseBuffer(int index);
+
+  // Release the trace buffer of the thread. This is called to release the buffer without flushing
+  // the entries. See a comment in ThreadList::Unregister for more detailed explanation.
+  void ReleaseBufferForThread(Thread* self);
 
   // Tries to find a free buffer (which has owner of 0) from the pool. If there are no free buffers
   // then it just waits for a free buffer. To prevent any deadlocks, we only wait if the number of
@@ -223,6 +233,16 @@ class TraceWriter {
   // Ensures that there are no threads suspended waiting for a free buffer. It signals threads
   // waiting for a free buffer and waits for all the threads to respond to the signal.
   void StopTracing();
+
+  // Adds a task to write method info to the file. The buffer is already in the
+  // right format and it just adds a new task which takes the ownership of the
+  // buffer and returns a new buffer that can be used. If release is set to true
+  // then it doesn't fetch a new buffer.
+  uint8_t* AddMethodInfoWriteTask(uint8_t* buffer, size_t offset, size_t tid, bool release)
+      REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!tracing_lock_);
+
+  // Writes buffer contents to the file.
+  void WriteToFile(uint8_t* buffer, size_t offset);
 
  private:
   void ReadValuesFromRecord(uintptr_t* method_trace_entries,
@@ -260,7 +280,8 @@ class TraceWriter {
   // Helper function to record method information when processing the events. These are used by
   // streaming output mode. Non-streaming modes dump the methods and threads list at the end of
   // tracing.
-  void RecordMethodInfo(const std::string& method_line, uint64_t method_id) REQUIRES(tracing_lock_);
+  void RecordMethodInfoV1(const std::string& method_line, uint64_t method_id)
+      REQUIRES(tracing_lock_);
 
   // Encodes the trace event. This assumes that there is enough space reserved to encode the entry.
   void EncodeEventEntry(uint8_t* ptr,
@@ -432,6 +453,11 @@ class Trace final : public instrumentation::InstrumentationListener, public Clas
 
   // Flush the per-thread buffer. This is called when the thread is about to detach.
   static void FlushThreadBuffer(Thread* thread) REQUIRES_SHARED(Locks::mutator_lock_)
+      REQUIRES(!Locks::trace_lock_) NO_THREAD_SAFETY_ANALYSIS;
+
+  // Release per-thread buffer without flushing any entries. This is used when a new trace buffer is
+  // allocated while the thread is terminating. See ThreadList::Unregister for more details.
+  static void ReleaseThreadBuffer(Thread* thread)
       REQUIRES(!Locks::trace_lock_) NO_THREAD_SAFETY_ANALYSIS;
 
   // Removes any listeners installed for method tracing. This is used in non-streaming case
