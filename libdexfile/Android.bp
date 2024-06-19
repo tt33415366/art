@@ -166,6 +166,7 @@ art_cc_library {
         "libdexfile_defaults",
         "libart_nativeunwind_defaults",
     ],
+    enabled: true, // Override ART_MODULE_BUILD_FROM_SOURCE=false from art_defaults.
     target: {
         android: {
             shared_libs: [
@@ -505,6 +506,7 @@ art_cc_test {
 cc_library_static {
     name: "libdexfile_static",
     host_supported: true,
+    enabled: true, // Override ART_MODULE_BUILD_FROM_SOURCE=false from art_defaults.
     visibility: [
         // Required for simpleperf, libsimpleperf_record, and libsimpleperf_report
         // in the NDK.
