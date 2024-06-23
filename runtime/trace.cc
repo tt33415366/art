@@ -262,6 +262,18 @@ int GetTraceFormatVersionFromFlags(int flags) {
 
 }  // namespace
 
+// Temporary code for debugging b/342768977
+int num_trace_starts_ GUARDED_BY(Locks::trace_lock_);
+int num_trace_stops_initiated_ GUARDED_BY(Locks::trace_lock_);
+std::atomic<int> num_trace_stops_finished_;
+std::string Trace::GetDebugInformation() {
+  MutexLock mu(Thread::Current(), *Locks::trace_lock_);
+  std::stringstream debug_info;
+  debug_info << "start:" << num_trace_starts_ << "stop:" << num_trace_stops_initiated_ << "done:"
+             << num_trace_stops_finished_ << "trace:" << the_trace_;
+  return debug_info.str();
+}
+
 bool TraceWriter::HasMethodEncoding(ArtMethod* method) {
   return art_method_id_map_.find(method) != art_method_id_map_.end();
 }
@@ -631,7 +643,7 @@ uint8_t* TraceWriter::AddMethodInfoWriteTask(uint8_t* buffer,
 }
 
 void TraceWriter::WriteToFile(uint8_t* buffer, size_t offset) {
-  MutexLock mu(Thread::Current(), *Locks::trace_lock_);
+  MutexLock mu(Thread::Current(), trace_writer_lock_);
   if (!trace_file_->WriteFully(buffer, offset)) {
     PLOG(WARNING) << "Failed streaming a tracing event.";
   }
@@ -823,6 +835,7 @@ void Trace::Start(std::unique_ptr<File>&& trace_file_in,
       enable_stats = (flags & kTraceCountAllocs) != 0;
       int trace_format_version = GetTraceFormatVersionFromFlags(flags);
       the_trace_ = new Trace(trace_file.release(), buffer_size, flags, output_mode, trace_mode);
+      num_trace_starts_++;
       if (trace_format_version == Trace::kFormatV2) {
         // Record all the methods that are currently loaded. We log all methods when any new class
         // is loaded. This will allow us to process the trace entries without requiring a mutator
@@ -878,6 +891,7 @@ void Trace::StopTracing(bool flush_entries) {
   pthread_t sampling_pthread = 0U;
   {
     MutexLock mu(self, *Locks::trace_lock_);
+    num_trace_stops_initiated_++;
     if (the_trace_ == nullptr) {
       LOG(ERROR) << "Trace stop requested, but no trace currently running";
       return;
@@ -951,6 +965,7 @@ void Trace::StopTracing(bool flush_entries) {
   // are now visible.
   the_trace->trace_writer_->FinishTracing(the_trace->flags_, flush_entries);
   delete the_trace;
+  num_trace_stops_finished_++;
 
   if (stop_alloc_counting) {
     // Can be racy since SetStatsEnabled is not guarded by any locks.
@@ -993,6 +1008,7 @@ void Trace::ReleaseThreadBuffer(Thread* self) {
     return;
   }
   the_trace_->trace_writer_->ReleaseBufferForThread(self);
+  self->SetMethodTraceBuffer(nullptr);
 }
 
 void Trace::Abort() {
@@ -1049,7 +1065,7 @@ TraceWriter::TraceWriter(File* trace_file,
       buffer_available_("buffer available condition", buffer_pool_lock_),
       num_waiters_zero_cond_("Num waiters zero", buffer_pool_lock_),
       num_waiters_for_buffer_(0),
-      tracing_lock_("tracing lock", LockLevel::kTracingStreamingLock) {
+      trace_writer_lock_("trace writer lock", LockLevel::kTracingStreamingLock) {
   // We initialize the start_time_ from the timestamp counter. This may not match
   // with the monotonic timer but we only use this time to calculate the elapsed
   // time from this point which should be the same for both cases.
@@ -1153,7 +1169,7 @@ void TraceWriter::FinishTracing(int flags, bool flush_entries) {
 
     size_t final_offset = 0;
     if (trace_output_mode_ != TraceOutputMode::kStreaming) {
-      MutexLock mu(Thread::Current(), tracing_lock_);
+      MutexLock mu(Thread::Current(), trace_writer_lock_);
       final_offset = cur_offset_;
     }
 
@@ -1381,7 +1397,7 @@ void TraceWriter::RecordThreadInfo(Thread* thread) {
     return;
   }
 
-  MutexLock mu(Thread::Current(), tracing_lock_);
+  MutexLock mu(Thread::Current(), trace_writer_lock_);
   if (trace_output_mode_ != TraceOutputMode::kStreaming) {
     threads_list_.Overwrite(GetThreadEncoding(thread->GetTid()), thread_name);
     return;
@@ -1414,12 +1430,12 @@ void TraceWriter::PreProcessTraceForMethodInfos(
   // Compute the method infos before we process the entries. We don't want to assign an encoding
   // for the method here. The expectation is that once we assign a method id we write it to the
   // file before any other thread can see the method id. So we should assign method encoding while
-  // holding the tracing_lock_ and not release it till we flush the method info to the file. We
+  // holding the trace_writer_lock_ and not release it till we flush the method info to the file. We
   // don't want to flush entries to file while holding the mutator lock. We need the mutator lock to
   // get method info. So we just precompute method infos without assigning a method encoding here.
   // There may be a race and multiple threads computing the method info but only one of them would
   // actually put into the method_id_map_.
-  MutexLock mu(Thread::Current(), tracing_lock_);
+  MutexLock mu(Thread::Current(), trace_writer_lock_);
   size_t num_entries = GetNumEntries(clock_source_);
   DCHECK_EQ((kPerThreadBufSize - current_offset) % num_entries, 0u);
   for (size_t entry_index = kPerThreadBufSize; entry_index != current_offset;) {
@@ -1797,10 +1813,10 @@ void TraceWriter::FlushBuffer(uintptr_t* method_trace_entries,
                               size_t current_offset,
                               size_t tid,
                               const std::unordered_map<ArtMethod*, std::string>& method_infos) {
-  // Take a tracing_lock_ to serialize writes across threads. We also need to allocate a unique
+  // Take a trace_writer_lock_ to serialize writes across threads. We also need to allocate a unique
   // method id for each method. We do that by maintaining a map from id to method for each newly
-  // seen method. tracing_lock_ is required to serialize these.
-  MutexLock mu(Thread::Current(), tracing_lock_);
+  // seen method. trace_writer_lock_ is required to serialize these.
+  MutexLock mu(Thread::Current(), trace_writer_lock_);
   size_t current_index = 0;
   uint8_t* buffer_ptr = buf_.get();
   size_t buffer_size = buffer_size_;
@@ -1968,14 +1984,14 @@ void TraceWriter::EnsureSpace(uint8_t* buffer,
 }
 
 void TraceWriter::DumpMethodList(std::ostream& os) {
-  MutexLock mu(Thread::Current(), tracing_lock_);
+  MutexLock mu(Thread::Current(), trace_writer_lock_);
   for (auto const& entry : art_method_id_map_) {
     os << GetMethodLine(GetMethodInfoLine(entry.first), entry.second);
   }
 }
 
 void TraceWriter::DumpThreadList(std::ostream& os) {
-  MutexLock mu(Thread::Current(), tracing_lock_);
+  MutexLock mu(Thread::Current(), trace_writer_lock_);
   for (const auto& it : threads_list_) {
     os << it.first << "\t" << it.second << "\n";
   }
