@@ -643,7 +643,9 @@ ClassLinker::ClassLinker(InternTable* intern_table, bool fast_class_not_found_ex
   CHECK(intern_table_ != nullptr);
   static_assert(kFindArrayCacheSize == arraysize(find_array_class_cache_),
                 "Array cache size wrong.");
-  std::fill_n(find_array_class_cache_, kFindArrayCacheSize, GcRoot<mirror::Class>(nullptr));
+  for (size_t i = 0; i < kFindArrayCacheSize; i++) {
+    find_array_class_cache_[i].store(GcRoot<mirror::Class>(nullptr), std::memory_order_relaxed);
+  }
 }
 
 void ClassLinker::CheckSystemClass(Thread* self, Handle<mirror::Class> c1, const char* descriptor) {
@@ -8740,12 +8742,9 @@ bool ClassLinker::LinkMethodsHelper<kPointerSize>::FindCopiedMethodsForInterface
       size_t hash = ComputeMethodHash(interface_method);
       auto it1 = declared_virtual_signatures.FindWithHash(interface_method, hash);
       if (it1 != declared_virtual_signatures.end()) {
-        ArtMethod* virtual_method = klass->GetVirtualMethodDuringLinking(*it1, kPointerSize);
-        if (!virtual_method->IsAbstract() && !virtual_method->IsPublic()) {
-          sants.reset();
-          ThrowIllegalAccessErrorForImplementingMethod(klass, virtual_method, interface_method);
-          return false;
-        }
+        // Virtual methods in interfaces are always public.
+        // This is checked by the `DexFileVerifier`.
+        DCHECK(klass->GetVirtualMethodDuringLinking(*it1, kPointerSize)->IsPublic());
         continue;  // This default method is masked by a method declared in this interface.
       }
 
@@ -10930,7 +10929,9 @@ jobject ClassLinker::CreatePathClassLoader(Thread* self,
 }
 
 void ClassLinker::DropFindArrayClassCache() {
-  std::fill_n(find_array_class_cache_, kFindArrayCacheSize, GcRoot<mirror::Class>(nullptr));
+  for (size_t i = 0; i < kFindArrayCacheSize; i++) {
+    find_array_class_cache_[i].store(GcRoot<mirror::Class>(nullptr), std::memory_order_relaxed);
+  }
   find_array_class_cache_next_victim_ = 0;
 }
 
