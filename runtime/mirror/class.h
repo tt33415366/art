@@ -59,7 +59,7 @@ class ImTable;
 enum InvokeType : uint32_t;
 template <typename Iter> class IterationRange;
 template<typename T> class LengthPrefixedArray;
-enum class PointerSize : size_t;
+enum class PointerSize : uint32_t;
 class Signature;
 template<typename T> class StrideIterator;
 template<size_t kNumReferences> class PACKED(4) StackHandleScope;
@@ -291,6 +291,8 @@ class EXPORT MANAGED Class final : public Object {
     uint32_t flags = GetField32(OFFSET_OF_OBJECT_MEMBER(Class, access_flags_));
     SetAccessFlagsDuringLinking(flags | kAccClassIsFinalizable);
   }
+
+  ALWAYS_INLINE void ClearFinalizable() REQUIRES_SHARED(Locks::mutator_lock_);
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   ALWAYS_INLINE bool IsStringClass() REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -1224,11 +1226,16 @@ class EXPORT MANAGED Class final : public Object {
   void SetSkipAccessChecksFlagOnAllMethods(PointerSize pointer_size)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+  // Get the descriptor of the class as `std::string_view`. The class must be directly
+  // backed by a `DexFile` - it must not be primitive, array or proxy class.
+  std::string_view GetDescriptorView() REQUIRES_SHARED(Locks::mutator_lock_);
+
   // Get the descriptor of the class. In a few cases a std::string is required, rather than
   // always create one the storage argument is populated and its internal c_str() returned. We do
   // this to avoid memory allocation in the common case.
   const char* GetDescriptor(std::string* storage) REQUIRES_SHARED(Locks::mutator_lock_);
 
+  bool DescriptorEquals(ObjPtr<mirror::Class> match) REQUIRES_SHARED(Locks::mutator_lock_);
   bool DescriptorEquals(const char* match) REQUIRES_SHARED(Locks::mutator_lock_);
 
   uint32_t DescriptorHash() REQUIRES_SHARED(Locks::mutator_lock_);
@@ -1416,6 +1423,7 @@ class EXPORT MANAGED Class final : public Object {
   // The index in the methods_ array where the first direct method is.
   ALWAYS_INLINE uint32_t GetDirectMethodsStartOffset() REQUIRES_SHARED(Locks::mutator_lock_);
 
+  bool ProxyDescriptorEquals(ObjPtr<mirror::Class> match) REQUIRES_SHARED(Locks::mutator_lock_);
   bool ProxyDescriptorEquals(const char* match) REQUIRES_SHARED(Locks::mutator_lock_);
   static uint32_t UpdateHashForProxyClass(uint32_t hash, ObjPtr<mirror::Class> proxy_class)
       REQUIRES_SHARED(Locks::mutator_lock_);

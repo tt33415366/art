@@ -23,11 +23,11 @@
 #include <vector>
 
 #include "base/bounded_fifo.h"
-#include "base/enums.h"
 #include "base/file_utils.h"
 #include "base/logging.h"  // For VLOG.
 #include "base/macros.h"
 #include "base/mutex-inl.h"
+#include "base/pointer_size.h"
 #include "base/systrace.h"
 #include "base/time_utils.h"
 #include "base/timing_logger.h"
@@ -966,9 +966,6 @@ void MarkSweep::ScanGrayObjects(bool paused, uint8_t minimum_age) {
         case space::kGcRetentionPolicyAlwaysCollect:
           name = paused ? "(Paused)ScanGrayAllocSpaceObjects" : "ScanGrayAllocSpaceObjects";
           break;
-        default:
-          LOG(FATAL) << "Unreachable";
-          UNREACHABLE();
         }
         TimingLogger::ScopedTiming t(name, GetTimings());
         ScanObjectVisitor visitor(this);

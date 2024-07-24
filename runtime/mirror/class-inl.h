@@ -818,6 +818,13 @@ inline const DexFile& Class::GetDexFile() {
   return *GetDexCache<kDefaultVerifyFlags, kWithoutReadBarrier>()->GetDexFile();
 }
 
+inline std::string_view Class::GetDescriptorView() {
+  DCHECK(!IsArrayClass());
+  DCHECK(!IsPrimitive());
+  DCHECK(!IsProxyClass());
+  return GetDexFile().GetTypeDescriptorView(GetDexTypeIndex());
+}
+
 inline bool Class::DescriptorEquals(const char* match) {
   ObjPtr<mirror::Class> klass = this;
   while (klass->IsArrayClass()) {
@@ -1162,7 +1169,16 @@ inline bool Class::CanAccessMember(ObjPtr<Class> access_to, uint32_t member_flag
   }
   // Check for protected access from a sub-class, which may or may not be in the same package.
   if (member_flags & kAccProtected) {
-    if (!this->IsInterface() && this->IsSubClass(access_to)) {
+    // This implementation is not compliant. We should actually check whether
+    // the caller is a subclass of the static type of the receiver, instead of the declaring
+    // class of the method we are trying to access.
+    //
+    // For example, a class outside of java.lang should not ne able to access `Object.clone`,
+    // but this implementation allows it.
+    //
+    // To not break existing code, we decided not to fix this and accept the
+    // leniency.
+    if (access_to->IsAssignableFrom(this)) {
       return true;
     }
   }
@@ -1193,6 +1209,15 @@ inline void Class::SetHasDefaultMethods() {
   DCHECK_EQ(GetLockOwnerThreadId(), Thread::Current()->GetThreadId());
   uint32_t flags = GetField32(OFFSET_OF_OBJECT_MEMBER(Class, access_flags_));
   SetAccessFlagsDuringLinking(flags | kAccHasDefaultMethod);
+}
+
+inline void Class::ClearFinalizable() {
+  // We're clearing the finalizable flag only for `Object` and `Enum`
+  // during early setup without the boot image.
+  DCHECK(IsObjectClass() ||
+         (IsBootStrapClassLoaded() && DescriptorEquals("Ljava/lang/Enum;")));
+  uint32_t flags = GetField32(OFFSET_OF_OBJECT_MEMBER(Class, access_flags_));
+  SetAccessFlagsDuringLinking(flags & ~kAccClassIsFinalizable);
 }
 
 inline ImTable* Class::FindSuperImt(PointerSize pointer_size) {

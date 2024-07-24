@@ -104,9 +104,6 @@ struct CompilationResult {
       dex2oat_result = other.dex2oat_result;
     }
   }
-
- private:
-  CompilationResult() = default;
 };
 
 class PreconditionCheckResult {
@@ -167,7 +164,8 @@ class OnDeviceRefresh final {
   OnDeviceRefresh(const OdrConfig& config,
                   const std::string& cache_info_filename,
                   std::unique_ptr<ExecUtils> exec_utils,
-                  android::base::function_ref<bool()> check_compilation_space);
+                  android::base::function_ref<bool()> check_compilation_space,
+                  android::base::function_ref<int(const char*, const char*)> setfilecon);
 
   // Returns the exit code and specifies what should be compiled in `compilation_options`.
   WARN_UNUSED ExitCode
@@ -191,6 +189,8 @@ class OnDeviceRefresh final {
   time_t GetExecutionTimeRemaining() const;
 
   time_t GetSubprocessTimeout() const;
+
+  android::base::Result<std::string> CreateStagingDirectory() const;
 
   // Gets the `ApexInfo` for active APEXes.
   std::optional<std::vector<com::android::apex::ApexInfo>> GetApexInfoList() const;
@@ -387,6 +387,7 @@ class OnDeviceRefresh final {
   std::unique_ptr<ExecUtils> exec_utils_;
 
   android::base::function_ref<bool()> check_compilation_space_;
+  android::base::function_ref<int(const char*, const char*)> setfilecon_;
 
   DISALLOW_COPY_AND_ASSIGN(OnDeviceRefresh);
 };

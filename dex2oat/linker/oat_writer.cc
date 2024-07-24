@@ -27,12 +27,12 @@
 #include "art_method-inl.h"
 #include "base/allocator.h"
 #include "base/bit_vector-inl.h"
-#include "base/enums.h"
 #include "base/file_magic.h"
 #include "base/file_utils.h"
 #include "base/indenter.h"
 #include "base/logging.h"  // For VLOG
 #include "base/os.h"
+#include "base/pointer_size.h"
 #include "base/safe_map.h"
 #include "base/stl_util.h"
 #include "base/unix_file/fd_file.h"
@@ -51,8 +51,6 @@
 #include "dex/standard_dex_file.h"
 #include "dex/type_lookup_table.h"
 #include "dex/verification_results.h"
-#include "dex_container.h"
-#include "dexlayout.h"
 #include "driver/compiled_method-inl.h"
 #include "driver/compiler_driver-inl.h"
 #include "driver/compiler_options.h"
@@ -112,6 +110,31 @@ inline uint32_t CodeAlignmentSize(uint32_t header_offset, const CompiledMethod& 
 }
 
 }  // anonymous namespace
+
+// .bss mapping offsets used for BCP DexFiles.
+struct OatWriter::BssMappingInfo {
+  // Offsets set in PrepareLayout.
+  uint32_t method_bss_mapping_offset = 0u;
+  uint32_t type_bss_mapping_offset = 0u;
+  uint32_t public_type_bss_mapping_offset = 0u;
+  uint32_t package_type_bss_mapping_offset = 0u;
+  uint32_t string_bss_mapping_offset = 0u;
+  uint32_t method_type_bss_mapping_offset = 0u;
+
+  // Offset of the BSSInfo start from beginning of OatHeader. It is used to validate file position
+  // when writing.
+  size_t offset_ = 0u;
+
+  static size_t SizeOf() {
+    return sizeof(method_bss_mapping_offset) +
+           sizeof(type_bss_mapping_offset) +
+           sizeof(public_type_bss_mapping_offset) +
+           sizeof(package_type_bss_mapping_offset) +
+           sizeof(string_bss_mapping_offset) +
+           sizeof(method_type_bss_mapping_offset);
+  }
+  bool Write(OatWriter* oat_writer, OutputStream* out) const;
+};
 
 class OatWriter::ChecksumUpdatingOutputStream : public OutputStream {
  public:
@@ -262,10 +285,7 @@ class OatWriter::OatDexFile {
   std::unique_ptr<const DexFile> dex_file_;
   std::unique_ptr<std::string> dex_file_location_;
 
-  std::vector<uint8_t> cdex_main_section_;
-
-  // Dex file size. Passed in the constructor, but could be
-  // overwritten by LayoutDexFile.
+  // Dex file size. Passed in the constructor.
   size_t dex_file_size_;
 
   // Offset of start of OatDexFile from beginning of OatHeader. It is
@@ -326,8 +346,7 @@ class OatWriter::OatDexFile {
 OatWriter::OatWriter(const CompilerOptions& compiler_options,
                      const VerificationResults* verification_results,
                      TimingLogger* timings,
-                     ProfileCompilationInfo* info,
-                     CompactDexLevel compact_dex_level)
+                     ProfileCompilationInfo* info)
     : write_state_(WriteState::kAddingDexFileSources),
       timings_(timings),
       compiler_driver_(nullptr),
@@ -346,15 +365,17 @@ OatWriter::OatWriter(const CompilerOptions& compiler_options,
       oat_checksum_(adler32(0L, Z_NULL, 0)),
       code_size_(0u),
       oat_size_(0u),
-      data_bimg_rel_ro_start_(0u),
-      data_bimg_rel_ro_size_(0u),
+      data_img_rel_ro_start_(0u),
+      data_img_rel_ro_size_(0u),
+      data_img_rel_ro_app_image_offset_(0u),
       bss_start_(0u),
       bss_size_(0u),
       bss_methods_offset_(0u),
       bss_roots_offset_(0u),
-      data_bimg_rel_ro_entries_(),
+      boot_image_rel_ro_entries_(),
       bss_method_entry_references_(),
       bss_method_entries_(),
+      app_image_rel_ro_type_entries_(),
       bss_type_entries_(),
       bss_public_type_entries_(),
       bss_package_type_entries_(),
@@ -363,8 +384,7 @@ OatWriter::OatWriter(const CompilerOptions& compiler_options,
       oat_data_offset_(0u),
       oat_header_(nullptr),
       relative_patcher_(nullptr),
-      profile_compilation_info_(info),
-      compact_dex_level_(compact_dex_level) {}
+      profile_compilation_info_(info) {}
 
 static bool ValidateDexFileHeader(const uint8_t* raw_header, const char* location) {
   const bool valid_standard_dex_magic = DexFileLoader::IsMagicValid(raw_header);
@@ -461,7 +481,7 @@ bool OatWriter::AddVdexDexFilesSource(const VdexFile& vdex_file, const char* loc
 }
 
 // Add dex file source from raw memory.
-bool OatWriter::AddRawDexFileSource(std::shared_ptr<DexFileContainer> container,
+bool OatWriter::AddRawDexFileSource(const std::shared_ptr<DexFileContainer>& container,
                                     const uint8_t* dex_file_begin,
                                     const char* location,
                                     uint32_t location_checksum) {
@@ -620,8 +640,8 @@ void OatWriter::PrepareLayout(MultiOatRelativePatcher* relative_patcher) {
     code_size_ = offset - GetOatHeader().GetExecutableOffset();
   }
   {
-    TimingLogger::ScopedTiming split("InitDataBimgRelRoLayout", timings_);
-    offset = InitDataBimgRelRoLayout(offset);
+    TimingLogger::ScopedTiming split("InitDataImgRelRoLayout", timings_);
+    offset = InitDataImgRelRoLayout(offset);
   }
   oat_size_ = offset;  // .bss does not count towards oat_size_.
   bss_start_ = (bss_size_ != 0u) ? RoundUp(oat_size_, kElfSegmentAlignment) : 0u;
@@ -720,41 +740,44 @@ class OatWriter::InitBssLayoutMethodVisitor : public DexMethodVisitor {
         MethodReference(dex_file_, method.GetIndex()));
     if (HasCompiledCode(compiled_method)) {
       for (const LinkerPatch& patch : compiled_method->GetPatches()) {
-        if (patch.GetType() == LinkerPatch::Type::kDataBimgRelRo) {
-          writer_->data_bimg_rel_ro_entries_.Overwrite(patch.BootImageOffset(),
-                                                       /* placeholder */ 0u);
+        if (patch.GetType() == LinkerPatch::Type::kBootImageRelRo) {
+          writer_->boot_image_rel_ro_entries_.Overwrite(patch.BootImageOffset(),
+                                                        /* placeholder */ 0u);
         } else if (patch.GetType() == LinkerPatch::Type::kMethodBssEntry) {
           MethodReference target_method = patch.TargetMethod();
           AddBssReference(target_method,
                           target_method.dex_file->NumMethodIds(),
                           &writer_->bss_method_entry_references_);
           writer_->bss_method_entries_.Overwrite(target_method, /* placeholder */ 0u);
+        } else if (patch.GetType() == LinkerPatch::Type::kTypeAppImageRelRo) {
+          writer_->app_image_rel_ro_type_entries_.Overwrite(patch.TargetType(),
+                                                            /* placeholder */ 0u);
         } else if (patch.GetType() == LinkerPatch::Type::kTypeBssEntry) {
-          TypeReference target_type(patch.TargetTypeDexFile(), patch.TargetTypeIndex());
+          TypeReference target_type = patch.TargetType();
           AddBssReference(target_type,
                           target_type.dex_file->NumTypeIds(),
                           &writer_->bss_type_entry_references_);
           writer_->bss_type_entries_.Overwrite(target_type, /* placeholder */ 0u);
         } else if (patch.GetType() == LinkerPatch::Type::kPublicTypeBssEntry) {
-          TypeReference target_type(patch.TargetTypeDexFile(), patch.TargetTypeIndex());
+          TypeReference target_type = patch.TargetType();
           AddBssReference(target_type,
                           target_type.dex_file->NumTypeIds(),
                           &writer_->bss_public_type_entry_references_);
           writer_->bss_public_type_entries_.Overwrite(target_type, /* placeholder */ 0u);
         } else if (patch.GetType() == LinkerPatch::Type::kPackageTypeBssEntry) {
-          TypeReference target_type(patch.TargetTypeDexFile(), patch.TargetTypeIndex());
+          TypeReference target_type = patch.TargetType();
           AddBssReference(target_type,
                           target_type.dex_file->NumTypeIds(),
                           &writer_->bss_package_type_entry_references_);
           writer_->bss_package_type_entries_.Overwrite(target_type, /* placeholder */ 0u);
         } else if (patch.GetType() == LinkerPatch::Type::kStringBssEntry) {
-          StringReference target_string(patch.TargetStringDexFile(), patch.TargetStringIndex());
+          StringReference target_string = patch.TargetString();
           AddBssReference(target_string,
                           target_string.dex_file->NumStringIds(),
                           &writer_->bss_string_entry_references_);
           writer_->bss_string_entries_.Overwrite(target_string, /* placeholder */ 0u);
         } else if (patch.GetType() == LinkerPatch::Type::kMethodTypeBssEntry) {
-          ProtoReference target_proto(patch.TargetProtoDexFile(), patch.TargetProtoIndex());
+          ProtoReference target_proto = patch.TargetProto();
           AddBssReference(target_proto,
                           target_proto.dex_file->NumProtoIds(),
                           &writer_->bss_method_type_entry_references_);
@@ -779,8 +802,7 @@ class OatWriter::InitBssLayoutMethodVisitor : public DexMethodVisitor {
     if (refs_it == references->end()) {
       refs_it = references->Put(
           ref.dex_file,
-          BitVector(number_of_indexes, /* expandable */ false, Allocator::GetMallocAllocator()));
-      refs_it->second.ClearAllBits();
+          BitVector(number_of_indexes, /* expandable */ false, Allocator::GetCallocAllocator()));
     }
     refs_it->second.SetBit(ref.index);
   }
@@ -868,31 +890,6 @@ class OatWriter::InitOatClassesMethodVisitor : public DexMethodVisitor {
  private:
   dchecked_vector<CompiledMethod*> compiled_methods_;
   size_t compiled_methods_with_code_;
-};
-
-// .bss mapping offsets used for BCP DexFiles.
-struct OatWriter::BssMappingInfo {
-  // Offsets set in PrepareLayout.
-  uint32_t method_bss_mapping_offset = 0u;
-  uint32_t type_bss_mapping_offset = 0u;
-  uint32_t public_type_bss_mapping_offset = 0u;
-  uint32_t package_type_bss_mapping_offset = 0u;
-  uint32_t string_bss_mapping_offset = 0u;
-  uint32_t method_type_bss_mapping_offset = 0u;
-
-  // Offset of the BSSInfo start from beginning of OatHeader. It is used to validate file position
-  // when writing.
-  size_t offset_ = 0u;
-
-  static size_t SizeOf() {
-    return sizeof(method_bss_mapping_offset) +
-           sizeof(type_bss_mapping_offset) +
-           sizeof(public_type_bss_mapping_offset) +
-           sizeof(package_type_bss_mapping_offset) +
-           sizeof(string_bss_mapping_offset) +
-           sizeof(method_type_bss_mapping_offset);
-  }
-  bool Write(OatWriter* oat_writer, OutputStream* out) const;
 };
 
 // CompiledMethod + metadata required to do ordered method layout.
@@ -1649,10 +1646,10 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
                                                                    target_offset);
               break;
             }
-            case LinkerPatch::Type::kDataBimgRelRo: {
+            case LinkerPatch::Type::kBootImageRelRo: {
               uint32_t target_offset =
-                  writer_->data_bimg_rel_ro_start_ +
-                  writer_->data_bimg_rel_ro_entries_.Get(patch.BootImageOffset());
+                  writer_->data_img_rel_ro_start_ +
+                  writer_->boot_image_rel_ro_entries_.Get(patch.BootImageOffset());
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -1686,9 +1683,8 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
               break;
             }
             case LinkerPatch::Type::kStringBssEntry: {
-              StringReference ref(patch.TargetStringDexFile(), patch.TargetStringIndex());
               uint32_t target_offset =
-                  writer_->bss_start_ + writer_->bss_string_entries_.Get(ref);
+                  writer_->bss_start_ + writer_->bss_string_entries_.Get(patch.TargetString());
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -1696,9 +1692,8 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
               break;
             }
             case LinkerPatch::Type::kMethodTypeBssEntry: {
-              ProtoReference ref(patch.TargetProtoDexFile(), patch.TargetProtoIndex());
               uint32_t target_offset =
-                  writer_->bss_start_ + writer_->bss_method_type_entries_.Get(ref);
+                  writer_->bss_start_ + writer_->bss_method_type_entries_.Get(patch.TargetProto());
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -1713,9 +1708,19 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
                                                                    target_offset);
               break;
             }
+            case LinkerPatch::Type::kTypeAppImageRelRo: {
+              uint32_t target_offset =
+                  writer_->data_img_rel_ro_start_ +
+                  writer_->app_image_rel_ro_type_entries_.Get(patch.TargetType());
+              writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
+                                                                   patch,
+                                                                   offset_ + literal_offset,
+                                                                   target_offset);
+              break;
+            }
             case LinkerPatch::Type::kTypeBssEntry: {
-              TypeReference ref(patch.TargetTypeDexFile(), patch.TargetTypeIndex());
-              uint32_t target_offset = writer_->bss_start_ + writer_->bss_type_entries_.Get(ref);
+              uint32_t target_offset =
+                  writer_->bss_start_ + writer_->bss_type_entries_.Get(patch.TargetType());
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -1723,9 +1728,8 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
               break;
             }
             case LinkerPatch::Type::kPublicTypeBssEntry: {
-              TypeReference ref(patch.TargetTypeDexFile(), patch.TargetTypeIndex());
               uint32_t target_offset =
-                  writer_->bss_start_ + writer_->bss_public_type_entries_.Get(ref);
+                  writer_->bss_start_ + writer_->bss_public_type_entries_.Get(patch.TargetType());
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -1733,9 +1737,8 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
               break;
             }
             case LinkerPatch::Type::kPackageTypeBssEntry: {
-              TypeReference ref(patch.TargetTypeDexFile(), patch.TargetTypeIndex());
               uint32_t target_offset =
-                  writer_->bss_start_ + writer_->bss_package_type_entries_.Get(ref);
+                  writer_->bss_start_ + writer_->bss_package_type_entries_.Get(patch.TargetType());
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -1866,9 +1869,10 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
   ObjPtr<mirror::Class> GetTargetType(const LinkerPatch& patch)
       REQUIRES_SHARED(Locks::mutator_lock_) {
     DCHECK(writer_->HasImage());
-    ObjPtr<mirror::DexCache> dex_cache = GetDexCache(patch.TargetTypeDexFile());
+    TypeReference target_type = patch.TargetType();
+    ObjPtr<mirror::DexCache> dex_cache = GetDexCache(target_type.dex_file);
     ObjPtr<mirror::Class> type =
-        class_linker_->LookupResolvedType(patch.TargetTypeIndex(), dex_cache, class_loader_);
+        class_linker_->LookupResolvedType(target_type.TypeIndex(), dex_cache, class_loader_);
     CHECK(type != nullptr);
     return type;
   }
@@ -1876,8 +1880,9 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
   ObjPtr<mirror::String> GetTargetString(const LinkerPatch& patch)
       REQUIRES_SHARED(Locks::mutator_lock_) {
     ClassLinker* linker = Runtime::Current()->GetClassLinker();
+    StringReference target_string = patch.TargetString();
     ObjPtr<mirror::String> string =
-        linker->LookupString(patch.TargetStringIndex(), GetDexCache(patch.TargetStringDexFile()));
+        linker->LookupString(target_string.StringIndex(), GetDexCache(target_string.dex_file));
     DCHECK(string != nullptr);
     DCHECK(writer_->GetCompilerOptions().IsBootImage() ||
            writer_->GetCompilerOptions().IsBootImageExtension());
@@ -2092,13 +2097,24 @@ size_t OatWriter::InitIndexBssMappings(size_t offset) {
                                         oat_dex_files_[i].method_type_bss_mapping_offset_);
   }
 
-  if (!(compiler_options_.IsBootImage() || compiler_options_.IsBootImageExtension())) {
+  if (!compiler_options_.IsBootImage()) {
     ArrayRef<const DexFile* const> boot_class_path(
         Runtime::Current()->GetClassLinker()->GetBootClassPath());
-    // We initialize bcp_bss_info for single image and purposively leave it empty for the multi
-    // image case.
+    // We initialize bcp_bss_info except for the boot image case.
     // Note that we have an early break at the beginning of the method, so `bcp_bss_info_` will also
     // be empty in the case of having no mappings at all.
+
+    if (compiler_options_.IsBootImageExtension()) {
+      // For boot image extension, the boot_class_path ends with the compiled dex files. In multi
+      // image, we might have several oat writers so we have to get all of the compiled dex files
+      // and not just the one we are compiling right now. Remove them to have the correct number of
+      // references.
+      ArrayRef<const DexFile* const> to_exclude(compiler_options_.GetDexFilesForOatFile());
+      DCHECK_GE(boot_class_path.size(), to_exclude.size());
+      DCHECK(std::equal(to_exclude.rbegin(), to_exclude.rend(), boot_class_path.rbegin()));
+      boot_class_path = boot_class_path.SubArray(0, boot_class_path.size() - to_exclude.size());
+    }
+
     DCHECK(bcp_bss_info_.empty());
     bcp_bss_info_.resize(boot_class_path.size());
     for (size_t i = 0, size = bcp_bss_info_.size(); i != size; ++i) {
@@ -2342,7 +2358,7 @@ size_t OatWriter::InitOatCodeDexFiles(size_t offset) {
 
   if (HasImage()) {
     ScopedObjectAccess soa(Thread::Current());
-    ScopedAssertNoThreadSuspension sants("Init image method visitor", Thread::Current());
+    ScopedAssertNoThreadSuspension sants("Init image method visitor");
     InitImageMethodVisitor image_visitor(this, offset, dex_files_);
     success = VisitDexMethods(&image_visitor);
     image_visitor.Postprocess();
@@ -2353,22 +2369,30 @@ size_t OatWriter::InitOatCodeDexFiles(size_t offset) {
   return offset;
 }
 
-size_t OatWriter::InitDataBimgRelRoLayout(size_t offset) {
-  DCHECK_EQ(data_bimg_rel_ro_size_, 0u);
-  if (data_bimg_rel_ro_entries_.empty()) {
-    // Nothing to put to the .data.bimg.rel.ro section.
+size_t OatWriter::InitDataImgRelRoLayout(size_t offset) {
+  DCHECK_EQ(data_img_rel_ro_size_, 0u);
+  if (boot_image_rel_ro_entries_.empty() && app_image_rel_ro_type_entries_.empty()) {
+    // Nothing to put to the .data.img.rel.ro section.
     return offset;
   }
 
-  data_bimg_rel_ro_start_ = RoundUp(offset, kElfSegmentAlignment);
+  data_img_rel_ro_start_ = RoundUp(offset, kElfSegmentAlignment);
 
-  for (auto& entry : data_bimg_rel_ro_entries_) {
+  for (auto& entry : boot_image_rel_ro_entries_) {
     size_t& entry_offset = entry.second;
-    entry_offset = data_bimg_rel_ro_size_;
-    data_bimg_rel_ro_size_ += sizeof(uint32_t);
+    entry_offset = data_img_rel_ro_size_;
+    data_img_rel_ro_size_ += sizeof(uint32_t);
   }
 
-  offset = data_bimg_rel_ro_start_ + data_bimg_rel_ro_size_;
+  data_img_rel_ro_app_image_offset_ = data_img_rel_ro_size_;
+
+  for (auto& entry : app_image_rel_ro_type_entries_) {
+    size_t& entry_offset = entry.second;
+    entry_offset = data_img_rel_ro_size_;
+    data_img_rel_ro_size_ += sizeof(uint32_t);
+  }
+
+  offset = data_img_rel_ro_start_ + data_img_rel_ro_size_;
   return offset;
 }
 
@@ -2550,8 +2574,8 @@ bool OatWriter::WriteCode(OutputStream* out) {
     return false;
   }
 
-  if (data_bimg_rel_ro_size_ != 0u) {
-    write_state_ = WriteState::kWriteDataBimgRelRo;
+  if (data_img_rel_ro_size_ != 0u) {
+    write_state_ = WriteState::kWriteDataImgRelRo;
   } else {
     if (!CheckOatSize(out, file_offset, relative_offset)) {
       return false;
@@ -2561,25 +2585,25 @@ bool OatWriter::WriteCode(OutputStream* out) {
   return true;
 }
 
-bool OatWriter::WriteDataBimgRelRo(OutputStream* out) {
-  CHECK(write_state_ == WriteState::kWriteDataBimgRelRo);
+bool OatWriter::WriteDataImgRelRo(OutputStream* out) {
+  CHECK(write_state_ == WriteState::kWriteDataImgRelRo);
 
   // Wrap out to update checksum with each write.
   ChecksumUpdatingOutputStream checksum_updating_out(out, this);
   out = &checksum_updating_out;
 
   const size_t file_offset = oat_data_offset_;
-  size_t relative_offset = data_bimg_rel_ro_start_;
+  size_t relative_offset = data_img_rel_ro_start_;
 
-  // Record the padding before the .data.bimg.rel.ro section.
+  // Record the padding before the .data.img.rel.ro section.
   // Do not write anything, this zero-filled part was skipped (Seek()) when starting the section.
   size_t code_end = GetOatHeader().GetExecutableOffset() + code_size_;
   DCHECK_EQ(RoundUp(code_end, kElfSegmentAlignment), relative_offset);
   size_t padding_size = relative_offset - code_end;
-  DCHECK_EQ(size_data_bimg_rel_ro_alignment_, 0u);
-  size_data_bimg_rel_ro_alignment_ = padding_size;
+  DCHECK_EQ(size_data_img_rel_ro_alignment_, 0u);
+  size_data_img_rel_ro_alignment_ = padding_size;
 
-  relative_offset = WriteDataBimgRelRo(out, file_offset, relative_offset);
+  relative_offset = WriteDataImgRelRo(out, file_offset, relative_offset);
   if (relative_offset == 0) {
     LOG(ERROR) << "Failed to write boot image relocations to " << out->GetLocation();
     return false;
@@ -2629,8 +2653,8 @@ bool OatWriter::CheckOatSize(OutputStream* out, size_t file_offset, size_t relat
     DO_STAT(size_method_header_);
     DO_STAT(size_code_);
     DO_STAT(size_code_alignment_);
-    DO_STAT(size_data_bimg_rel_ro_);
-    DO_STAT(size_data_bimg_rel_ro_alignment_);
+    DO_STAT(size_data_img_rel_ro_);
+    DO_STAT(size_data_img_rel_ro_alignment_);
     DO_STAT(size_relative_call_thunks_);
     DO_STAT(size_misc_thunks_);
     DO_STAT(size_vmap_table_);
@@ -3013,9 +3037,21 @@ size_t OatWriter::WriteIndexBssMappings(OutputStream* out,
     }
   }
 
-  if (!(compiler_options_.IsBootImage() || compiler_options_.IsBootImageExtension())) {
+  if (!compiler_options_.IsBootImage()) {
     ArrayRef<const DexFile* const> boot_class_path(
         Runtime::Current()->GetClassLinker()->GetBootClassPath());
+
+    if (compiler_options_.IsBootImageExtension()) {
+      // For boot image extension, the boot_class_path ends with the compiled dex files. In multi
+      // image, we might have several oat writers so we have to get all of the compiled dex files
+      // and not just the one we are compiling right now. Remove them to have the correct number of
+      // references.
+      ArrayRef<const DexFile* const> to_exclude(compiler_options_.GetDexFilesForOatFile());
+      DCHECK_GE(boot_class_path.size(), to_exclude.size());
+      DCHECK(std::equal(to_exclude.rbegin(), to_exclude.rend(), boot_class_path.rbegin()));
+      boot_class_path = boot_class_path.SubArray(0, boot_class_path.size() - to_exclude.size());
+    }
+
     for (size_t i = 0, size = bcp_bss_info_.size(); i != size; ++i) {
       const DexFile* dex_file = boot_class_path[i];
       DCHECK(!ContainsElement(*dex_files_, dex_file));
@@ -3153,29 +3189,50 @@ size_t OatWriter::WriteCodeDexFiles(OutputStream* out,
   return relative_offset;
 }
 
-size_t OatWriter::WriteDataBimgRelRo(OutputStream* out,
-                                     size_t file_offset,
-                                     size_t relative_offset) {
-  if (data_bimg_rel_ro_entries_.empty()) {
+size_t OatWriter::WriteDataImgRelRo(OutputStream* out,
+                                    size_t file_offset,
+                                    size_t relative_offset) {
+  if (boot_image_rel_ro_entries_.empty() && app_image_rel_ro_type_entries_.empty()) {
     return relative_offset;
   }
 
-  // Write the entire .data.bimg.rel.ro with a single WriteFully().
+  // Write the entire .data.img.rel.ro with a single WriteFully().
   std::vector<uint32_t> data;
-  data.reserve(data_bimg_rel_ro_entries_.size());
-  for (const auto& entry : data_bimg_rel_ro_entries_) {
+  data.reserve(boot_image_rel_ro_entries_.size() + app_image_rel_ro_type_entries_.size());
+  for (const auto& entry : boot_image_rel_ro_entries_) {
     uint32_t boot_image_offset = entry.first;
     data.push_back(boot_image_offset);
   }
-  DCHECK_EQ(data.size(), data_bimg_rel_ro_entries_.size());
+  if (!app_image_rel_ro_type_entries_.empty()) {
+    DCHECK(GetCompilerOptions().IsAppImage());
+    ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
+    ScopedObjectAccess soa(Thread::Current());
+    const DexFile* last_dex_file = nullptr;
+    ObjPtr<mirror::DexCache> dex_cache = nullptr;
+    ObjPtr<mirror::ClassLoader> class_loader = nullptr;
+    for (const auto& entry : app_image_rel_ro_type_entries_) {
+      TypeReference target_type = entry.first;
+      if (target_type.dex_file != last_dex_file) {
+        dex_cache =  class_linker->FindDexCache(soa.Self(), *target_type.dex_file);
+        class_loader = dex_cache->GetClassLoader();
+        last_dex_file = target_type.dex_file;
+      }
+      ObjPtr<mirror::Class> type =
+          class_linker->LookupResolvedType(target_type.TypeIndex(), dex_cache, class_loader);
+      CHECK(type != nullptr);
+      uint32_t app_image_offset = image_writer_->GetGlobalImageOffset(type.Ptr());
+      data.push_back(app_image_offset);
+    }
+  }
+  DCHECK_EQ(data.size(), boot_image_rel_ro_entries_.size() + app_image_rel_ro_type_entries_.size());
   DCHECK_OFFSET();
   if (!out->WriteFully(data.data(), data.size() * sizeof(data[0]))) {
-    PLOG(ERROR) << "Failed to write .data.bimg.rel.ro in " << out->GetLocation();
+    PLOG(ERROR) << "Failed to write .data.img.rel.ro in " << out->GetLocation();
     return 0u;
   }
-  DCHECK_EQ(size_data_bimg_rel_ro_, 0u);
-  size_data_bimg_rel_ro_ = data.size() * sizeof(data[0]);
-  relative_offset += size_data_bimg_rel_ro_;
+  DCHECK_EQ(size_data_img_rel_ro_, 0u);
+  size_data_img_rel_ro_ = data.size() * sizeof(data[0]);
+  relative_offset += size_data_img_rel_ro_;
   return relative_offset;
 }
 
@@ -3202,7 +3259,7 @@ bool OatWriter::WriteDexFiles(File* file,
     extract_dex_files_into_vdex_ = false;
     for (OatDexFile& oat_dex_file : oat_dex_files_) {
       const DexFileContainer* container = oat_dex_file.GetDexFile()->GetContainer().get();
-      if (!(container->IsZip() && container->IsFileMap())) {
+      if (!container->IsFileMap()) {
         extract_dex_files_into_vdex_ = true;
         break;
       }
@@ -3232,30 +3289,8 @@ bool OatWriter::WriteDexFiles(File* file,
     }
   }
 
-  // Compact dex reader/writer does not understand dex containers,
-  // which is ok since dex containers replace compat-dex.
-  for (OatDexFile& oat_dex_file : oat_dex_files_) {
-    const DexFile* dex_file = oat_dex_file.GetDexFile();
-    if (dex_file->HasDexContainer()) {
-      compact_dex_level_ = CompactDexLevel::kCompactDexLevelNone;
-    }
-  }
-
   if (extract_dex_files_into_vdex_) {
     vdex_dex_files_offset_ = vdex_size_;
-
-    // Perform dexlayout if compact dex is enabled. Also see
-    // Dex2Oat::DoDexLayoutOptimizations.
-    if (compact_dex_level_ != CompactDexLevel::kCompactDexLevelNone) {
-      for (OatDexFile& oat_dex_file : oat_dex_files_) {
-        // use_existing_vdex should not be used with compact dex and layout.
-        CHECK(!use_existing_vdex)
-            << "We should never update the input vdex when doing dexlayout or compact dex";
-        if (!LayoutDexFile(&oat_dex_file)) {
-          return false;
-        }
-      }
-    }
 
     // Calculate the total size after the dex files.
     size_t vdex_size_with_dex_files = vdex_size_;
@@ -3275,31 +3310,27 @@ bool OatWriter::WriteDexFiles(File* file,
     // Add the shared data section size.
     const uint8_t* raw_dex_file_shared_data_begin = nullptr;
     uint32_t shared_data_size = 0u;
-    if (dex_container_ != nullptr) {
-      shared_data_size = dex_container_->GetDataSection()->Size();
-    } else {
-      // Dex files from input vdex are represented as raw dex files and they can be
-      // compact dex files. These need to specify the same shared data section if any.
-      for (const OatDexFile& oat_dex_file : oat_dex_files_) {
-        const DexFile* dex_file = oat_dex_file.GetDexFile();
-        auto& header = dex_file->GetHeader();
-        if (!dex_file->IsCompactDexFile() || header.data_size_ == 0u) {
-          // Non compact dex does not have shared data section.
-          continue;
-        }
-        const uint8_t* cur_data_begin = dex_file->Begin() + header.data_off_;
-        if (raw_dex_file_shared_data_begin == nullptr) {
-          raw_dex_file_shared_data_begin = cur_data_begin;
-        } else if (raw_dex_file_shared_data_begin != cur_data_begin) {
-          LOG(ERROR) << "Mismatched shared data sections in raw dex files: "
-                     << static_cast<const void*>(raw_dex_file_shared_data_begin)
-                     << " != " << static_cast<const void*>(cur_data_begin);
-          return false;
-        }
-        // The different dex files currently can have different data sizes since
-        // the dex writer writes them one at a time into the shared section.:w
-        shared_data_size = std::max(shared_data_size, header.data_size_);
+    // Dex files from input vdex are represented as raw dex files and they can be
+    // compact dex files. These need to specify the same shared data section if any.
+    for (const OatDexFile& oat_dex_file : oat_dex_files_) {
+      const DexFile* dex_file = oat_dex_file.GetDexFile();
+      auto& header = dex_file->GetHeader();
+      if (!dex_file->IsCompactDexFile() || header.data_size_ == 0u) {
+        // Non compact dex does not have shared data section.
+        continue;
       }
+      const uint8_t* cur_data_begin = dex_file->Begin() + header.data_off_;
+      if (raw_dex_file_shared_data_begin == nullptr) {
+        raw_dex_file_shared_data_begin = cur_data_begin;
+      } else if (raw_dex_file_shared_data_begin != cur_data_begin) {
+        LOG(ERROR) << "Mismatched shared data sections in raw dex files: "
+                   << static_cast<const void*>(raw_dex_file_shared_data_begin)
+                   << " != " << static_cast<const void*>(cur_data_begin);
+        return false;
+      }
+      // The different dex files currently can have different data sizes since
+      // the dex writer writes them one at a time into the shared section.:w
+      shared_data_size = std::max(shared_data_size, header.data_size_);
     }
     if (shared_data_size != 0u) {
       // Shared data section is required to be 4 byte aligned.
@@ -3348,21 +3379,13 @@ bool OatWriter::WriteDexFiles(File* file,
       // Write the actual dex file.
       DCHECK_EQ(vdex_size_, oat_dex_file.dex_file_offset_);
       uint8_t* out = vdex_begin_ + oat_dex_file.dex_file_offset_;
-      const std::vector<uint8_t>& cdex_data = oat_dex_file.cdex_main_section_;
-      if (!cdex_data.empty()) {
-        CHECK(!use_existing_vdex);
-        // Use the compact dex version instead of the original dex file.
-        DCHECK_EQ(oat_dex_file.dex_file_size_, cdex_data.size());
-        memcpy(out, cdex_data.data(), cdex_data.size());
+      const DexFile* dex_file = oat_dex_file.GetDexFile();
+      DCHECK_EQ(oat_dex_file.dex_file_size_, dex_file->Size());
+      if (use_existing_vdex) {
+        // The vdex already contains the data.
+        DCHECK_EQ(memcmp(out, dex_file->Begin(), dex_file->Size()), 0);
       } else {
-        const DexFile* dex_file = oat_dex_file.GetDexFile();
-        DCHECK_EQ(oat_dex_file.dex_file_size_, dex_file->Size());
-        if (use_existing_vdex) {
-          // The vdex already contains the data.
-          DCHECK_EQ(memcmp(out, dex_file->Begin(), dex_file->Size()), 0);
-        } else {
-          memcpy(out, dex_file->Begin(), dex_file->Size());
-        }
+        memcpy(out, dex_file->Begin(), dex_file->Size());
       }
 
       // Update current size and account for the written data.
@@ -3379,15 +3402,7 @@ bool OatWriter::WriteDexFiles(File* file,
       size_dex_file_alignment_ += vdex_dex_shared_data_offset_ - vdex_size_;
       vdex_size_ = vdex_dex_shared_data_offset_;
 
-      if (dex_container_ != nullptr) {
-        CHECK(!use_existing_vdex) << "Use existing vdex should have empty dex container";
-        CHECK(compact_dex_level_ != CompactDexLevel::kCompactDexLevelNone);
-        DexContainer::Section* const section = dex_container_->GetDataSection();
-        DCHECK_EQ(shared_data_size, section->Size());
-        memcpy(vdex_begin_ + vdex_size_, section->Begin(), shared_data_size);
-        section->Clear();
-        dex_container_.reset();
-      } else if (!use_existing_vdex) {
+      if (!use_existing_vdex) {
         memcpy(vdex_begin_ + vdex_size_, raw_dex_file_shared_data_begin, shared_data_size);
       }
       vdex_size_ += shared_data_size;
@@ -3429,43 +3444,6 @@ void OatWriter::CloseSources() {
   for (OatDexFile& oat_dex_file : oat_dex_files_) {
     oat_dex_file.dex_file_.reset();
   }
-}
-
-bool OatWriter::LayoutDexFile(OatDexFile* oat_dex_file) {
-  TimingLogger::ScopedTiming split("Dex Layout", timings_);
-  std::string error_msg;
-  std::string location(oat_dex_file->GetLocation());
-  std::unique_ptr<const DexFile>& dex_file = oat_dex_file->dex_file_;
-  Options options;
-  options.compact_dex_level_ = compact_dex_level_;
-  options.update_checksum_ = true;
-  DexLayout dex_layout(options, profile_compilation_info_, /*file*/ nullptr, /*header*/ nullptr);
-  {
-    TimingLogger::ScopedTiming extract("ProcessDexFile", timings_);
-    if (dex_layout.ProcessDexFile(location.c_str(),
-                                  dex_file.get(),
-                                  0,
-                                  &dex_container_,
-                                  &error_msg)) {
-      oat_dex_file->dex_sections_layout_ = dex_layout.GetSections();
-      oat_dex_file->cdex_main_section_ = dex_container_->GetMainSection()->ReleaseData();
-      // Dex layout can affect the size of the dex file, so we update here what we have set
-      // when adding the dex file as a source.
-      const UnalignedDexFileHeader* header =
-          AsUnalignedDexFileHeader(oat_dex_file->cdex_main_section_.data());
-      oat_dex_file->dex_file_size_ = header->file_size_;
-    } else {
-      LOG(WARNING) << "Failed to run dex layout, reason:" << error_msg;
-      // Since we failed to convert the dex, just copy the input dex.
-      if (dex_container_ != nullptr) {
-        // Clear the main section before processing next dex file in case we have written some data.
-        dex_container_->GetMainSection()->Clear();
-      }
-    }
-  }
-  CHECK_EQ(oat_dex_file->dex_file_location_checksum_, dex_file->GetLocationChecksum());
-  CHECK(oat_dex_file->dex_file_sha1_ == dex_file->GetSha1());
-  return true;
 }
 
 bool OatWriter::OpenDexFiles(
@@ -4055,7 +4033,7 @@ OatWriter::OatClass::OatClass(const dchecked_vector<CompiledMethod*>& compiled_m
     num_methods_ = num_methods;
     oat_method_offsets_offset_from_oat_class += sizeof(num_methods_);
     if (oat_class_type == enum_cast<uint16_t>(OatClassType::kSomeCompiled)) {
-      method_bitmap_.reset(new BitVector(num_methods, false, Allocator::GetMallocAllocator()));
+      method_bitmap_.reset(new BitVector(num_methods, false, Allocator::GetCallocAllocator()));
       uint32_t bitmap_size = BitVector::BitsToWords(num_methods) * BitVector::kWordBytes;
       DCHECK_EQ(bitmap_size, method_bitmap_->GetSizeOf());
       oat_method_offsets_offset_from_oat_class += bitmap_size;

@@ -15,6 +15,7 @@
 -->
 <!-- Note: This test config file for {MODULE} is generated from a template. -->
 <configuration description="Runs {MODULE}.">
+    <option name="config-descriptor:metadata" key="parameter" value="not_multi_abi" />
     <option name="config-descriptor:metadata" key="mainline-param" value="com.google.android.art.apex" />
     <option name="config-descriptor:metadata" key="mainline-param" value="com.android.art.apex" />
 
@@ -44,7 +45,6 @@
         <option name="mainline-module-package-name" value="com.android.art" />
     </object>
 
-    <!-- Only run tests if the device under test is SDK version 31 (Android 12) or above. -->
-    <!-- TODO(jiakaiz): Change this to U once `ro.build.version.sdk` is bumped. -->
-    <object type="module_controller" class="com.android.tradefed.testtype.suite.module.Sdk31ModuleController" />
+    <!-- Only run tests if the device under test is SDK version 34 (Android 14) or above. -->
+    <object type="module_controller" class="com.android.tradefed.testtype.suite.module.Sdk34ModuleController" />
 </configuration>

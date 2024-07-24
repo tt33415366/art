@@ -17,6 +17,9 @@
 #include "thread_list.h"
 
 #include <dirent.h>
+#include <nativehelper/scoped_local_ref.h>
+#include <nativehelper/scoped_utf_chars.h>
+#include <sys/resource.h>  // For getpriority()
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -26,10 +29,6 @@
 #include <vector>
 
 #include "android-base/stringprintf.h"
-#include "nativehelper/scoped_local_ref.h"
-#include "nativehelper/scoped_utf_chars.h"
-#include "unwindstack/AndroidUnwinder.h"
-
 #include "art_field-inl.h"
 #include "base/aborting.h"
 #include "base/histogram-inl.h"
@@ -52,14 +51,12 @@
 #include "scoped_thread_state_change-inl.h"
 #include "thread.h"
 #include "trace.h"
+#include "unwindstack/AndroidUnwinder.h"
 #include "well_known_classes.h"
 
 #if ART_USE_FUTEXES
-#include "linux/futex.h"
-#include "sys/syscall.h"
-#ifndef SYS_futex
-#define SYS_futex __NR_futex
-#endif
+#include <linux/futex.h>
+#include <sys/syscall.h>
 #endif  // ART_USE_FUTEXES
 
 namespace art HIDDEN {
@@ -556,45 +553,52 @@ void ThreadList::FlipThreadRoots(Closure* thread_flip_visitor,
   // count towards the pause.
   const uint64_t suspend_start_time = NanoTime();
   VLOG(threads) << "Suspending all for thread flip";
-  SuspendAllInternal(self);
-  if (pause_listener != nullptr) {
-    pause_listener->StartPause();
+  {
+    ScopedTrace trace("ThreadFlipSuspendAll");
+    SuspendAllInternal(self);
   }
-
-  // Run the flip callback for the collector.
-  Locks::mutator_lock_->ExclusiveLock(self);
-  suspend_all_histogram_.AdjustAndAddValue(NanoTime() - suspend_start_time);
-  flip_callback->Run(self);
 
   std::vector<Thread*> flipping_threads;  // All suspended threads. Includes us.
   int thread_count;
   // Flipping threads might exit between the time we resume them and try to run the flip function.
   // Track that in a parallel vector.
   std::unique_ptr<ThreadExitFlag[]> exit_flags;
-  {
-    TimingLogger::ScopedTiming split2("ResumeRunnableThreads", collector->GetTimings());
-    MutexLock mu(self, *Locks::thread_list_lock_);
-    MutexLock mu2(self, *Locks::thread_suspend_count_lock_);
-    thread_count = list_.size();
-    exit_flags.reset(new ThreadExitFlag[thread_count]);
-    flipping_threads.resize(thread_count, nullptr);
-    int i = 1;
-    for (Thread* thread : list_) {
-      // Set the flip function for all threads because once we start resuming any threads,
-      // they may need to run the flip function on behalf of other threads, even this one.
-      DCHECK(thread == self || thread->IsSuspended());
-      thread->SetFlipFunction(thread_flip_visitor);
-      // Put ourselves first, so other threads are more likely to have finished before we get
-      // there.
-      int thread_index = thread == self ? 0 : i++;
-      flipping_threads[thread_index] = thread;
-      thread->NotifyOnThreadExit(&exit_flags[thread_index]);
-    }
-    DCHECK(i == thread_count);
-  }
 
-  if (pause_listener != nullptr) {
-    pause_listener->EndPause();
+  {
+    TimingLogger::ScopedTiming t("FlipThreadSuspension", collector->GetTimings());
+    if (pause_listener != nullptr) {
+      pause_listener->StartPause();
+    }
+
+    // Run the flip callback for the collector.
+    Locks::mutator_lock_->ExclusiveLock(self);
+    suspend_all_histogram_.AdjustAndAddValue(NanoTime() - suspend_start_time);
+    flip_callback->Run(self);
+
+    {
+      MutexLock mu(self, *Locks::thread_list_lock_);
+      MutexLock mu2(self, *Locks::thread_suspend_count_lock_);
+      thread_count = list_.size();
+      exit_flags.reset(new ThreadExitFlag[thread_count]);
+      flipping_threads.resize(thread_count, nullptr);
+      int i = 1;
+      for (Thread* thread : list_) {
+        // Set the flip function for all threads because once we start resuming any threads,
+        // they may need to run the flip function on behalf of other threads, even this one.
+        DCHECK(thread == self || thread->IsSuspended());
+        thread->SetFlipFunction(thread_flip_visitor);
+        // Put ourselves first, so other threads are more likely to have finished before we get
+        // there.
+        int thread_index = thread == self ? 0 : i++;
+        flipping_threads[thread_index] = thread;
+        thread->NotifyOnThreadExit(&exit_flags[thread_index]);
+      }
+      DCHECK(i == thread_count);
+    }
+
+    if (pause_listener != nullptr) {
+      pause_listener->EndPause();
+    }
   }
   // Any new threads created after this will be created by threads that already ran their flip
   // functions. In the normal GC use case in which the flip function converts all local references
@@ -609,7 +613,6 @@ void ThreadList::FlipThreadRoots(Closure* thread_flip_visitor,
     Locks::thread_suspend_count_lock_->Lock(self);
     ResumeAllInternal(self);
   }
-
   collector->RegisterPause(NanoTime() - suspend_start_time);
 
   // Since all threads were suspended, they will attempt to run the flip function before
@@ -705,29 +708,6 @@ static bool WaitOnceForSuspendBarrier(AtomicInteger* barrier,
 
 #endif  // ART_USE_FUTEXES
 
-// Return a short string describing the scheduling state of the thread with the given tid.
-static std::string GetThreadState(pid_t t) {
-#if defined(__linux__)
-  static constexpr int BUF_SIZE = 90;
-  char file_name_buf[BUF_SIZE];
-  char buf[BUF_SIZE];
-  snprintf(file_name_buf, BUF_SIZE, "/proc/%d/stat", t);
-  int stat_fd = open(file_name_buf, O_RDONLY | O_CLOEXEC);
-  if (stat_fd < 0) {
-    return std::string("failed to get thread state: ") + std::string(strerror(errno));
-  }
-  CHECK(stat_fd >= 0) << strerror(errno);
-  ssize_t bytes_read = TEMP_FAILURE_RETRY(read(stat_fd, buf, BUF_SIZE));
-  CHECK(bytes_read >= 0) << strerror(errno);
-  int ret = close(stat_fd);
-  DCHECK(ret == 0) << strerror(errno);
-  buf[BUF_SIZE - 1] = '\0';
-  return buf;
-#else
-  return "unknown state";
-#endif
-}
-
 std::optional<std::string> ThreadList::WaitForSuspendBarrier(AtomicInteger* barrier,
                                                              pid_t t,
                                                              int attempt_of_4) {
@@ -737,6 +717,16 @@ std::optional<std::string> ThreadList::WaitForSuspendBarrier(AtomicInteger* barr
 #endif
   uint64_t timeout_ns =
       attempt_of_4 == 0 ? thread_suspend_timeout_ns_ : thread_suspend_timeout_ns_ / 4;
+  if (attempt_of_4 != 1 && getpriority(PRIO_PROCESS, 0 /* this thread */) > 0) {
+    // We're a low priority thread, and thus have a longer ANR timeout. Double the suspend
+    // timeout. To avoid the getpriority system call in the common case, we fail to double the
+    // first of 4 waits, but then triple the third one to compensate.
+    if (attempt_of_4 == 3) {
+      timeout_ns *= 3;
+    } else {
+      timeout_ns *= 2;
+    }
+  }
   bool collect_state = (t != 0 && (attempt_of_4 == 0 || attempt_of_4 == 4));
   int32_t cur_val = barrier->load(std::memory_order_acquire);
   if (cur_val <= 0) {
@@ -754,7 +744,7 @@ std::optional<std::string> ThreadList::WaitForSuspendBarrier(AtomicInteger* barr
   }
 
   // Long wait; gather information in case of timeout.
-  std::string sampled_state = collect_state ? GetThreadState(t) : "";
+  std::string sampled_state = collect_state ? GetOsThreadStatQuick(t) : "";
   while (i < kSuspendBarrierIters) {
     if (WaitOnceForSuspendBarrier(barrier, cur_val, timeout_ns)) {
       ++i;
@@ -770,7 +760,7 @@ std::optional<std::string> ThreadList::WaitForSuspendBarrier(AtomicInteger* barr
       return std::nullopt;
     }
   }
-  return collect_state ? "Target states: [" + sampled_state + ", " + GetThreadState(t) + "]" +
+  return collect_state ? "Target states: [" + sampled_state + ", " + GetOsThreadStatQuick(t) + "]" +
                              std::to_string(cur_val) + "@" + std::to_string((uintptr_t)barrier) +
                              " Final wait time: " + PrettyDuration(NanoTime() - start_time) :
                          "";
@@ -971,6 +961,7 @@ void ThreadList::ResumeAll() {
   }
   MutexLock mu(self, *Locks::thread_list_lock_);
   MutexLock mu2(self, *Locks::thread_suspend_count_lock_);
+  ATraceEnd();  // Matching "Mutator threads suspended ..." in SuspendAll.
   ResumeAllInternal(self);
 }
 
@@ -982,8 +973,6 @@ void ThreadList::ResumeAllInternal(Thread* self) {
   } else {
     VLOG(threads) << "Thread[null] ResumeAll starting";
   }
-
-  ATraceEnd();
 
   ScopedTrace trace("Resuming mutator threads");
 
@@ -1500,6 +1489,19 @@ void ThreadList::Unregister(Thread* self, bool should_run_callbacks) {
     // This is important if there are realtime threads. b/111277984
     usleep(1);
     // We failed to remove the thread due to a suspend request or the like, loop and try again.
+  }
+
+  // We flush the trace buffer in Thread::Destroy. We have to check again here because once the
+  // Thread::Destroy finishes we wait for any active suspend requests to finish before deleting
+  // the thread. If a new trace was started during the wait period we may allocate the trace buffer
+  // again. The trace buffer would only contain the method entry events for the methods on the stack
+  // of an exiting thread. It is not required to flush these entries but we need to release the
+  // buffer. Ideally we should either not generate trace events for a thread that is exiting or use
+  // a different mechanism to report the initial events on a trace start that doesn't use per-thread
+  // buffer. Both these approaches are not trivial to implement, so we are going with the approach
+  // of just releasing the buffer here.
+  if (UNLIKELY(self->GetMethodTraceBuffer() != nullptr)) {
+    Trace::ReleaseThreadBuffer(self);
   }
   delete self;
 

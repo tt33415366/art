@@ -202,9 +202,17 @@ static constexpr bool kLogAllGCs = false;
 static constexpr size_t kPostForkMaxHeapDurationMS = 2000;
 
 #if defined(__LP64__) || !defined(ADDRESS_SANITIZER)
-// 300 MB (0x12c00000) - (default non-moving space capacity).
-uint8_t* const Heap::kPreferredAllocSpaceBegin =
-    reinterpret_cast<uint8_t*>(300 * MB - kDefaultNonMovingSpaceCapacity);
+// 320 MB (0x14000000) - (default non-moving space capacity).
+// The value is picked to ensure it is aligned to the largest supported PMD
+// size, which is 32mb with a 16k page size on AArch64.
+uint8_t* const Heap::kPreferredAllocSpaceBegin = reinterpret_cast<uint8_t*>(([]() constexpr {
+  constexpr size_t kBegin = 320 * MB - Heap::kDefaultNonMovingSpaceCapacity;
+  constexpr int kMaxPMDSize = (kMaxPageSize / sizeof(uint64_t)) * kMaxPageSize;
+  static_assert(IsAligned<kMaxPMDSize>(kBegin),
+                "kPreferredAllocSpaceBegin should be aligned to the maximum "
+                "supported PMD size.");
+  return kBegin;
+})());
 #else
 #ifdef __ANDROID__
 // For 32-bit Android, use 0x20000000 because asan reserves 0x04000000 - 0x20000000.
@@ -1638,15 +1646,50 @@ void Heap::TrimIndirectReferenceTables(Thread* self) {
 }
 
 void Heap::StartGC(Thread* self, GcCause cause, CollectorType collector_type) {
-  // Need to do this before acquiring the locks since we don't want to get suspended while
-  // holding any locks.
-  ScopedThreadStateChange tsc(self, ThreadState::kWaitingForGcToComplete);
+  // This can be called in either kRunnable or suspended states.
+  // TODO: Consider fixing that?
+  ThreadState old_thread_state = self->GetState();
+  if (old_thread_state == ThreadState::kRunnable) {
+    Locks::mutator_lock_->AssertSharedHeld(self);
+    // Manually inlining the following call breaks thread-safety analysis.
+    StartGCRunnable(self, cause, collector_type);
+    return;
+  }
+  Locks::mutator_lock_->AssertNotHeld(self);
+  self->SetState(ThreadState::kWaitingForGcToComplete);
   MutexLock mu(self, *gc_complete_lock_);
-  // Ensure there is only one GC at a time.
   WaitForGcToCompleteLocked(cause, self);
   collector_type_running_ = collector_type;
   last_gc_cause_ = cause;
   thread_running_gc_ = self;
+  self->SetState(old_thread_state);
+}
+
+void Heap::StartGCRunnable(Thread* self, GcCause cause, CollectorType collector_type) {
+  Locks::mutator_lock_->AssertSharedHeld(self);
+  while (true) {
+    self->TransitionFromRunnableToSuspended(ThreadState::kWaitingForGcToComplete);
+    {
+      MutexLock mu(self, *gc_complete_lock_);
+      // Ensure there is only one GC at a time.
+      WaitForGcToCompleteLocked(cause, self);
+      collector_type_running_ = collector_type;
+      last_gc_cause_ = cause;
+      thread_running_gc_ = self;
+    }
+    // We have to be careful returning to runnable state, since that could cause us to block.
+    // That would be bad, since collector_type_running_ is set, and hence no GC is possible in this
+    // state, allowing deadlock.
+    if (LIKELY(self->TryTransitionFromSuspendedToRunnable())) {
+      return;
+    }
+    {
+      MutexLock mu(self, *gc_complete_lock_);
+      collector_type_running_ = kCollectorTypeNone;
+      thread_running_gc_ = nullptr;
+    }
+    self->TransitionFromSuspendedToRunnable();  // Will handle suspension request and block.
+  }
 }
 
 void Heap::TrimSpaces(Thread* self) {
@@ -2737,7 +2780,7 @@ collector::GcType Heap::CollectGarbageInternal(collector::GcType gc_type,
     // We should not ever become runnable and re-suspend while executing a GC.
     // This would likely cause a deadlock if we acted on a suspension request.
     // TODO: We really want to assert that we don't transition to kRunnable.
-    ScopedAssertNoThreadSuspension("Performing GC");
+    ScopedAssertNoThreadSuspension scoped_assert("Performing GC");
     if (self->IsHandlingStackOverflow()) {
       // If we are throwing a stack overflow error we probably don't have enough remaining stack
       // space to run the GC.
@@ -2748,6 +2791,8 @@ collector::GcType Heap::CollectGarbageInternal(collector::GcType gc_type,
     bool compacting_gc;
     {
       gc_complete_lock_->AssertNotHeld(self);
+      // Already not runnable; just switch suspended states. We remain in a suspended state until
+      // FinishGC(). This avoids the complicated dance in StartGC().
       ScopedThreadStateChange tsc2(self, ThreadState::kWaitingForGcToComplete);
       MutexLock mu(self, *gc_complete_lock_);
       // Ensure there is only one GC at a time.
@@ -2847,6 +2892,7 @@ collector::GcType Heap::CollectGarbageInternal(collector::GcType gc_type,
     old_native_bytes_allocated_.store(GetNativeBytes());
     LogGC(gc_cause, collector);
     FinishGC(self, gc_type);
+    // We're suspended up to this point.
   }
   // Actually enqueue all cleared references. Do this after the GC has officially finished since
   // otherwise we can deadlock.
@@ -4768,6 +4814,20 @@ std::string Heap::GetForegroundCollectorName() {
   std::ostringstream oss;
   oss << foreground_collector_type_;
   return oss.str();
+}
+
+bool Heap::HasAppImageSpaceFor(const std::string& dex_location) const {
+  ScopedObjectAccess soa(Thread::Current());
+  for (space::ContinuousSpace* space : continuous_spaces_) {
+    // An image space is either a boot image space or an app image space.
+    if (space->IsImageSpace() &&
+        !IsBootImageAddress(space->Begin()) &&
+        (space->AsImageSpace()->GetOatFile()->GetOatDexFiles()[0]->GetDexFileLocation() ==
+              dex_location)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace gc

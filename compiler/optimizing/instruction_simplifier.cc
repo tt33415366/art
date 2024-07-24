@@ -127,7 +127,7 @@ class InstructionSimplifierVisitor final : public HGraphDelegateVisitor {
   void SimplifyAllocationIntrinsic(HInvoke* invoke);
   void SimplifyVarHandleIntrinsic(HInvoke* invoke);
 
-  bool CanUseKnownBootImageVarHandle(HInvoke* invoke);
+  bool CanUseKnownImageVarHandle(HInvoke* invoke);
   static bool CanEnsureNotNullAt(HInstruction* input, HInstruction* at);
 
   CodeGenerator* codegen_;
@@ -2716,7 +2716,7 @@ void InstructionSimplifierVisitor::SimplifyStringIndexOf(HInvoke* invoke) {
     const DexFile& dex_file = load_string->GetDexFile();
     uint32_t utf16_length;
     const char* data =
-        dex_file.StringDataAndUtf16LengthByIdx(load_string->GetStringIndex(), &utf16_length);
+        dex_file.GetStringDataAndUtf16Length(load_string->GetStringIndex(), &utf16_length);
     if (utf16_length == 0) {
       invoke->ReplaceWith(GetGraph()->GetIntConstant(-1));
       invoke->GetBlock()->RemoveInstruction(invoke);
@@ -3025,15 +3025,15 @@ void InstructionSimplifierVisitor::SimplifyVarHandleIntrinsic(HInvoke* invoke) {
     }
   }
 
-  if (CanUseKnownBootImageVarHandle(invoke)) {
-    optimizations.SetUseKnownBootImageVarHandle();
+  if (CanUseKnownImageVarHandle(invoke)) {
+    optimizations.SetUseKnownImageVarHandle();
   }
 }
 
-bool InstructionSimplifierVisitor::CanUseKnownBootImageVarHandle(HInvoke* invoke) {
-  // If the `VarHandle` comes from a static final field of an initialized class in
-  // the boot image, we can do the checks at compile time. We do this optimization only
-  // for AOT and only for field handles when we can avoid all checks. This avoids the
+bool InstructionSimplifierVisitor::CanUseKnownImageVarHandle(HInvoke* invoke) {
+  // If the `VarHandle` comes from a static final field of an initialized class in an image
+  // (boot image or app image), we can do the checks at compile time. We do this optimization
+  // only for AOT and only for field handles when we can avoid all checks. This avoids the
   // possibility of the code concurrently messing with the `VarHandle` using reflection,
   // we simply perform the operation with the `VarHandle` as seen at compile time.
   // TODO: Extend this to arrays to support the `AtomicIntegerArray` class.
@@ -3066,18 +3066,17 @@ bool InstructionSimplifierVisitor::CanUseKnownBootImageVarHandle(HInvoke* invoke
   }
   HInstruction* load_class = var_handle_instruction->InputAt(0);
   if (kIsDebugBuild) {
-    bool is_in_boot_image = false;
+    bool is_in_image = false;
     if (Runtime::Current()->GetHeap()->ObjectIsInBootImageSpace(declaring_class)) {
-      is_in_boot_image = true;
-    } else if (compiler_options.IsBootImage() || compiler_options.IsBootImageExtension()) {
+      is_in_image = true;
+    } else if (compiler_options.IsGeneratingImage()) {
       std::string storage;
       const char* descriptor = declaring_class->GetDescriptor(&storage);
-      is_in_boot_image = compiler_options.IsImageClass(descriptor);
+      is_in_image = compiler_options.IsImageClass(descriptor);
     }
-    CHECK_EQ(is_in_boot_image,
-             load_class->IsLoadClass() && load_class->AsLoadClass()->IsInBootImage());
+    CHECK_EQ(is_in_image, load_class->IsLoadClass() && load_class->AsLoadClass()->IsInImage());
   }
-  if (!load_class->IsLoadClass() || !load_class->AsLoadClass()->IsInBootImage()) {
+  if (!load_class->IsLoadClass() || !load_class->AsLoadClass()->IsInImage()) {
     return false;
   }
 
@@ -3404,6 +3403,78 @@ void InstructionSimplifierVisitor::VisitVecMul(HVecMul* instruction) {
   if (TryCombineVecMultiplyAccumulate(instruction)) {
     RecordSimplification();
   }
+}
+
+bool TryMergeNegatedInput(HBinaryOperation* op) {
+  DCHECK(op->IsAnd() || op->IsOr() || op->IsXor()) << op->DebugName();
+  HInstruction* left = op->GetLeft();
+  HInstruction* right = op->GetRight();
+
+  // Only consider the case where there is exactly one Not, with 2 Not's De
+  // Morgan's laws should be applied instead.
+  if (left->IsNot() ^ right->IsNot()) {
+    HInstruction* hnot = (left->IsNot() ? left : right);
+    HInstruction* hother = (left->IsNot() ? right : left);
+
+    // Only do the simplification if the Not has only one use and can thus be
+    // safely removed. Even though ARM64 negated bitwise operations do not have
+    // an immediate variant (only register), we still do the simplification when
+    // `hother` is a constant, because it removes an instruction if the constant
+    // cannot be encoded as an immediate:
+    //   mov r0, #large_constant
+    //   neg r2, r1
+    //   and r0, r0, r2
+    // becomes:
+    //   mov r0, #large_constant
+    //   bic r0, r0, r1
+    if (hnot->HasOnlyOneNonEnvironmentUse()) {
+      // Replace code looking like
+      //    NOT tmp, mask
+      //    AND dst, src, tmp   (respectively ORR, EOR)
+      // with
+      //    BIC dst, src, mask  (respectively ORN, EON)
+      HInstruction* src = hnot->AsNot()->GetInput();
+
+      HBitwiseNegatedRight* neg_op = new (hnot->GetBlock()->GetGraph()->GetAllocator())
+          HBitwiseNegatedRight(op->GetType(), op->GetKind(), hother, src, op->GetDexPc());
+
+      op->GetBlock()->ReplaceAndRemoveInstructionWith(op, neg_op);
+      hnot->GetBlock()->RemoveInstruction(hnot);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool TryMergeWithAnd(HSub* instruction) {
+  HAnd* and_instr = instruction->GetRight()->AsAndOrNull();
+  if (and_instr == nullptr) {
+    return false;
+  }
+
+  HInstruction* value = instruction->GetLeft();
+
+  HInstruction* left = and_instr->GetLeft();
+  const bool left_is_equal = left == value;
+  HInstruction* right = and_instr->GetRight();
+  const bool right_is_equal = right == value;
+  if (!left_is_equal && !right_is_equal) {
+    return false;
+  }
+
+  HBitwiseNegatedRight* bnr = new (instruction->GetBlock()->GetGraph()->GetAllocator())
+      HBitwiseNegatedRight(instruction->GetType(),
+                           HInstruction::InstructionKind::kAnd,
+                           value,
+                           left_is_equal ? right : left,
+                           instruction->GetDexPc());
+  instruction->GetBlock()->ReplaceAndRemoveInstructionWith(instruction, bnr);
+  // Since we don't run DCE after this phase, try to manually remove the And instruction.
+  if (!and_instr->HasUses()) {
+    and_instr->GetBlock()->RemoveInstruction(and_instr);
+  }
+  return true;
 }
 
 }  // namespace art

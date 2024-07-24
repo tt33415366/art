@@ -18,8 +18,8 @@
 #define ART_COMPILER_OPTIMIZING_CODE_GENERATOR_X86_H_
 
 #include "arch/x86/instruction_set_features_x86.h"
-#include "base/enums.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "code_generator.h"
 #include "dex/dex_file_types.h"
 #include "driver/compiler_options.h"
@@ -55,6 +55,8 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(IntegerHighestOneBit)                   \
   V(LongHighestOneBit)                      \
   V(LongDivideUnsigned)                     \
+  V(IntegerRemainderUnsigned)               \
+  V(LongRemainderUnsigned)                  \
   V(CRC32Update)                            \
   V(CRC32UpdateBytes)                       \
   V(CRC32UpdateByteBuffer)                  \
@@ -539,6 +541,7 @@ class CodeGeneratorX86 : public CodeGenerator {
   void RecordBootImageMethodPatch(HInvoke* invoke);
   void RecordMethodBssEntryPatch(HInvoke* invoke);
   void RecordBootImageTypePatch(HLoadClass* load_class);
+  void RecordAppImageTypePatch(HLoadClass* load_class);
   Label* NewTypeBssEntryPatch(HLoadClass* load_class);
   void RecordBootImageStringPatch(HLoadString* load_string);
   Label* NewStringBssEntryPatch(HLoadString* load_string);
@@ -775,6 +778,8 @@ class CodeGeneratorX86 : public CodeGenerator {
   ArenaDeque<X86PcRelativePatchInfo> method_bss_entry_patches_;
   // PC-relative type patch info for kBootImageLinkTimePcRelative.
   ArenaDeque<X86PcRelativePatchInfo> boot_image_type_patches_;
+  // PC-relative type patch info for kAppImageRelRo.
+  ArenaDeque<X86PcRelativePatchInfo> app_image_type_patches_;
   // PC-relative type patch info for kBssEntry.
   ArenaDeque<X86PcRelativePatchInfo> type_bss_entry_patches_;
   // PC-relative public type patch info for kBssEntryPublic.

@@ -56,6 +56,7 @@ using helpers::CPURegisterFrom;
 using helpers::DRegisterFrom;
 using helpers::HeapOperand;
 using helpers::LocationFrom;
+using helpers::InputCPURegisterAt;
 using helpers::InputCPURegisterOrZeroRegAt;
 using helpers::OperandFrom;
 using helpers::RegisterFrom;
@@ -2052,7 +2053,7 @@ static const char* GetConstString(HInstruction* candidate, uint32_t* utf16_lengt
   if (candidate->IsLoadString()) {
     HLoadString* load_string = candidate->AsLoadString();
     const DexFile& dex_file = load_string->GetDexFile();
-    return dex_file.StringDataAndUtf16LengthByIdx(load_string->GetStringIndex(), utf16_length);
+    return dex_file.GetStringDataAndUtf16Length(load_string->GetStringIndex(), utf16_length);
   }
   return nullptr;
 }
@@ -3444,27 +3445,26 @@ void IntrinsicCodeGeneratorARM64::VisitDoubleIsInfinite(HInvoke* invoke) {
   GenIsInfinite(invoke->GetLocations(), /* is64bit= */ true, GetVIXLAssembler());
 }
 
-#define VISIT_INTRINSIC(name, low, high, type, start_index) \
-  void IntrinsicLocationsBuilderARM64::Visit ##name ##ValueOf(HInvoke* invoke) { \
-    InvokeRuntimeCallingConvention calling_convention; \
-    IntrinsicVisitor::ComputeValueOfLocations( \
-        invoke, \
-        codegen_, \
-        low, \
-        high - low + 1, \
-        calling_convention.GetReturnLocation(DataType::Type::kReference), \
-        Location::RegisterLocation(calling_convention.GetRegisterAt(0).GetCode())); \
-  } \
-  void IntrinsicCodeGeneratorARM64::Visit ##name ##ValueOf(HInvoke* invoke) { \
-    IntrinsicVisitor::ValueOfInfo info = \
-        IntrinsicVisitor::ComputeValueOfInfo( \
-            invoke, \
-            codegen_->GetCompilerOptions(), \
-            WellKnownClasses::java_lang_ ##name ##_value, \
-            low, \
-            high - low + 1, \
-            start_index); \
-    HandleValueOf(invoke, info, type); \
+#define VISIT_INTRINSIC(name, low, high, type, start_index)                              \
+  void IntrinsicLocationsBuilderARM64::Visit##name##ValueOf(HInvoke* invoke) {           \
+    InvokeRuntimeCallingConvention calling_convention;                                   \
+    IntrinsicVisitor::ComputeValueOfLocations(                                           \
+        invoke,                                                                          \
+        codegen_,                                                                        \
+        low,                                                                             \
+        (high) - (low) + 1,                                                              \
+        calling_convention.GetReturnLocation(DataType::Type::kReference),                \
+        Location::RegisterLocation(calling_convention.GetRegisterAt(0).GetCode()));      \
+  }                                                                                      \
+  void IntrinsicCodeGeneratorARM64::Visit##name##ValueOf(HInvoke* invoke) {              \
+    IntrinsicVisitor::ValueOfInfo info =                                                 \
+        IntrinsicVisitor::ComputeValueOfInfo(invoke,                                     \
+                                             codegen_->GetCompilerOptions(),             \
+                                             WellKnownClasses::java_lang_##name##_value, \
+                                             low,                                        \
+                                             (high) - (low) + 1,                         \
+                                             start_index);                               \
+    HandleValueOf(invoke, info, type);                                                   \
   }
   BOXED_TYPES(VISIT_INTRINSIC)
 #undef VISIT_INTRINSIC
@@ -4500,7 +4500,7 @@ static void GenerateVarHandleInstanceFieldChecks(HInvoke* invoke,
     __ Cbz(object, slow_path->GetEntryLabel());
   }
 
-  if (!optimizations.GetUseKnownBootImageVarHandle()) {
+  if (!optimizations.GetUseKnownImageVarHandle()) {
     UseScratchRegisterScope temps(masm);
     Register temp = temps.AcquireW();
     Register temp2 = temps.AcquireW();
@@ -4627,7 +4627,7 @@ static VarHandleSlowPathARM64* GenerateVarHandleChecks(HInvoke* invoke,
                                                        DataType::Type type) {
   size_t expected_coordinates_count = GetExpectedVarHandleCoordinatesCount(invoke);
   VarHandleOptimizations optimizations(invoke);
-  if (optimizations.GetUseKnownBootImageVarHandle()) {
+  if (optimizations.GetUseKnownImageVarHandle()) {
     DCHECK_NE(expected_coordinates_count, 2u);
     if (expected_coordinates_count == 0u || optimizations.GetSkipObjectNullCheck()) {
       return nullptr;
@@ -4638,7 +4638,7 @@ static VarHandleSlowPathARM64* GenerateVarHandleChecks(HInvoke* invoke,
       new (codegen->GetScopedAllocator()) VarHandleSlowPathARM64(invoke, order);
   codegen->AddSlowPath(slow_path);
 
-  if (!optimizations.GetUseKnownBootImageVarHandle()) {
+  if (!optimizations.GetUseKnownImageVarHandle()) {
     GenerateVarHandleAccessModeAndVarTypeChecks(invoke, codegen, slow_path, type);
   }
   GenerateVarHandleCoordinateChecks(invoke, codegen, slow_path);
@@ -4673,7 +4673,7 @@ static void GenerateVarHandleTarget(HInvoke* invoke,
   size_t expected_coordinates_count = GetExpectedVarHandleCoordinatesCount(invoke);
 
   if (expected_coordinates_count <= 1u) {
-    if (VarHandleOptimizations(invoke).GetUseKnownBootImageVarHandle()) {
+    if (VarHandleOptimizations(invoke).GetUseKnownImageVarHandle()) {
       ScopedObjectAccess soa(Thread::Current());
       ArtField* target_field = GetBootImageVarHandleField(invoke);
       if (expected_coordinates_count == 0u) {
@@ -5423,10 +5423,13 @@ static void GenerateVarHandleGetAndUpdate(HInvoke* invoke,
                                           bool byte_swap = false) {
   uint32_t arg_index = invoke->GetNumberOfArguments() - 1;
   DataType::Type value_type = GetDataTypeFromShorty(invoke, arg_index);
+  bool is_fp = DataType::IsFloatingPointType(value_type);
 
   MacroAssembler* masm = codegen->GetVIXLAssembler();
   LocationSummary* locations = invoke->GetLocations();
-  CPURegister arg = InputCPURegisterOrZeroRegAt(invoke, arg_index);
+  CPURegister arg = (is_fp && get_and_update_op == GetAndUpdateOp::kAdd)
+      ? InputCPURegisterAt(invoke, arg_index)
+      : InputCPURegisterOrZeroRegAt(invoke, arg_index);
   CPURegister out = helpers::OutputCPURegister(invoke);
 
   VarHandleTarget target = GetVarHandleTarget(invoke);
@@ -5458,7 +5461,6 @@ static void GenerateVarHandleGetAndUpdate(HInvoke* invoke,
   __ Add(tmp_ptr, target.object.X(), target.offset.X());
 
   // The load/store type is never floating point.
-  bool is_fp = DataType::IsFloatingPointType(value_type);
   DataType::Type load_store_type = is_fp
       ? ((value_type == DataType::Type::kFloat32) ? DataType::Type::kInt32 : DataType::Type::kInt64)
       : value_type;
@@ -5476,7 +5478,7 @@ static void GenerateVarHandleGetAndUpdate(HInvoke* invoke,
     // For floating point GetAndSet, do the GenerateGetAndUpdate() with core registers,
     // rather than moving between core and FP registers in the loop.
     arg = MoveToTempIfFpRegister(arg, value_type, masm, &temps);
-    if (DataType::IsFloatingPointType(value_type) && !arg.IsZero()) {
+    if (is_fp && !arg.IsZero()) {
       // We need a temporary register but we have already used a scratch register for
       // the new value unless it is zero bit pattern (+0.0f or +0.0) and need another one
       // in GenerateGetAndUpdate(). We have allocated a normal temporary to handle that.

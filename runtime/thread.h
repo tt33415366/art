@@ -28,9 +28,9 @@
 #include "base/atomic.h"
 #include "base/bit_field.h"
 #include "base/bit_utils.h"
-#include "base/enums.h"
 #include "base/locks.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "base/safe_map.h"
 #include "base/value_object.h"
 #include "entrypoints/jni/jni_entrypoints.h"
@@ -159,6 +159,7 @@ enum class ThreadFlag : uint32_t {
   // Prevents a situation in which we are asked to suspend just before we suspend all
   // other threads, and then notice the suspension request and suspend ourselves,
   // leading to deadlock. Guarded by suspend_count_lock_ .
+  // Should not ever be set when we try to transition to kRunnable.
   // TODO(b/296639267): Generalize use to prevent SuspendAll from blocking
   // in-progress GC.
   kSuspensionImmune = 1u << 6,
@@ -483,10 +484,21 @@ class EXPORT Thread {
       REQUIRES(!Locks::thread_suspend_count_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  // Transition from non-runnable to runnable state acquiring share on mutator_lock_.
-  ALWAYS_INLINE ThreadState TransitionFromSuspendedToRunnable()
+  // Transition from non-runnable to runnable state acquiring share on mutator_lock_. Returns the
+  // old state, or kInvalidState if we failed because allow_failure and kSuspensionImmune were set.
+  // Should not be called with an argument except by the next function below.
+  ALWAYS_INLINE ThreadState TransitionFromSuspendedToRunnable(bool fail_on_suspend_req = false)
+      REQUIRES(!Locks::thread_suspend_count_lock_) SHARED_LOCK_FUNCTION(Locks::mutator_lock_);
+
+  // A version that does not return the old ThreadState, and fails by returning false if it would
+  // have needed to handle a pending suspension request.
+  ALWAYS_INLINE bool TryTransitionFromSuspendedToRunnable()
       REQUIRES(!Locks::thread_suspend_count_lock_)
-      SHARED_LOCK_FUNCTION(Locks::mutator_lock_);
+      SHARED_TRYLOCK_FUNCTION(true, Locks::mutator_lock_) NO_THREAD_SAFETY_ANALYSIS {
+    // The above function does not really acquire the lock when we pass true and it returns
+    // kInvalidState. We lie in both places, but clients see correct behavior.
+    return TransitionFromSuspendedToRunnable(true) != ThreadState::kInvalidState;
+  }
 
   // Transition from runnable into a state where mutator privileges are denied. Releases share of
   // mutator lock.
@@ -535,6 +547,11 @@ class EXPORT Thread {
   }
 
   void AssertThreadSuspensionIsAllowable(bool check_locks = true) const;
+
+  void AssertNoTransactionCheckAllowed() const {
+    CHECK(tlsPtr_.last_no_transaction_checks_cause == nullptr)
+        << tlsPtr_.last_no_transaction_checks_cause;
+  }
 
   // Return true if thread suspension is allowable.
   bool IsThreadSuspensionAllowable() const;
@@ -848,7 +865,8 @@ class EXPORT Thread {
 
   // Create the internal representation of a stack trace, that is more time
   // and space efficient to compute than the StackTraceElement[].
-  jobject CreateInternalStackTrace(const ScopedObjectAccessAlreadyRunnable& soa) const
+  ObjPtr<mirror::ObjectArray<mirror::Object>> CreateInternalStackTrace(
+      const ScopedObjectAccessAlreadyRunnable& soa) const
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Convert an internal stack trace representation (returned by CreateInternalStackTrace) to a
@@ -1081,9 +1099,9 @@ class EXPORT Thread {
   }
 
   template <PointerSize pointer_size>
-  static constexpr ThreadOffset<pointer_size> TraceBufferIndexOffset() {
+  static constexpr ThreadOffset<pointer_size> TraceBufferCurrPtrOffset() {
     return ThreadOffsetFromTlsPtr<pointer_size>(
-        OFFSETOF_MEMBER(tls_ptr_sized_values, method_trace_buffer_index));
+        OFFSETOF_MEMBER(tls_ptr_sized_values, method_trace_buffer_curr_entry));
   }
 
   template <PointerSize pointer_size>
@@ -1346,10 +1364,21 @@ class EXPORT Thread {
 
   uintptr_t* GetMethodTraceBuffer() { return tlsPtr_.method_trace_buffer; }
 
-  size_t* GetMethodTraceIndexPtr() { return &tlsPtr_.method_trace_buffer_index; }
+  uintptr_t** GetTraceBufferCurrEntryPtr() { return &tlsPtr_.method_trace_buffer_curr_entry; }
 
-  uintptr_t* SetMethodTraceBuffer(uintptr_t* buffer) {
-    return tlsPtr_.method_trace_buffer = buffer;
+  void SetMethodTraceBuffer(uintptr_t* buffer, int init_index) {
+    tlsPtr_.method_trace_buffer = buffer;
+    SetTraceBufferCurrentEntry(init_index);
+  }
+
+  void SetTraceBufferCurrentEntry(int index) {
+    uintptr_t* buffer = tlsPtr_.method_trace_buffer;
+    if (buffer == nullptr) {
+      tlsPtr_.method_trace_buffer_curr_entry = nullptr;
+    } else {
+      DCHECK(buffer != nullptr);
+      tlsPtr_.method_trace_buffer_curr_entry = buffer + index;
+    }
   }
 
   uint64_t GetTraceClockBase() const {
@@ -1538,7 +1567,7 @@ class EXPORT Thread {
   // checkpoint. Useful mostly to discover why a thread isn't responding to a suspend request or
   // checkpoint. The caller should "suspend" (in the Java sense) 'thread' before invoking this, so
   // 'thread' can't get deallocated before we access it.
-  NO_RETURN void AbortInThis(std::string message);
+  NO_RETURN void AbortInThis(const std::string& message);
 
   // Returns true if StrictMode events are traced for the current thread.
   static bool IsSensitiveThread() {
@@ -2118,12 +2147,11 @@ class EXPORT Thread {
                                frame_id_to_shadow_frame(nullptr),
                                name(nullptr),
                                pthread_self(0),
-                               last_no_thread_suspension_cause(nullptr),
                                active_suspendall_barrier(nullptr),
                                active_suspend1_barriers(nullptr),
+                               thread_local_start(nullptr),
                                thread_local_pos(nullptr),
                                thread_local_end(nullptr),
-                               thread_local_start(nullptr),
                                thread_local_limit(nullptr),
                                thread_local_objects(0),
                                checkpoint_function(nullptr),
@@ -2135,8 +2163,10 @@ class EXPORT Thread {
                                async_exception(nullptr),
                                top_reflective_handle_scope(nullptr),
                                method_trace_buffer(nullptr),
-                               method_trace_buffer_index(0),
-                               thread_exit_flags(nullptr) {
+                               method_trace_buffer_curr_entry(nullptr),
+                               thread_exit_flags(nullptr),
+                               last_no_thread_suspension_cause(nullptr),
+                               last_no_transaction_checks_cause(nullptr) {
       std::fill(held_mutexes, held_mutexes + kLockLevelCount, nullptr);
     }
 
@@ -2235,9 +2265,6 @@ class EXPORT Thread {
     // A cached pthread_t for the pthread underlying this Thread*.
     pthread_t pthread_self;
 
-    // If no_thread_suspension_ is > 0, what is causing that assertion.
-    const char* last_no_thread_suspension_cause;
-
     // After a thread observes a suspend request and enters a suspended state,
     // it notifies the requestor by arriving at a "suspend barrier". This consists of decrementing
     // the atomic integer representing the barrier. (This implementation was introduced in 2015 to
@@ -2254,13 +2281,13 @@ class EXPORT Thread {
     // The struct as a whole is still stored on the requesting thread's stack.
     WrappedSuspend1Barrier* active_suspend1_barriers GUARDED_BY(Locks::thread_suspend_count_lock_);
 
+    // Thread-local allocation pointer. Can be moved below the following two to correct alignment.
+    uint8_t* thread_local_start;
+
     // thread_local_pos and thread_local_end must be consecutive for ldrd and are 8 byte aligned for
     // potentially better performance.
     uint8_t* thread_local_pos;
     uint8_t* thread_local_end;
-
-    // Thread-local allocation pointer. Can be moved above the preceding two to correct alignment.
-    uint8_t* thread_local_start;
 
     // Thread local limit is how much we can expand the thread local buffer to, it is greater or
     // equal to thread_local_end.
@@ -2311,11 +2338,18 @@ class EXPORT Thread {
     // Pointer to a thread-local buffer for method tracing.
     uintptr_t* method_trace_buffer;
 
-    // The index of the next free entry in method_trace_buffer.
-    size_t method_trace_buffer_index;
+    // Pointer to the current entry in the buffer.
+    uintptr_t* method_trace_buffer_curr_entry;
 
     // Pointer to the first node of an intrusively doubly-linked list of ThreadExitFlags.
     ThreadExitFlag* thread_exit_flags GUARDED_BY(Locks::thread_list_lock_);
+
+    // If no_thread_suspension_ is > 0, what is causing that assertion.
+    const char* last_no_thread_suspension_cause;
+
+    // If the thread is asserting that there should be no transaction checks,
+    // what is causing that assertion (debug builds only).
+    const char* last_no_transaction_checks_cause;
   } tlsPtr_;
 
   // Small thread-local cache to be used from the interpreter.
@@ -2374,6 +2408,7 @@ class EXPORT Thread {
   friend class gc::collector::SemiSpace;  // For getting stack traces.
   friend class Runtime;  // For CreatePeer.
   friend class QuickExceptionHandler;  // For dumping the stack.
+  friend class ScopedAssertNoTransactionChecks;
   friend class ScopedThreadStateChange;
   friend class StubTest;  // For accessing entrypoints.
   friend class ThreadList;  // For ~Thread, Destroy and EnsureFlipFunctionStarted.
