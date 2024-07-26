@@ -484,7 +484,8 @@ class Heap {
 
   // Blocks the caller until the garbage collector becomes idle and returns the type of GC we
   // waited for. Only waits for running collections, ignoring a requested but unstarted GC. Only
-  // heuristic, since a new GC may have started by the time we return.
+  // heuristic, since a new GC may have started by the time we return. However, if we hold the
+  // mutator lock, even in shared mode, a new GC can't get very far, so long as we keep it.
   EXPORT collector::GcType WaitForGcToComplete(GcCause cause, Thread* self)
       REQUIRES(!*gc_complete_lock_);
 
@@ -809,16 +810,7 @@ class Heap {
   bool HasBootImageSpace() const {
     return !boot_image_spaces_.empty();
   }
-  bool HasAppImageSpace() const {
-    ScopedObjectAccess soa(Thread::Current());
-    for (const space::ContinuousSpace* space : continuous_spaces_) {
-      // An image space is either a boot image space or an app image space.
-      if (space->IsImageSpace() && !IsBootImageAddress(space->Begin())) {
-        return true;
-      }
-    }
-    return false;
-  }
+  bool HasAppImageSpaceFor(const std::string& dex_location) const;
 
   ReferenceProcessor* GetReferenceProcessor() {
     return reference_processor_.get();
@@ -1175,8 +1167,9 @@ class Heap {
                                                bool grow);
 
   // Blocks the caller until the garbage collector becomes idle and returns the type of GC we
-  // waited for.
-  collector::GcType WaitForGcToCompleteLocked(GcCause cause, Thread* self)
+  // waited for. If only_one is true, we only wait for the currently running GC, and may return
+  // while a new GC is again running.
+  collector::GcType WaitForGcToCompleteLocked(GcCause cause, Thread* self, bool only_one = false)
       REQUIRES(gc_complete_lock_);
 
   void RequestCollectorTransition(CollectorType desired_collector_type, uint64_t delta_time)
