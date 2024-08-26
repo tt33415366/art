@@ -21,7 +21,6 @@
 
 #include <map>
 #include <memory>
-#include <unordered_map>
 #include <unordered_set>
 
 #include "barrier.h"
@@ -490,10 +489,10 @@ class MarkCompact final : public GarbageCollector {
   // Called by SIGBUS handler to compact and copy/map the fault page in moving space.
   void ConcurrentlyProcessMovingPage(uint8_t* fault_page,
                                      uint8_t* buf,
-                                     size_t nr_moving_space_used_pages)
-      REQUIRES_SHARED(Locks::mutator_lock_);
+                                     size_t nr_moving_space_used_pages,
+                                     bool tolerate_enoent) REQUIRES_SHARED(Locks::mutator_lock_);
   // Called by SIGBUS handler to process and copy/map the fault page in linear-alloc.
-  void ConcurrentlyProcessLinearAllocPage(uint8_t* fault_page)
+  void ConcurrentlyProcessLinearAllocPage(uint8_t* fault_page, bool tolerate_enoent)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Process concurrently all the pages in linear-alloc. Called by gc-thread.
@@ -520,7 +519,8 @@ class MarkCompact final : public GarbageCollector {
   size_t MapMovingSpacePages(size_t start_idx,
                              size_t arr_len,
                              bool from_fault,
-                             bool return_on_contention) REQUIRES_SHARED(Locks::mutator_lock_);
+                             bool return_on_contention,
+                             bool tolerate_enoent) REQUIRES_SHARED(Locks::mutator_lock_);
 
   bool IsValidFd(int fd) const { return fd >= 0; }
 
@@ -537,12 +537,6 @@ class MarkCompact final : public GarbageCollector {
   ALWAYS_INLINE void UpdateClassAfterObjectMap(mirror::Object* obj)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  // Updates 'class_after_obj_map_' map by updating the keys (class) with its
-  // highest-address super-class (obtained from 'super_class_after_class_map_'),
-  // if there is any. This is to ensure we don't free from-space pages before
-  // the lowest-address obj is compacted.
-  void UpdateClassAfterObjMap();
-
   void MarkZygoteLargeObjects() REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(Locks::heap_bitmap_lock_);
 
@@ -558,7 +552,8 @@ class MarkCompact final : public GarbageCollector {
   // function also uses thread's priority to decide how long we delay before
   // forcing the ioctl operation. If ioctl returns EEXIST, then also function
   // returns. Returns number of bytes (multiple of page-size) mapped.
-  size_t CopyIoctl(void* dst, void* buffer, size_t length, bool return_on_contention);
+  size_t CopyIoctl(
+      void* dst, void* buffer, size_t length, bool return_on_contention, bool tolerate_enoent);
 
   // Called after updating linear-alloc page(s) to map the page. It first
   // updates the state of the pages to kProcessedAndMapping and after ioctl to
@@ -570,7 +565,8 @@ class MarkCompact final : public GarbageCollector {
                                   Atomic<PageState>* state,
                                   size_t length,
                                   bool free_pages,
-                                  bool single_ioctl);
+                                  bool single_ioctl,
+                                  bool tolerate_enoent);
   // Called for clamping of 'info_map_' and other GC data structures, which are
   // small and/or in >4GB address space. There is no real benefit of clamping
   // them synchronously during app forking. It clamps only if clamp_info_map_status_
@@ -644,22 +640,7 @@ class MarkCompact final : public GarbageCollector {
     uint8_t* begin_;
     uint8_t* end_;
   };
-
   std::vector<LinearAllocSpaceData> linear_alloc_spaces_data_;
-
-  class ObjReferenceHash {
-   public:
-    uint32_t operator()(const ObjReference& ref) const {
-      return ref.AsVRegValue() >> kObjectAlignmentShift;
-    }
-  };
-
-  class ObjReferenceEqualFn {
-   public:
-    bool operator()(const ObjReference& a, const ObjReference& b) const {
-      return a.AsMirrorPtr() == b.AsMirrorPtr();
-    }
-  };
 
   class LessByObjReference {
    public:
@@ -667,31 +648,14 @@ class MarkCompact final : public GarbageCollector {
       return std::less<mirror::Object*>{}(a.AsMirrorPtr(), b.AsMirrorPtr());
     }
   };
-
-  // Data structures used to track objects whose layout information is stored in later
-  // allocated classes (at higher addresses). We must be careful not to free the
-  // corresponding from-space pages prematurely.
-  using ObjObjOrderedMap = std::map<ObjReference, ObjReference, LessByObjReference>;
-  using ObjObjUnorderedMap =
-      std::unordered_map<ObjReference, ObjReference, ObjReferenceHash, ObjReferenceEqualFn>;
-  // Unordered map of <K, S> such that the class K (in moving space) has kClassWalkSuper
-  // in reference bitmap and S is its highest address super class.
-  ObjObjUnorderedMap super_class_after_class_hash_map_;
-  // Unordered map of <K, V> such that the class K (in moving space) is after its objects
-  // or would require iterating super-class hierarchy when visiting references. And V is
-  // its lowest address object (in moving space).
-  ObjObjUnorderedMap class_after_obj_hash_map_;
-  // Ordered map constructed before starting compaction using the above two maps. Key is a
-  // class (or super-class) which is higher in address order than some of its object(s) and
-  // value is the corresponding object with lowest address.
-  ObjObjOrderedMap class_after_obj_ordered_map_;
+  using ClassAfterObjectMap = std::map<ObjReference, ObjReference, LessByObjReference>;
+  // map of <K, V> such that the class K (in moving space) is after its
+  // objects, and its object V is the lowest object (in moving space).
+  ClassAfterObjectMap class_after_obj_map_;
   // Since the compaction is done in reverse, we use a reverse iterator. It is maintained
   // either at the pair whose class is lower than the first page to be freed, or at the
   // pair whose object is not yet compacted.
-  ObjObjOrderedMap::const_reverse_iterator class_after_obj_iter_;
-  // Cached reference to the last class which has kClassWalkSuper in reference
-  // bitmap but has all its super classes lower address order than itself.
-  mirror::Class* walk_super_class_cache_;
+  ClassAfterObjectMap::const_reverse_iterator class_after_obj_iter_;
   // Used by FreeFromSpacePages() for maintaining markers in the moving space for
   // how far the pages have been reclaimed (madvised) and checked.
   //
@@ -795,15 +759,16 @@ class MarkCompact final : public GarbageCollector {
   // Userfault file descriptor, accessed only by the GC itself.
   // kFallbackMode value indicates that we are in the fallback mode.
   int uffd_;
-  // Number of mutator-threads currently executing SIGBUS handler. When the
-  // GC-thread is done with compaction, it set the most significant bit to
-  // indicate that. Mutator threads check for the flag when incrementing in the
-  // handler.
-  std::atomic<SigbusCounterType> sigbus_in_progress_count_;
-  // Number of mutator-threads/uffd-workers working on moving-space page. It
-  // must be 0 before gc-thread can unregister the space after it's done
-  // sequentially compacting all pages of the space.
-  std::atomic<uint16_t> compaction_in_progress_count_;
+  // Counters to synchronize mutator threads and gc-thread at the end of
+  // compaction. Counter 0 represents the number of mutators still working on
+  // moving space pages which started before gc-thread finished compacting pages,
+  // whereas the counter 1 represents those which started afterwards but
+  // before unregistering the space from uffd. Once counter 1 reaches 0, the
+  // gc-thread madvises spaces and data structures like page-status array.
+  // Both the counters are set to 0 before compaction begins. They are or'ed
+  // with kSigbusCounterCompactionDoneMask one-by-one by gc-thread after
+  // compaction to communicate the status to future mutators.
+  std::atomic<SigbusCounterType> sigbus_in_progress_count_[2];
   // When using SIGBUS feature, this counter is used by mutators to claim a page
   // out of compaction buffers to be used for the entire compaction cycle.
   std::atomic<uint16_t> compaction_buffer_counter_;
