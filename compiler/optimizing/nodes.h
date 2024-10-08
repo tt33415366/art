@@ -1593,6 +1593,7 @@ class HLoopInformationOutwardIterator : public ValueObject {
   M(Rem, BinaryOperation)                                               \
   M(Return, Instruction)                                                \
   M(ReturnVoid, Instruction)                                            \
+  M(Rol, BinaryOperation)                                               \
   M(Ror, BinaryOperation)                                               \
   M(Shl, BinaryOperation)                                               \
   M(Shr, BinaryOperation)                                               \
@@ -4912,6 +4913,7 @@ class HInvokePolymorphic final : public HInvoke {
  public:
   HInvokePolymorphic(ArenaAllocator* allocator,
                      uint32_t number_of_arguments,
+                     uint32_t number_of_other_inputs,
                      DataType::Type return_type,
                      uint32_t dex_pc,
                      MethodReference method_reference,
@@ -4924,7 +4926,7 @@ class HInvokePolymorphic final : public HInvoke {
       : HInvoke(kInvokePolymorphic,
                 allocator,
                 number_of_arguments,
-                /* number_of_other_inputs= */ 0u,
+                number_of_other_inputs,
                 return_type,
                 dex_pc,
                 method_reference,
@@ -4937,6 +4939,13 @@ class HInvokePolymorphic final : public HInvoke {
   bool IsClonable() const override { return true; }
 
   dex::ProtoIndex GetProtoIndex() { return proto_idx_; }
+
+  // Whether we can do direct invocation of the method handle.
+  bool CanHaveFastPath() const {
+    return GetIntrinsic() == Intrinsics::kMethodHandleInvokeExact &&
+        GetNumberOfArguments() >= 2 &&
+        InputAt(1)->GetType() == DataType::Type::kReference;
+  }
 
   DECLARE_INSTRUCTION(InvokePolymorphic);
 
@@ -5990,6 +5999,31 @@ class HRor final : public HBinaryOperation {
   DEFAULT_COPY_CONSTRUCTOR(Ror);
 };
 
+class HRol final : public HBinaryOperation {
+ public:
+  HRol(DataType::Type result_type, HInstruction* value, HInstruction* distance)
+      : HBinaryOperation(kRol, result_type, value, distance) {}
+
+  template <typename T>
+  static T Compute(T value, int32_t distance, int32_t max_shift_value) {
+    return HRor::Compute(value, -distance, max_shift_value);
+  }
+
+  HConstant* Evaluate(HIntConstant* value, HIntConstant* distance) const override {
+    return GetBlock()->GetGraph()->GetIntConstant(
+        Compute(value->GetValue(), distance->GetValue(), kMaxIntShiftDistance), GetDexPc());
+  }
+  HConstant* Evaluate(HLongConstant* value, HIntConstant* distance) const override {
+    return GetBlock()->GetGraph()->GetLongConstant(
+        Compute(value->GetValue(), distance->GetValue(), kMaxLongShiftDistance), GetDexPc());
+  }
+
+  DECLARE_INSTRUCTION(Rol);
+
+ protected:
+  DEFAULT_COPY_CONSTRUCTOR(Rol);
+};
+
 // The value of a parameter in this method. Its location depends on
 // the calling convention.
 class HParameterValue final : public HExpression<0> {
@@ -6218,7 +6252,7 @@ inline std::ostream& operator<<(std::ostream& os, const FieldInfo& a) {
 
 class HInstanceFieldGet final : public HExpression<1> {
  public:
-  HInstanceFieldGet(HInstruction* value,
+  HInstanceFieldGet(HInstruction* object,
                     ArtField* field,
                     DataType::Type field_type,
                     MemberOffset field_offset,
@@ -6238,7 +6272,7 @@ class HInstanceFieldGet final : public HExpression<1> {
                     field_idx,
                     declaring_class_def_index,
                     dex_file) {
-    SetRawInputAt(0, value);
+    SetRawInputAt(0, object);
   }
 
   bool IsClonable() const override { return true; }
