@@ -55,7 +55,7 @@ class LongLoType;
 class MethodVerifier;
 class NullType;
 class PreciseConstType;
-class PreciseReferenceType;
+class ReferenceType;
 class RegType;
 class ShortType;
 class UndefinedType;
@@ -66,22 +66,29 @@ static constexpr size_t kDefaultArenaBitVectorBytes = 8;
 
 class RegTypeCache {
  public:
-  RegTypeCache(Thread* self,
-               ClassLinker* class_linker,
-               bool can_load_classes,
-               ScopedArenaAllocator& allocator,
-               bool can_suspend = true);
+  EXPORT RegTypeCache(Thread* self,
+                      ClassLinker* class_linker,
+                      ArenaPool* arena_pool,
+                      bool can_load_classes = true,
+                      bool can_suspend = true);
+
+  bool CanLoadClasses() const {
+    return can_load_classes_;
+  }
+
+  bool CanSuspend() const {
+    return can_suspend_;
+  }
+
   const art::verifier::RegType& GetFromId(uint16_t id) const;
   // Find a RegType, returns null if not found.
-  const RegType* FindClass(ObjPtr<mirror::Class> klass, bool precise) const
+  const RegType* FindClass(ObjPtr<mirror::Class> klass) const
       REQUIRES_SHARED(Locks::mutator_lock_);
   // Insert a new class with a specified descriptor, must not already be in the cache.
-  const RegType* InsertClass(const std::string_view& descriptor,
-                             ObjPtr<mirror::Class> klass,
-                             bool precise)
+  const RegType* InsertClass(const std::string_view& descriptor, ObjPtr<mirror::Class> klass)
       REQUIRES_SHARED(Locks::mutator_lock_);
-  // Get or insert a reg type for a description, klass, and precision.
-  const RegType& FromClass(const char* descriptor, ObjPtr<mirror::Class> klass, bool precise)
+  // Get or insert a reg type for a descriptor and klass.
+  const RegType& FromClass(const char* descriptor, ObjPtr<mirror::Class> klass)
       REQUIRES_SHARED(Locks::mutator_lock_);
   const ConstantType& FromCat1Const(int32_t value, bool precise)
       REQUIRES_SHARED(Locks::mutator_lock_);
@@ -124,12 +131,12 @@ class RegTypeCache {
   const ConflictType& Conflict();
   const NullType& Null();
 
-  const PreciseReferenceType& JavaLangClass() REQUIRES_SHARED(Locks::mutator_lock_);
-  const PreciseReferenceType& JavaLangString() REQUIRES_SHARED(Locks::mutator_lock_);
-  const PreciseReferenceType& JavaLangInvokeMethodHandle() REQUIRES_SHARED(Locks::mutator_lock_);
-  const PreciseReferenceType& JavaLangInvokeMethodType() REQUIRES_SHARED(Locks::mutator_lock_);
-  const RegType& JavaLangThrowable() REQUIRES_SHARED(Locks::mutator_lock_);
-  const RegType& JavaLangObject(bool precise) REQUIRES_SHARED(Locks::mutator_lock_);
+  const ReferenceType& JavaLangClass() REQUIRES_SHARED(Locks::mutator_lock_);
+  const ReferenceType& JavaLangString() REQUIRES_SHARED(Locks::mutator_lock_);
+  const ReferenceType& JavaLangInvokeMethodHandle() REQUIRES_SHARED(Locks::mutator_lock_);
+  const ReferenceType& JavaLangInvokeMethodType() REQUIRES_SHARED(Locks::mutator_lock_);
+  const ReferenceType& JavaLangThrowable() REQUIRES_SHARED(Locks::mutator_lock_);
+  const ReferenceType& JavaLangObject() REQUIRES_SHARED(Locks::mutator_lock_);
 
   const UninitializedType& Uninitialized(const RegType& type, uint32_t allocation_pc)
       REQUIRES_SHARED(Locks::mutator_lock_);
@@ -179,7 +186,7 @@ class RegTypeCache {
   void FillPrimitiveAndSmallConstantTypes() REQUIRES_SHARED(Locks::mutator_lock_);
   ObjPtr<mirror::Class> ResolveClass(const char* descriptor, Handle<mirror::ClassLoader> loader)
       REQUIRES_SHARED(Locks::mutator_lock_);
-  bool MatchDescriptor(size_t idx, const std::string_view& descriptor, bool precise)
+  bool MatchDescriptor(size_t idx, const std::string_view& descriptor)
       REQUIRES_SHARED(Locks::mutator_lock_);
   const ConstantType& FromCat1NonSmallConstant(int32_t value, bool precise)
       REQUIRES_SHARED(Locks::mutator_lock_);
@@ -195,14 +202,15 @@ class RegTypeCache {
   // verifier and return a string view.
   std::string_view AddString(const std::string_view& str);
 
+  // Arena allocator.
+  ArenaStack arena_stack_;
+  ScopedArenaAllocator allocator_;
+
   // The actual storage for the RegTypes.
   ScopedArenaVector<const RegType*> entries_;
 
   // Fast lookup for quickly finding entries that have a matching class.
   ScopedArenaVector<std::pair<Handle<mirror::Class>, const RegType*>> klass_entries_;
-
-  // Arena allocator.
-  ScopedArenaAllocator& allocator_;
 
   // Handle scope containing classes.
   VariableSizedHandleScope handles_;
@@ -212,6 +220,9 @@ class RegTypeCache {
 
   // Whether or not we're allowed to load classes.
   const bool can_load_classes_;
+
+  // Whether or not we're allowed to suspend.
+  const bool can_suspend_;
 
   DISALLOW_COPY_AND_ASSIGN(RegTypeCache);
 };

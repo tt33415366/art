@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 The Android Open Source Project
+ * Copyright (C) 2024 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,20 +14,17 @@
  * limitations under the License.
  */
 
-#ifndef ART_LIBDEXFILE_DEX_COMPACT_DEX_LEVEL_H_
-#define ART_LIBDEXFILE_DEX_COMPACT_DEX_LEVEL_H_
+#include <jni.h>
 
-namespace art {
+namespace {
+// Stub impl for testing, do nothing.
+void NoopFreeFunction(void*) {}
+}  // namespace
 
-// Optimization level for compact dex generation.
-// TODO(b/256664509): Clean this up.
-enum class CompactDexLevel {
-  // Level none means not generated.
-  kCompactDexLevelNone,
-  // Level fast means optimizations that don't take many resources to perform.
-  kCompactDexLevelFast,
-};
+extern "C" {
 
-}  // namespace art
+JNIEXPORT jlong JNICALL Java_DumpedStuff_getNoopFreeFunction(JNIEnv*, jclass) {
+  return reinterpret_cast<uint64_t>(NoopFreeFunction);
+}
 
-#endif  // ART_LIBDEXFILE_DEX_COMPACT_DEX_LEVEL_H_
+}  // extern "C"

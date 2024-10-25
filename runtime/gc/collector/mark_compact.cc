@@ -67,9 +67,6 @@
 #ifndef MREMAP_DONTUNMAP
 #define MREMAP_DONTUNMAP 4
 #endif
-#ifndef MAP_FIXED_NOREPLACE
-#define MAP_FIXED_NOREPLACE 0x100000
-#endif
 #endif  // __BIONIC__
 
 // See aosp/2996596 for where these values came from.
@@ -453,6 +450,7 @@ MarkCompact::MarkCompact(Heap* heap)
       uffd_(kFdUnused),
       sigbus_in_progress_count_{kSigbusCounterCompactionDoneMask, kSigbusCounterCompactionDoneMask},
       compacting_(false),
+      marking_done_(false),
       uffd_initialized_(false),
       clamp_info_map_status_(ClampInfoStatus::kClampInfoNotDone) {
   if (kIsDebugBuild) {
@@ -1107,6 +1105,7 @@ void MarkCompact::MarkingPause() {
   // Enable the reference processing slow path, needs to be done with mutators
   // paused since there is no lock in the GetReferent fast path.
   heap_->GetReferenceProcessor()->EnableSlowPath();
+  marking_done_ = true;
 }
 
 void MarkCompact::SweepSystemWeaks(Thread* self, Runtime* runtime, const bool paused) {
@@ -2659,9 +2658,11 @@ void MarkCompact::CompactionPause() {
   non_moving_space_bitmap_ = non_moving_space_->GetLiveBitmap();
   if (kIsDebugBuild) {
     DCHECK_EQ(thread_running_gc_, Thread::Current());
-    stack_low_addr_ = thread_running_gc_->GetStackEnd();
-    stack_high_addr_ =
-        reinterpret_cast<char*>(stack_low_addr_) + thread_running_gc_->GetStackSize();
+    // TODO(Simulator): Test that this should not operate on the simulated stack when the simulator
+    // supports mark compact.
+    stack_low_addr_ = thread_running_gc_->GetStackEnd<kNativeStackType>();
+    stack_high_addr_ = reinterpret_cast<char*>(stack_low_addr_)
+                       + thread_running_gc_->GetUsableStackSize<kNativeStackType>();
   }
   {
     TimingLogger::ScopedTiming t2("(Paused)UpdateCompactionDataStructures", GetTimings());
@@ -2894,6 +2895,14 @@ void MarkCompact::KernelPreparation() {
       }
       // Register the moving space with userfaultfd.
       RegisterUffd(moving_space_begin, moving_space_register_sz);
+      // madvise ensures that if any page gets mapped (only possible if some
+      // thread is reading the page(s) without trying to make sense as we hold
+      // mutator-lock exclusively) between mremap and uffd-registration, then
+      // it gets zapped so that the map is empty and ready for userfaults. If
+      // we could mremap after uffd-registration (like in case of linear-alloc
+      // space below) then we wouldn't need it. But since we don't register the
+      // entire space, we can't do that.
+      madvise(moving_space_begin, moving_space_register_sz, MADV_DONTNEED);
     }
     // Prepare linear-alloc for concurrent compaction.
     for (auto& data : linear_alloc_spaces_data_) {
@@ -4041,7 +4050,9 @@ mirror::Object* MarkCompact::IsMarked(mirror::Object* obj) {
     }
     return (is_black || moving_space_bitmap_->Test(obj)) ? obj : nullptr;
   } else if (non_moving_space_bitmap_->HasAddress(obj)) {
-    return non_moving_space_bitmap_->Test(obj) ? obj : nullptr;
+    if (non_moving_space_bitmap_->Test(obj)) {
+      return obj;
+    }
   } else if (immune_spaces_.ContainsObject(obj)) {
     return obj;
   } else {
@@ -4051,7 +4062,9 @@ mirror::Object* MarkCompact::IsMarked(mirror::Object* obj) {
     accounting::LargeObjectBitmap* los_bitmap = heap_->GetLargeObjectsSpace()->GetMarkBitmap();
     if (los_bitmap->HasAddress(obj)) {
       DCHECK(IsAlignedParam(obj, space::LargeObjectSpace::ObjectAlignment()));
-      return los_bitmap->Test(obj) ? obj : nullptr;
+      if (los_bitmap->Test(obj)) {
+        return obj;
+      }
     } else {
       // The given obj is not in any of the known spaces, so return null. This could
       // happen for instance in interpreter caches wherein a concurrent updation
@@ -4061,6 +4074,7 @@ mirror::Object* MarkCompact::IsMarked(mirror::Object* obj) {
       return nullptr;
     }
   }
+  return marking_done_ && IsOnAllocStack(obj) ? obj : nullptr;
 }
 
 bool MarkCompact::IsNullOrMarkedHeapReference(mirror::HeapReference<mirror::Object>* obj,
@@ -4084,6 +4098,7 @@ void MarkCompact::FinishPhase() {
   GetCurrentIteration()->SetScannedBytes(bytes_scanned_);
   bool is_zygote = Runtime::Current()->IsZygote();
   compacting_ = false;
+  marking_done_ = false;
 
   ZeroAndReleaseMemory(compaction_buffers_map_.Begin(), compaction_buffers_map_.Size());
   info_map_.MadviseDontNeedAndZero();
